@@ -154,7 +154,7 @@ Phase E — 외부 의존 (별도 일정)
 | Phase B-3+: obstacle_publisher (frenet 의존) / global_republisher | pending | obstacle_publisher 본체는 frenet_conversion 서비스에 강하게 묶여 있어 A-2 후 진행 |
 | **Phase C-1: state_machine 분석** | ✅ **완료** | 3500L 포팅 대상 식별 + sub-phase 분할 (C-2..C-6) |
 | **Phase C-2: 순수 모듈 + 67 pytest** | ✅ **완료** | path_checker / state_transitions / states / states_types / waypoint_data 옮김 (rospy → logging). 67/67 pass |
-| Phase C-3: mixin 모듈 (init / callbacks / viz / smart_helper) | pending | rospy → rclpy 본격 |
+| **Phase C-3: mixin 모듈 (init / callbacks / viz / smart_helper)** | ✅ **완료** | rospy → rclpy 변환. 4 mixin smoke import + 기존 67 pytest 회귀 검증 |
 | Phase C-4: 메인 노드 (3d_state_machine_node) | pending | |
 | Phase C-5: dynamic_*_server → ROS2 native parameter 통합 | pending | |
 | Phase C-6: 4-노드 통합 launch + 시나리오 검증 | pending | |
@@ -650,6 +650,77 @@ sys.path.insert(0, _TEST_DIR)  # fake_msgs 만 위해 test 디렉터리 추가
 - 단 1개 fail 후 fix: `for_test` 가 ROS2 에서 `dyn_sub` 필드 제거했는데 테스트가 검사 → legacy 호환 위해 `obj.dyn_sub = None` 1줄 유지
 
 ### waypoint_data 의 ROS2 wiring (C-3 에서 작업)
+
+(C-3 에서는 init mixin 의 `_get_param_or_default` helper 만 추가. waypoint_data 의 attach_to_node 는 C-5 에서 ROS2 native parameter callback 으로 활성화 예정)
+
+---
+
+## Phase C-3 — state_machine mixin 모듈 포팅 결과 (2026-05-04)
+
+state_machine sub-phase 두 번째. 4개 mixin 모듈 (`init` / `callbacks` / `viz` /
+`smart_helper`) 의 rospy → rclpy 변환. 메인 노드 (1212L) 와 dynamic_reconfigure
+서버 통합은 C-4 / C-5 영역.
+
+### 변환 매핑 (자동화 sed + 수동 편집 조합)
+
+자동 sed 변환 (모든 mixin 에 일관 적용):
+
+| ROS1 (rospy) | ROS2 (rclpy) |
+|---|---|
+| `import rospy` | 제거 |
+| `from rospkg import RosPack` | 제거 (대신 `_resolve_stack_master_path` helper) |
+| `from dynamic_reconfigure.msg import Config` | 제거 (type hint 만 `Any` 로 임시) |
+| `rospy.get_param(name, default)` | `self._get_param_or_default(name, default)` (helper) |
+| `rospy.loginfo / logwarn / logerr / logdebug` | `self.get_logger().info / warning / error / debug` |
+| `rospy.Time.now()` | `self.get_clock().now().to_msg()` |
+| `rospy.Subscriber("/topic", MsgT, cb)` | `self.create_subscription(MsgT, "/topic", cb, 10)` |
+| `rospy.Publisher("/topic", MsgT, queue_size=N)` | `self.create_publisher(MsgT, "/topic", N)` |
+| `rospy.wait_for_message("/topic", MsgT)` | `wait_for_message(MsgT, self, "/topic", time_to_wait=10.0)` (rclpy.wait_for_message) |
+| `import states` (모듈 import) | `from state_machine import states` (패키지 내부) |
+
+수동 편집:
+- multi-line `rospy.Subscriber(...)` / `rospy.Publisher(...)` (sed 단행 패턴 못 잡음)
+- `RosPack().get_path('stack_master')` 두 곳 → `_resolve_stack_master_path()` helper
+- 외부 의존 (vesc / dynamic_reconfigure Config sub 4개) → 주석 처리 (TODO C-5)
+
+### 신규 helper (init mixin 에 정의)
+
+```python
+def _get_param_or_default(self, name, default=None):
+    """ROS1 의 rospy.get_param 호환. declare_parameter 가 안 됐으면 default 로 declare 후 반환."""
+    if not self.has_parameter(name):
+        if default is not None:
+            self.declare_parameter(name, default)
+        else:
+            return None
+    return self.get_parameter(name).value
+
+def _resolve_stack_master_path(self, *parts) -> str:
+    """stack_master 경로 fallback (ROS1 ws — B-1/B-6 패턴)."""
+    return os.path.expanduser(
+        os.path.join("~/unicorn_ws/ICRA2026_HJ/stack_master", *parts)
+    )
+```
+
+### 미포팅 / 보류 (의도)
+
+| 항목 | 처리 | C-4/C-5 에서 |
+|---|---|---|
+| `vesc/sensors/core` (VescStateStamped) | 주석 처리 | 미포팅 — voltage 모니터링 비활성. 검증 필수 아님 |
+| `dynamic_reconfigure.msg.Config` sub 4개 | 주석 처리 | C-5 에서 ROS2 native parameter callback 으로 통합 |
+| `trajectory_planning_helpers` (tph) — ggv/ax_max 로딩 | conditional import + ImportError on use | C-4 검증 시 `pip install trajectory_planning_helpers` 결정 |
+
+### 검증
+
+- `colcon build --packages-select state_machine` ✅ 0.8s
+- 4 mixin 모두 smoke import OK:
+  - `InitMixin` (369L): _load_rosparams, _load_vehicle_dynamics, _load_vel_planner_params, _init_state_attributes, _setup_ros_subscribers, _setup_ros_publishers, _get_param_or_default, _resolve_stack_master_path
+  - `CallbackMixin` (285L): 24 콜백 (avoidance_cb, dyn_param_cb, ego_prediction_cb, ...)
+  - `VisualizationMixin` (224L): publish_not_ready_marker, visualize_state
+  - `SmartStaticChecker` (143L): __getattr__ proxy + _odom_fixed_cb + update
+- **회귀 — 기존 67 pytest 그대로 통과** ✓ (path_checker 40 + state_transitions 27)
+
+다음 — C-4 (메인 노드 1212L 변환). C-3 의 모든 mixin 이 메인 노드의 `class StateMachine(InitMixin, VisualizationMixin, CallbackMixin)` 으로 다중 상속될 것.
 
 `__init__` 에 `node` 파라미터 추가 (옵셔널). `attach_to_node(node)` 메서드는 stub —
 C-3 에서 다음 패턴으로 채움:
