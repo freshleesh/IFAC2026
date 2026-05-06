@@ -100,6 +100,13 @@ class FrenetConverterServer(Node):
                 f"[Frenet Conversion] FrenetConverter build failed: {e}; ignoring this msg"
             )
             return
+        # 기존 converter 가 trackbounds 를 가지고 있었으면 새 converter 에 그대로 옮긴다.
+        # 이게 없으면 /global_waypoints 가 0.5Hz 로 갱신될 때마다 새 converter 의
+        # has_track_bounds=False 가 되고, _on_trackbounds 가 매번 다시 set 호출 → 로그 spam + CPU 낭비.
+        if self._converter is not None and self._converter.has_track_bounds:
+            converter.set_track_bounds(
+                self._converter.left_bounds, self._converter.right_bounds
+            )
         self._converter = converter
         if not self._has_global_trajectory:
             self.get_logger().info(
