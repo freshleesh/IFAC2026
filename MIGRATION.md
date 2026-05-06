@@ -150,6 +150,7 @@ Phase E — 외부 의존 (별도 일정)
 | **Phase B-2: random_obstacle_publisher 포팅** | ✅ **완료** | 109→160 라인 + 110 라인 순수 함수. 12/12 단위 테스트 + ros2 런타임 검증 (5 sectors, ids 정확) |
 | **Phase B-5: frenet_odom_republisher 포팅** | ✅ **완료** | 240L C++ → Python (160L 노드 + 20L 헬퍼). frenet_conversion lib 의 get_frenet_odometry 메서드 신규 추가. 6/6 + 3/3 단위 테스트 + ros2 런타임 검증 |
 | **Phase B-6: global_republisher 포팅** | ✅ **완료** | 173L Python → 220L (lib 분리 80L + 노드 240L). ROS1 → ROS2 dict↔msg 변환 + legacy 필드 cleanup (seq/secs/nsecs). 7/7 단위 테스트 + ROS1 실제 JSON (gazebo_wall_2) 로드 + 12 토픽 0.5Hz 발행 검증 |
+| **Phase B-3: obstacle_publisher 포팅** | ✅ **완료** | 252L Python (frenet service client) → 250L 노드 + 40L 순수. ROS2 service client 패턴 (wait_for_message + spin_until_future_complete + call_async + done_callback) 확립. 12/12 단위 테스트 + 3-노드 통합 검증 (global_republisher + frenet_server + obstacle_publisher) → /tracking/obstacles 50Hz 정확 |
 | Phase B-3+: obstacle_publisher (frenet 의존) / global_republisher | pending | obstacle_publisher 본체는 frenet_conversion 서비스에 강하게 묶여 있어 A-2 후 진행 |
 | Phase C: state_machine | pending | 우리 핵심 작업 |
 | Phase D: planner / controller | pending | |
@@ -500,3 +501,86 @@ _LEGACY_FIELDS_TO_RENAME = {"secs": "sec", "nsecs": "nanosec"}
 - `/global_waypoints` topic hz: **0.500 Hz**, std 0.18ms ✓
 - `ros2 param get /global_republisher track_length` → `85.6356869406511` ✓
 - 첫 wpnt 의 모든 3D 필드 (s_m, x_m, y_m, **z_m**, **mu_rad**, kappa_radpm, vx_mps) 정상
+
+---
+
+## Phase B-3 — obstacle_publisher 포팅 결과 (2026-05-04)
+
+원본 ROS1: `f110_utils/nodes/obstacle_publisher/src/obstacle_publisher.py` (252L 본체).
+포팅: `ICRA2026_SH_ros2/src/obstacle_publisher/`.
+
+**첫 frenet service client 노드** — A-2 의 srv 정의가 실제 client 로 사용되는 첫 사례.
+
+### 책임
+
+선택한 트랙 (`min_curv` / `shortest_path` / `centerline` / `updated`) 위 raceline 을 따라
+가짜 상대 차량 1대를 `vx_mps × speed_scaler` 속도로 주행시키며 `/tracking/obstacles`
+(ObstacleArray) 50 Hz 발행. 시작 위치는 `start_s` 파라미터.
+
+토픽:
+- sub: `/global_waypoints` + 선택된 trajectory 토픽 + `/car_state/odom_frenet`
+- pub: `/tracking/obstacles`, `/dummy_obstacle_markers`, `/opponent_waypoints` (25-tick 마다)
+- service client: `convert_glob2frenetarr_service`, `convert_frenet2globarr_service`
+
+### **신규 ROS2 패턴 — Service Client + startup 흐름** (이후 service 사용 노드들에 재사용)
+
+ROS2 의 service client 사용은 **timer callback 안에서 동기 호출 (`spin_until_future_complete`) 호출 금지** ("Executor is already spinning" RuntimeError). 두 가지 패턴 조합:
+
+**Startup phase (spin 시작 전, `__init__` 안)**:
+```python
+from rclpy.wait_for_message import wait_for_message
+
+# 1. service 가 ready 될 때까지 대기
+client.wait_for_service(timeout_sec=10.0)
+
+# 2. 토픽 한 번 받기 (wait_for_message 가 내부적으로 spin)
+ok, msg = wait_for_message(WpntArray, self, "/global_waypoints", time_to_wait=10.0)
+
+# 3. 동기 service 호출 (call_async + spin_until_future_complete)
+future = client.call_async(req)
+rclpy.spin_until_future_complete(self, future, timeout_sec=5.0)
+resp = future.result()
+
+# 4. 그 다음에야 timer / 일반 콜백 등록
+self.create_timer(...)
+```
+
+**Runtime phase (timer callback 안)**:
+```python
+def _tick(self):
+    future = client.call_async(req)
+    future.add_done_callback(self._on_done)  # 비동기로 처리
+
+def _on_done(self, future):
+    resp = future.result()
+    # 응답 가공 + 발행
+```
+
+이 두 패턴이 ROS2 service client 사용의 표준. 원본 ROS1 코드는 `wait_for_message` + `ServiceProxy()` (동기) 라 별 신경 안 썼지만 ROS2 는 매우 strict.
+
+### **신규 발견 — float64 필드에 Python int 넣기 (ROS1 → ROS2)**
+
+`OpponentTrajectory.lap_count` 가 `float64` 인데 원본은 `lap_count = 2` (Python int). ROS1 은 implicit cast OK. ROS2 는 strict — `PyFloat_Check` assert fail로 **노드 abort**.
+
+수정: `lap_count = 2.0` 명시.
+
+이게 **ROS1 → ROS2 마이그레이션의 또 다른 함정** (B-6 의 legacy 필드 cleanup 와 별개). 직렬화된 데이터가 아니라도, 코드 안에서 필드 할당 시에도 strict 타입 체크.
+
+### 미포팅 (의도)
+
+- `dynamic_reconfigure` (`cfg/dyn_obs_publisher.cfg` + `dynamic_obs_pub_server.py`) — 원본 launch 에서 주석 처리되어 있어 dead code (별도 절차에서 옵션 a 선택).
+- 일부 sin 수식 (`# + 0.5 * vx_mps * speed_scaler * np.sin(...)`) — 원본 자체가 주석.
+
+### 검증
+
+- `colcon build --packages-select obstacle_publisher` ✅ 0.8s
+- `pytest test/test_opponent_resampling.py` ✅ **12/12** (sort, resample 선형보간/clamp, find_nearest_idx, advance_s wrap)
+- **3-노드 통합** (global_republisher + frenet_conversion_server + obstacle_publisher):
+  - `[ObstaclePublisher] opponent trajectory built (856 oppwpnts), start_s=10.00` ✓
+  - `/tracking/obstacles` topic hz: **50.002 Hz, std 0.14ms** ✓
+  - 한 메시지 디테일: `s_start=84.18, s_end=84.68` (length=0.5), `d_left=0.2, d_right=-0.2` (size=0.4), `vs=3.66 m/s`, `x_m, y_m, z_m` 모두 frenet→cartesian 변환된 정상 값
+  - `/opponent_waypoints` 도 25-tick 마다 발행 ✓
+
+### 부수 이슈 (별도 phase 로 fix 예정)
+
+A-2b 의 `frenet_conversion_server` 가 `/global_waypoints` 가 0.5Hz 로 갱신될 때마다 새 `FrenetConverter` 인스턴스 만들면서 **track bounds 를 매번 다시 set** ("Track bounds loaded: 857 left, 857 right" 로그 반복). `_on_global_traj` 가 새 converter 빌드 시 기존 trackbounds 도 같이 옮기도록 수정 필요. **B-3 와는 별개**, 다음 작업으로 처리.
