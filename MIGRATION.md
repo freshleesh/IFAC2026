@@ -155,7 +155,7 @@ Phase E — 외부 의존 (별도 일정)
 | **Phase C-1: state_machine 분석** | ✅ **완료** | 3500L 포팅 대상 식별 + sub-phase 분할 (C-2..C-6) |
 | **Phase C-2: 순수 모듈 + 67 pytest** | ✅ **완료** | path_checker / state_transitions / states / states_types / waypoint_data 옮김 (rospy → logging). 67/67 pass |
 | **Phase C-3: mixin 모듈 (init / callbacks / viz / smart_helper)** | ✅ **완료** | rospy → rclpy 변환. 4 mixin smoke import + 기존 67 pytest 회귀 검증 |
-| Phase C-4: 메인 노드 (3d_state_machine_node) | pending | |
+| **Phase C-4: 메인 노드 (3d_state_machine_node, 1212L)** | ✅ **완료** | rospy → rclpy + Node 다중 상속 + main(). MRO 검증 + 회귀 67 pytest + smoke (의도된 launch param fail 까지) |
 | Phase C-5: dynamic_*_server → ROS2 native parameter 통합 | pending | |
 | Phase C-6: 4-노드 통합 launch + 시나리오 검증 | pending | |
 | Phase D: planner / controller | pending | |
@@ -721,6 +721,72 @@ def _resolve_stack_master_path(self, *parts) -> str:
 - **회귀 — 기존 67 pytest 그대로 통과** ✓ (path_checker 40 + state_transitions 27)
 
 다음 — C-4 (메인 노드 1212L 변환). C-3 의 모든 mixin 이 메인 노드의 `class StateMachine(InitMixin, VisualizationMixin, CallbackMixin)` 으로 다중 상속될 것.
+
+---
+
+## Phase C-4 — state_machine 메인 노드 포팅 결과 (2026-05-04)
+
+state_machine sub-phase 세 번째. 1212L 메인 노드 변환. C-3 의 mixin 들과 결합.
+
+### 변환 매핑
+
+C-3 의 자동 sed 패턴 모두 재사용 (rospy.* → ROS2). 추가 변경:
+
+| 원본 ROS1 | ROS2 |
+|---|---|
+| `class StateMachine(InitMixin, VisualizationMixin, CallbackMixin)` | `class StateMachine(Node, InitMixin, VisualizationMixin, CallbackMixin)` |
+| `def __init__(self, name): self.name = name; self._load_rosparams(); ...` | `Node.__init__(self, name, allow_undeclared_parameters=True, automatically_declare_parameters_from_overrides=True)` 먼저 |
+| `self.loop()` 무한 루프 | `self.create_timer(1/rate_hz, self.loop)` + 메인은 `rclpy.spin(node)` |
+| `if __name__ == "__main__": rospy.init_node + while not is_shutdown` | `def main(args=None): rclpy.init/spin/shutdown` |
+| `rospy.X_throttle(period, msg)` (멀티라인) | `self.get_logger().X(msg)` (throttle 효과는 일단 제거. 필요 시 향후 add) |
+
+### Node.__init__ 의 중요 옵션 — `automatically_declare_parameters_from_overrides=True`
+
+이게 없으면 launch 에서 `-p name:=value` 로 준 모든 파라미터를 코드 안에서 일일이 `declare_parameter` 해야 함. ROS1 의 `rospy.get_param` 이 declare 없이 자동이었던 동작과 비호환.
+
+`True` 로 설정하면 launch 의 모든 파라미터가 자동 declare → `get_parameter(name).value` 그대로 사용. ROS1 → ROS2 마이그레이션 시 사실상 필수 옵션.
+
+### `_get_param_or_default` 강화 — Deprecated 경고 제거
+
+ROS2 Jazzy 부터 `declare_parameter("name")` (default 없음) 이 deprecated. helper 를 try/except 패턴으로 강화:
+
+```python
+def _get_param_or_default(self, name, default=None):
+    try:
+        return self.get_parameter(name).value
+    except Exception:
+        if default is not None:
+            try:
+                self.declare_parameter(name, default)
+                return self.get_parameter(name).value
+            except Exception:
+                return default
+        return None
+```
+
+### 미포팅 (의도, conditional import)
+
+| 의존 | 처리 |
+|---|---|
+| `trajectory_planning_helpers as tph` | `try/except ImportError → tph = None`. 사용 시 ImportError 명시 |
+| `vel_planner_25d.vel_planner.calc_vel_profile` | 동일 패턴 |
+| `dynamic_reconfigure.msg.Config` (type hint) | `: Any` 로 변경 |
+
+### 검증
+
+- `colcon build --packages-select state_machine` ✅ 0.8s
+- `ros2 pkg executables state_machine` → `state_machine state_machine` ✓ (entry_point 등록)
+- `python3 -c "from state_machine.state_machine_node import StateMachine, main"` ✓
+- **MRO 검증**: `[StateMachine, Node, InitMixin, VisualizationMixin, CallbackMixin, object]` ✓
+- **회귀**: 기존 67 pytest 그대로 통과 ✓
+- `ros2 run state_machine state_machine` 5초 기동:
+  - Deprecated 경고 모두 제거됨 ✓
+  - `_load_rosparams` 의 `self.sectors_params["n_sectors"]` 에서 `TypeError: 'NoneType'` (의도된 fail — launch 에서 `/map_params` 안 줌)
+  - = startup 진입 + import + class instantiation 통과 ✓
+
+### 다음 — C-5
+
+`dynamic_*_server` (108 + 88L) 두 노드를 ROS2 native parameter callback 으로 통합. 메인 노드의 `add_on_set_parameters_callback` 으로 dyn_param_cb 등이 활성화됨. C-3 의 주석 처리한 4개 sub 도 동시에 ROS2 patternd 로 활성화.
 
 `__init__` 에 `node` 파라미터 추가 (옵셔널). `attach_to_node(node)` 메서드는 stub —
 C-3 에서 다음 패턴으로 채움:

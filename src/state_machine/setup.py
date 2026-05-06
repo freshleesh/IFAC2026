@@ -23,7 +23,7 @@ setup(
     tests_require=["pytest"],
     entry_points={
         "console_scripts": [
-            # C-4 에서 메인 노드 entry 추가 예정
+            "state_machine = state_machine.state_machine_node:main",
         ],
     },
 )

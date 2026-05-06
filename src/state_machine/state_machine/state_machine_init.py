@@ -393,23 +393,22 @@ class InitMixin:
     def _get_param_or_default(self, name, default=None):
         """ROS1 의 rospy.get_param 호환 helper.
 
-        - declare_parameter 가 안 된 상태면 default 로 declare 후 값 반환
-        - default=None 이고 declare 도 안 된 상태면 None 반환 (KeyError 미발생)
-        - launch 에서 set 된 파라미터는 자동으로 sourced
+        Node.__init__ 의 automatically_declare_parameters_from_overrides=True 덕분에
+        launch 에서 set 한 파라미터는 자동 declare 되어 있다. 여기서는 그 외의
+        경우만 처리:
+        - default 가 있으면 declare 후 반환
+        - default 가 없으면 None 반환 (rospy 는 KeyError 였으나 ROS2 는 silent None)
         """
-        if not self.has_parameter(name):
+        try:
+            return self.get_parameter(name).value
+        except Exception:
             if default is not None:
                 try:
                     self.declare_parameter(name, default)
+                    return self.get_parameter(name).value
                 except Exception:
-                    pass
-            else:
-                # default 없는 ROS1 패턴 — launch 에서 set 안 되면 None 반환
-                try:
-                    self.declare_parameter(name)
-                except Exception:
-                    return None
-        return self.get_parameter(name).value
+                    return default
+            return None
 
     def _resolve_stack_master_path(self, *parts) -> str:
         """stack_master 경로 해결 — 우리 ws 에 stack_master 미포팅이라
