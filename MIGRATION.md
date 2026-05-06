@@ -146,7 +146,8 @@ Phase E — 외부 의존 (별도 일정)
 | **Phase A-1: f110_msgs 포팅** | ✅ **완료** | 18 msgs, OTWpntArray 의 `time` → `builtin_interfaces/Time` 만 변경. colcon build 7s |
 | Phase A-2: f110_utils 라이브러리 (frenet_conversion 등) | pending | |
 | **Phase B-1: fake_odom_publisher 포팅** | ✅ **완료** | 108→125 라인 + 100 라인 순수 함수 분리. 13/13 단위 테스트 + ros2 런타임 20Hz 발행 검증 |
-| Phase B-2+: obstacle_publisher / global_republisher 등 | pending | |
+| **Phase B-2: random_obstacle_publisher 포팅** | ✅ **완료** | 109→160 라인 + 110 라인 순수 함수. 12/12 단위 테스트 + ros2 런타임 검증 (5 sectors, ids 정확) |
+| Phase B-3+: obstacle_publisher (frenet 의존) / global_republisher | pending | obstacle_publisher 본체는 frenet_conversion 서비스에 강하게 묶여 있어 A-2 후 진행 |
 | Phase C: state_machine | pending | 우리 핵심 작업 |
 | Phase D: planner / controller | pending | |
 
@@ -213,3 +214,73 @@ Phase E — 외부 의존 (별도 일정)
   현재 머신 (192.168.50.x) 에서 노드 기동 시 `does not match an available interface` 에러.
   **해결**: `unset CYCLONEDDS_URI` (검증 셸 한정) → cyclone 자동 인터페이스 선택. 사용자 시스템 설정 미수정.
 - 원본의 `map` 기본값 `gazebo_wall_3d_rc_car_10th_timeoptimal` 은 디렉터리명이 아니라 csv 파일명 → 디렉터리는 `gazebo_wall_2`. 포팅 노드 기본값을 `gazebo_wall_2` 로 수정 (호환성: `--ros-args -p map:=...` 로 override 가능).
+
+---
+
+## Phase B-2 — random_obstacle_publisher 포팅 결과 (2026-05-04)
+
+원본: `ICRA2026_HJ/f110_utils/nodes/random_obstacle_publisher` (109L).
+포팅: `ICRA2026_SH_ros2/src/random_obstacle_publisher/`.
+
+### 핵심 변환 (B-1 패턴 + 신규)
+
+| 항목 | 원본 ROS1 | 포팅 ROS2 |
+|---|---|---|
+| 무한 루프 | `__init__` 안 `while not is_shutdown(): rate.sleep()` | `create_timer(1/rate, _tick)` + `rclpy.spin(node)` |
+| ready 대기 | startup `while (not has_traj or not has_odom): sleep` | `_tick` 안 가드 + `if not _initialized: build_once()` |
+| 단일 발행 | rate.sleep 안에서 publish | timer callback 안에서 publish |
+
+### 구조 개선
+
+- **dead imports 정리**: `LapData`, `OccupancyGrid`, `Bool` — 원본에서 import 만 하고 사용 0 → 미포팅
+- **순수 함수 분리** (`obstacle_geometry.py`, 110L): `WaypointSpec` / `ObstacleSpec` dataclass + `get_closest_point_on_traj`, `generate_random_obstacle`, `build_sector_obstacles`, `select_obstacles_in_lookahead`
+- 노드 (`random_obstacle_publisher.py`, 160L): 파라미터 + 콜백 + tick 만
+- 12개 pytest (sector ids, d-width, slope max_d clamp, lookahead wrap, deterministic seed)
+
+### 검증
+
+- `colcon build` ✅ 0.8s
+- `pytest test/test_obstacle_geometry.py` ✅ 12/12
+- `ros2 run` + fake `/global_waypoints` + `/car_state/odom_frenet` (ros2 topic pub) 으로
+  → `Generated 5 random obstacles (final_s=10.00m)` ✓
+  → `/obstacles` 메시지 5개, **ids = 0,1,2,3,4** (sector index 정확)
+  → `s_end - s_start = 0.3` (obstacle_length), `d_left - d_right = 0.2` (obstacle_width) ✓
+  → `topic hz` = 20 Hz (노드 1개 기준)
+
+### 주요 발견 — **f110_msgs 메시지 hash 충돌** (모든 ROS2 검증에 영향)
+
+`/global_waypoints` topic 의 publisher (`ros2 topic pub`) 와 subscriber (random_obstacle_publisher 노드) 가
+**서로 다른 hash 의 f110_msgs/WpntArray** 를 사용 → DDS 가 메시지를 **silently drop**:
+
+```
+Publisher  hash: RIHS01_745ac277...  (다른 ws의 f110_msgs)
+Subscriber hash: RIHS01_c3c62139...  (우리 ws의 f110_msgs)
+```
+
+원인: 호스트의 다른 ws (`~/creating_autonomous_car_ws/`) 가 같은 이름의 `f110_msgs` 를 가지고 있고,
+사용자의 `~/.bashrc` 또는 환경 어딘가에서 그 ws install 이 active. 우리 ws 의 `install/setup.bash` 를
+source 하지 않은 환경에서 `ros2 topic pub` 를 띄우면 **다른 ws 의 메시지 정의를 사용** → hash mismatch.
+
+**해결**: 모든 ros2 명령 (pub, run) 에 우리 ws install 을 source:
+```bash
+source /opt/ros/jazzy/setup.bash
+source ~/unicorn_ws/ICRA2026_SH_ros2/install/setup.bash
+unset CYCLONEDDS_URI
+ros2 topic pub ...
+```
+
+이 mismatch 가 잡히지 않은 이유: nav_msgs / std_msgs 같은 ROS2 native 는 어디서 source 해도 동일 hash —
+B-1 (fake_odom_publisher) 검증은 `Odometry` 만 발행했기 때문에 발견되지 않았음. 첫 f110_msgs 사용 노드인 B-2 에서 발견.
+
+→ **이후 f110_msgs 사용 노드 검증 시 항상 우리 ws install/setup.bash source 필수**.
+
+### 부수 가드
+
+원본은 빈/invalid wpnts 메시지에 대한 가드 없음. 포팅 시 추가:
+```python
+if not msg.wpnts:
+    return
+if wpnts[-1].s_m <= 0.0:
+    return
+```
+이유: ros2 환경의 first-message race 방어 + IndexError 방지.

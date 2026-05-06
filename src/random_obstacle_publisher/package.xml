@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>random_obstacle_publisher</name>
+  <version>0.1.0</version>
+  <description>
+    트랙을 균등 섹터로 나눠 sector 마다 랜덤 obstacle 을 1 개씩 만들어
+    /obstacles (ObstacleArray) 로 발행. 시뮬레이션/디버깅 용.
+    SH ROS2 Jazzy 포팅 (원본: f110_utils/nodes/random_obstacle_publisher).
+  </description>
+
+  <maintainer email="freshleesh@gmail.com">SH</maintainer>
+  <license>MIT</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>f110_msgs</exec_depend>
+
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
