@@ -526,15 +526,11 @@ def test_on_spline_fails_when_too_far_from_path(on_spline_params):
 # ===========================================================================
 
 class _FakeStamp:
-    """rospy.Time 흉내 — to_sec() / is_zero() 만 구현."""
+    """builtin_interfaces/Time 흉내 — sec / nanosec 필드 (ROS2 포팅 후)."""
     def __init__(self, sec: float):
-        self._sec = sec
-
-    def to_sec(self) -> float:
-        return self._sec
-
-    def is_zero(self) -> bool:
-        return self._sec == 0.0
+        # sec 인자를 ROS2 native 의 sec (int) + nanosec (uint32) 로 분해
+        self.sec = int(sec)
+        self.nanosec = int((sec - int(sec)) * 1e9)
 
 
 class _FakeHeader:

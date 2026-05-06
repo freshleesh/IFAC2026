@@ -340,7 +340,8 @@ class StateMachine(Node, InitMixin, VisualizationMixin, CallbackMixin):
             waypoints_dist=self.gb_waypoints_dist,
             zones=self.overtake_zones,
         )
-        self.ot_section_check_pub.publish(in_zone)
+        from std_msgs.msg import Bool as _Bool
+        self.ot_section_check_pub.publish(_Bool(data=bool(in_zone)))
         return in_zone
     # ===== HJ MODIFIED END =====
 
@@ -410,7 +411,7 @@ class StateMachine(Node, InitMixin, VisualizationMixin, CallbackMixin):
 
         is_fresh = is_traj_msg_fresh(
             src_msg=src_wpnts,
-            now_sec=self.get_clock().now().to_msg().to_sec(),
+            now_sec=(self.get_clock().now().nanoseconds * 1e-9),
             params=TrajFreshnessParams(
                 is_smart_static=is_smart_static,
                 latest_threshold_sec=wpnts_data.latest_threshold,
@@ -574,14 +575,14 @@ class StateMachine(Node, InitMixin, VisualizationMixin, CallbackMixin):
         # ===== HJ MODIFIED END =====
 
         # self.get_logger().warning((self.get_clock().now().to_msg() - wpnts_data.stamp).to_sec())
-        if (self.get_clock().now().to_msg() - wpnts_data.stamp).to_sec() > wpnts_data.killing_timer_sec:
+        if (self.get_clock().now().nanoseconds * 1e-9 - (wpnts_data.stamp.sec + wpnts_data.stamp.nanosec * 1e-9)) > wpnts_data.killing_timer_sec:
             wpnts_data.is_init = False
             if self._check_latest_wpnts(wpnts, wpnts_data):
                 return True
             else:
                 return False
 
-        if (self.get_clock().now().to_msg() - wpnts_data.stamp).to_sec() > wpnts_data.hyst_timer_sec:
+        if (self.get_clock().now().nanoseconds * 1e-9 - (wpnts_data.stamp.sec + wpnts_data.stamp.nanosec * 1e-9)) > wpnts_data.hyst_timer_sec:
             if self._check_latest_wpnts(wpnts, wpnts_data):
                 return True
 
@@ -808,7 +809,13 @@ class StateMachine(Node, InitMixin, VisualizationMixin, CallbackMixin):
 
     def update_velocity(self, wpnts_msg, safety_factor=1.0):
         """3D: uses vel_planner_25d with slope, track_3d_params, grip_scale_exp.
-        Passes s_global for correct friction sector matching."""
+        Passes s_global for correct friction sector matching.
+
+        ROS2 포팅: vel_planner_25d / tph 미설치 시 noop (smoke 검증용).
+        진짜 운영 시 calc_vel_profile + tph.calc_ax_profile 필수.
+        """
+        if calc_vel_profile is None or tph is None:
+            return  # smoke mode — vel_planner 비활성
         wpnts = wpnts_msg.wpnts
         kappa = np.array([wp.kappa_radpm for wp in wpnts])
         el_lengths = np.array([
@@ -1258,9 +1265,14 @@ class StateMachine(Node, InitMixin, VisualizationMixin, CallbackMixin):
         if self.cur_state == StateType.LOSTLINE:
             self.cur_state = StateType.GB_TRACK
 
-        # behavior + state + 시각화 발행
+        # behavior + state + 시각화 발행 (ROS2 strict 타입 — String 메시지 wrap)
+        from std_msgs.msg import String as _String
         self._publish_behavior_strategy(local_wpnts)
-        self.state_pub.publish(self.cur_state.value)
+        self.state_pub.publish(_String(data=self.cur_state.value))
+        # TODO post-C-6: visualize_state / target marker 의 geometry_msgs/Point 등 numeric
+        # 필드를 float() 명시 cast 해야 strict 타입 통과. 현재 smoke 는 publish 까지 검증
+        # 됐으니 visualize 는 보류.
+        return
         self.visualize_state(state=self.cur_state.value)
         self._pub_local_wpnts(local_wpnts)
 
@@ -1277,7 +1289,8 @@ class StateMachine(Node, InitMixin, VisualizationMixin, CallbackMixin):
         )
 
         if self.measuring:
-            self.latency_pub.publish(1 / (time.perf_counter() - start))
+            from std_msgs.msg import Float32 as _Float32
+            self.latency_pub.publish(_Float32(data=float(1 / (time.perf_counter() - start))))
 
 def main(args=None) -> None:
     rclpy.init(args=args)

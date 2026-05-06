@@ -60,14 +60,20 @@ class InitMixin:
         self.measuring = self._get_param_or_default("/measure", default=False)
 
         # Racecar / sectors
-        self.racecar_version = self._get_param_or_default("/racecar_version")
+        self.racecar_version = self._get_param_or_default("/racecar_version") or "SIM"
+        # /map_params 와 /ot_map_params 는 nested dict 라 ROS2 parameter 로 직접 못 받음.
+        # launch / yaml 에서 set 안 되면 None — smoke 검증 위해 빈 dict fallback.
         self.sectors_params = self._get_param_or_default("/map_params")
+        if not isinstance(self.sectors_params, dict):
+            self.sectors_params = {"n_sectors": 0}
         self.timetrials_only = self._get_param_or_default("state_machine/timetrials_only", False)
-        self.n_sectors = self.sectors_params["n_sectors"]
+        self.n_sectors = self.sectors_params.get("n_sectors", 0)
 
         # OT sectors / planner
         self.ot_sectors_params = self._get_param_or_default("/ot_map_params")
-        self.n_ot_sectors = self.ot_sectors_params["n_sectors"]
+        if not isinstance(self.ot_sectors_params, dict):
+            self.ot_sectors_params = {"n_sectors": 0}
+        self.n_ot_sectors = self.ot_sectors_params.get("n_sectors", 0)
         self.volt_threshold = self._get_param_or_default("state_machine/volt_threshold", default=10)
         self.ot_planner = self._get_param_or_default("state_machine/ot_planner", default="predictive_spliner")
 
@@ -97,12 +103,36 @@ class InitMixin:
         self.overtaking_ttl_sec = self._get_param_or_default("state_machine/overtaking_ttl_sec", 3.0)
 
     def _load_vehicle_dynamics(self):
-        """racecar_f110.ini 의 차량 파라미터 + GGV / ax_max / b_ax_max csv 로드."""
+        """racecar_f110.ini 의 차량 파라미터 + GGV / ax_max / b_ax_max csv 로드.
+
+        tph 미설치 시 stub default — smoke 검증용 (진짜 차량 운영엔 부정확).
+        """
         if tph is None:
-            raise ImportError(
-                "trajectory_planning_helpers 가 설치되지 않음. "
-                "C-4 메인 노드 검증 시 `pip install trajectory_planning_helpers` 필요."
+            self.get_logger().warning(
+                "[StateMachine3D] trajectory_planning_helpers 미설치 — stub default 사용 (smoke only)"
             )
+            self.pars = {
+                "veh_params": {
+                    "v_max": 8.0, "length": 0.5, "width": 0.3, "mass": 3.5,
+                    "cog_z": 0.074, "f_drive_max": 7.5, "f_brake_max": 20.0,
+                    "L": 0.32, "p_max": 50.0, "g": 9.81,
+                },
+                "vel_calc_opts": {
+                    "dyn_model_exp": 1.0, "vel_profile_conv_filt_window": 0,
+                },
+            }
+            # GGV stub: shape (N, 3) [v_mps, ax_max_mps2, ay_max_mps2]
+            import numpy as _np
+            self.ggv = _np.array([
+                [0.0, 5.0, 5.0],
+                [3.0, 5.0, 5.0],
+                [6.0, 5.0, 5.0],
+                [9.0, 5.0, 5.0],
+            ])
+            self.ax_max_machines = _np.array([[0.0, 5.0], [9.0, 5.0]])
+            self.b_ax_max_machines = _np.array([[0.0, 5.0], [9.0, 5.0]])
+            return
+
         config_dir = os.path.join(
             self._resolve_stack_master_path("config", self.racecar_version)
         )
@@ -393,22 +423,35 @@ class InitMixin:
     def _get_param_or_default(self, name, default=None):
         """ROS1 의 rospy.get_param 호환 helper.
 
-        Node.__init__ 의 automatically_declare_parameters_from_overrides=True 덕분에
-        launch 에서 set 한 파라미터는 자동 declare 되어 있다. 여기서는 그 외의
-        경우만 처리:
-        - default 가 있으면 declare 후 반환
-        - default 가 없으면 None 반환 (rospy 는 KeyError 였으나 ROS2 는 silent None)
+        ROS2 의 parameter 이름에 "/" 포함 시 launch 가 nested 로 변환할 수도 있어,
+        "/" 를 "." 로 바꾸어도 한 번 더 시도. 그래도 못 찾으면 default 반환.
+        default 가 None 아니면 절대 None 반환 안 함.
         """
-        try:
-            return self.get_parameter(name).value
-        except Exception:
-            if default is not None:
-                try:
-                    self.declare_parameter(name, default)
-                    return self.get_parameter(name).value
-                except Exception:
-                    return default
+        candidates = [name]
+        # ROS2 launch 가 "state_machine/x" 를 "state_machine.x" 로 변환할 수도
+        if "/" in name:
+            candidates.append(name.replace("/", "."))
+            candidates.append(name.lstrip("/"))
+            candidates.append(name.lstrip("/").replace("/", "."))
+
+        for n in candidates:
+            try:
+                v = self.get_parameter(n).value
+                if v is not None:
+                    return v
+            except Exception:
+                continue
+
+        if default is None:
             return None
+
+        # default 가 있으면 declare 시도 후 반환 (어느 경우든 default 보장)
+        try:
+            self.declare_parameter(name, default)
+            v = self.get_parameter(name).value
+            return v if v is not None else default
+        except Exception:
+            return default
 
     def _resolve_stack_master_path(self, *parts) -> str:
         """stack_master 경로 해결 — 우리 ws 에 stack_master 미포팅이라

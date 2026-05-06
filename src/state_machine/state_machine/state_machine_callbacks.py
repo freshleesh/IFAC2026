@@ -185,15 +185,19 @@ class CallbackMixin:
             self.cur_id_ot = int(self._find_nearest_ot_s())
 
     def odom_cb(self, data):
-        """/car_state/odom — Cartesian (x, y, theta) 위치."""
+        """/car_state/odom — Cartesian (x, y, theta) 위치.
+
+        ROS2 포팅: tf.transformations.euler_from_quaternion → 직접 atan2 계산.
+        """
+        import math
         x = data.pose.pose.position.x
         y = data.pose.pose.position.y
-        theta = tf.transformations.euler_from_quaternion([
-            data.pose.pose.orientation.x,
-            data.pose.pose.orientation.y,
-            data.pose.pose.orientation.z,
-            data.pose.pose.orientation.w,
-        ])[2]
+        q = data.pose.pose.orientation
+        # yaw (z 축 회전, ZYX 오일러) — euler_from_quaternion 의 [2] 와 동일
+        theta = math.atan2(
+            2.0 * (q.w * q.z + q.x * q.y),
+            1.0 - 2.0 * (q.y * q.y + q.z * q.z),
+        )
         self.current_position = [x, y, theta]
 
     def dyn_param_cb(self, params: Any):

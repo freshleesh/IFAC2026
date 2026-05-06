@@ -24,6 +24,7 @@ setup(
     entry_points={
         "console_scripts": [
             "state_machine = state_machine.state_machine_node:main",
+            "fake_topic_relay = state_machine.fake_topic_relay:main",
         ],
     },
 )

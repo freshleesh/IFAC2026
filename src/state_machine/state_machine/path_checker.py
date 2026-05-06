@@ -302,17 +302,19 @@ def is_traj_msg_fresh(
 
     src_msg 객체에서 읽는 필드:
         - wpnts: list (비어있는지 확인)
-        - header.stamp.is_zero(): bool
-        - header.stamp.to_sec(): float
+        - header.stamp.{sec, nanosec}: builtin_interfaces/Time 필드 (ROS2)
 
-    Smart Static 플래너는 stamp 초기화만 됐으면 영구 유효.
+    Smart Static 플래너는 stamp 초기화만 됐으면 영구 유효 (sec=0 & nanosec=0 이면 미초기화).
     그 외 플래너는 (now - stamp) <= latest_threshold_sec 이어야 fresh.
     """
     if src_msg is None or len(src_msg.wpnts) == 0:
         return False
 
-    if params.is_smart_static:
-        return not src_msg.header.stamp.is_zero()
+    stamp = src_msg.header.stamp  # builtin_interfaces/Time
+    stamp_sec = stamp.sec + stamp.nanosec * 1e-9
 
-    time_diff = now_sec - src_msg.header.stamp.to_sec()
+    if params.is_smart_static:
+        return stamp.sec != 0 or stamp.nanosec != 0
+
+    time_diff = now_sec - stamp_sec
     return time_diff <= params.latest_threshold_sec

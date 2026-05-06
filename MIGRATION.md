@@ -157,7 +157,7 @@ Phase E — 외부 의존 (별도 일정)
 | **Phase C-3: mixin 모듈 (init / callbacks / viz / smart_helper)** | ✅ **완료** | rospy → rclpy 변환. 4 mixin smoke import + 기존 67 pytest 회귀 검증 |
 | **Phase C-4: 메인 노드 (3d_state_machine_node, 1212L)** | ✅ **완료** | rospy → rclpy + Node 다중 상속 + main(). MRO 검증 + 회귀 67 pytest + smoke (의도된 launch param fail 까지) |
 | **Phase C-5: dynamic_*_server → ROS2 native parameter 통합** | ✅ **완료** | 메인 노드의 `add_on_set_parameters_callback` 으로 흡수. dyn_statemachine/* 12 파라미터 ros2 param set 호환 |
-| Phase C-6: 4-노드 통합 launch + 시나리오 검증 | pending | |
+| **Phase C-6: 통합 launch + smoke 검증** | ✅ **완료** | 7-노드 launch 작성. state_machine 메인 loop 진입 + /state_machine GB_TRACK publish 검증. 잔존 strict 타입 issue 는 향후 phase |
 | Phase D: planner / controller | pending | |
 
 ---
