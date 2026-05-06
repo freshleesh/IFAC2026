@@ -124,12 +124,67 @@ class StateMachine(Node, InitMixin, VisualizationMixin, CallbackMixin):
             f"[{self.name}] Smart Static helper initialized for Fixed Frenet transitions"
         )
 
-        # 5) 메인 loop — ROS2 timer 패턴 (rospy.Rate 대체)
+        # 5) ROS2 native parameter callback — 원본의 dynamic_reconfigure 서버 대체.
+        #    dyn_statemachine/* 변경 시 self.* 동기화. ros2 param set / rqt_reconfigure 호환.
+        self.add_on_set_parameters_callback(self._on_dyn_param_change)
+
+        # 6) 메인 loop — ROS2 timer 패턴 (rospy.Rate 대체)
         self._loop_period_sec = 1.0 / self.rate_hz
         self.create_timer(self._loop_period_sec, self.loop)
         self.get_logger().info(
             f"[{self.name}] StateMachine ready, loop @ {self.rate_hz} Hz"
         )
+
+    # =========================================================================
+    # ROS2 native parameter callback (dynamic_reconfigure 대체) — C-5
+    # =========================================================================
+
+    def _on_dyn_param_change(self, params):
+        """ros2 param set / rqt_reconfigure 로 파라미터 변경 시 호출.
+
+        - dyn_statemachine/* prefix 만 처리 (self.* 동기화)
+        - 다른 prefix (dyn_sector_tuner/*, global_velplanner_3d/*) 는 무시:
+          sector tuner / vel_planner_25d 패키지 미포팅이라 호출 자체 안 일어남.
+        - 받은 params 의 value 직접 사용 (callback 은 set 전 hook — get_parameter
+          하면 옛 값. 받은 params 가 truth).
+        """
+        from rcl_interfaces.msg import SetParametersResult
+
+        for p in params:
+            n = p.name
+            v = p.value
+            if n == "dyn_statemachine/lateral_width_gb_m":
+                self.lateral_width_gb_m = float(v)
+            elif n == "dyn_statemachine/lateral_width_ot_m":
+                self.lateral_width_ot_m = float(v)
+            elif n == "dyn_statemachine/splini_ttl" and self.ot_planner == "spliner":
+                self.splini_ttl = float(v)
+                self.splini_ttl_counter = int(self.splini_ttl * self.rate_hz)
+            elif n == "dyn_statemachine/pred_splini_ttl" and self.ot_planner != "spliner":
+                self.splini_ttl = float(v)
+                self.splini_ttl_counter = int(self.splini_ttl * self.rate_hz)
+            elif n == "dyn_statemachine/splini_hyst_timer_sec":
+                self.splini_hyst_timer_sec = float(v)
+            elif n == "dyn_statemachine/emergency_break_horizon":
+                self.emergency_break_horizon = float(v)
+            elif n == "dyn_statemachine/ftg_speed_mps":
+                self.ftg_speed_mps = float(v)
+            elif n == "dyn_statemachine/ftg_timer_sec":
+                self.ftg_timer_sec = float(v)
+            elif n == "dyn_statemachine/overtaking_ttl_sec":
+                self.overtaking_ttl_sec = float(v)
+                self.overtaking_ttl_count_threshold = int(self.overtaking_ttl_sec * self.rate_hz)
+            elif n == "dyn_statemachine/ftg_active":
+                self.ftg_disabled = not bool(v)
+            elif n == "dyn_statemachine/force_GBTRACK":
+                self.force_gbtrack_state = bool(v)
+                if self.force_gbtrack_state:
+                    self.get_logger().warning(
+                        f"[{self.name}] GBTRACK state force activated!!!"
+                    )
+            elif n == "dyn_statemachine/use_force_trailing":
+                self.use_force_trailing = bool(v)
+        return SetParametersResult(successful=True)
 
     # =========================================================================
     # Properties — Smart helper / GB 좌표계 분기를 한 곳에 모아 패턴 반복 제거.
