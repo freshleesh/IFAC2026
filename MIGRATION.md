@@ -144,7 +144,8 @@ Phase E — 외부 의존 (별도 일정)
 | MIGRATION.md 작성 | ✅ 완료 | |
 | ROS2 워크스페이스 셋업 | ✅ 완료 | `~/unicorn_ws/ICRA2026_SH_ros2/` |
 | **Phase A-1: f110_msgs 포팅** | ✅ **완료** | 18 msgs, OTWpntArray 의 `time` → `builtin_interfaces/Time` 만 변경. colcon build 7s |
-| Phase A-2: f110_utils 라이브러리 (frenet_conversion 등) | pending | |
+| **Phase A-2a: frenet_conversion_msgs (srv 4개)** | ✅ **완료** | 별도 인터페이스 패키지로 분리. 4 srv 등록 + Python instantiate 검증 |
+| **Phase A-2b: frenet_conversion (Python lib + 서버)** | ✅ **완료** | Python lib (404L) ROS-free + Python service server. C++ 미포팅 (분기 부채 청산). 16/16 단위 테스트 + 4 service 런타임 검증 |
 | **Phase B-1: fake_odom_publisher 포팅** | ✅ **완료** | 108→125 라인 + 100 라인 순수 함수 분리. 13/13 단위 테스트 + ros2 런타임 20Hz 발행 검증 |
 | **Phase B-2: random_obstacle_publisher 포팅** | ✅ **완료** | 109→160 라인 + 110 라인 순수 함수. 12/12 단위 테스트 + ros2 런타임 검증 (5 sectors, ids 정확) |
 | Phase B-3+: obstacle_publisher (frenet 의존) / global_republisher | pending | obstacle_publisher 본체는 frenet_conversion 서비스에 강하게 묶여 있어 A-2 후 진행 |
@@ -284,3 +285,78 @@ if wpnts[-1].s_m <= 0.0:
     return
 ```
 이유: ros2 환경의 first-message race 방어 + IndexError 방지.
+
+---
+
+## Phase A-2 — frenet_conversion 포팅 결과 (2026-05-04)
+
+원본은 **C++ 와 Python 두 분기 구현이 공존** (README 의 "Python TODO" 가 누군가에 의해 자체 구현으로 전환된 것). 두 구현이 다음과 같이 분리:
+- **C++ lib + 서버** (`libs/frenet_conversion/src/frenet_conversion.cc` + `nodes/frenet_conversion_server/`): 다른 노드가 ROS service 로 호출
+- **Python lib** (`libs/frenet_conversion/src/frenet_converter/frenet_converter.py`): import 사용. 3D 메서드 + height filter + boundary raycast + e_psi 등 추가 기능 풍부.
+
+이번 포팅은 **Python 만 유지** (옵션 C). 분기 부채 청산 + ROS2 lib 가 단일 구현으로 통합.
+
+### A-2a — `frenet_conversion_msgs` (srv 4개)
+
+별도 인터페이스 패키지로 분리 (사용자가 lib 의존 없이 srv 만 가져갈 수 있게).
+
+| srv | Request | Response |
+|---|---|---|
+| Glob2Frenet | x, y, z | s, d, idx |
+| Glob2FrenetArr | x[], y[], z[] | s[], d[], idx[] |
+| Frenet2Glob | s, d | x, y, z |
+| Frenet2GlobArr | s[], d[] | x[], y[], z[] |
+
+빌드: `colcon build` ✅ 4.5s. `ros2 interface list` → 4 srv 등록.
+
+### A-2b — `frenet_conversion` (Python lib + Python service server)
+
+**`frenet_converter.py` (~340L 순수)**:
+- 원본 Python lib 그대로 + ROS 의존 (`_load_track_bounds` 의 `rospy.wait_for_message`) **제거**.
+- 외부 호출자 (서버 노드) 가 `set_track_bounds_from_markers(markers)` 직접 호출하도록 책임 이전.
+- `get_approx_s_3d_with_idx` 메서드 신규 추가 — service idx 응답 위해 인덱스도 함께 반환.
+- 그 외 알고리즘 (build_raceline, get_frenet_3d, height filter, boundary raycast, rotational search, perpendicular projection) 모두 원본 그대로.
+
+**`frenet_converter_server.py` (~180L)**:
+- `/global_waypoints` 구독 → FrenetConverter 빌드 (try/except 가드 — invalid 메시지에 노드가 죽지 않게).
+- `/trackbounds/markers` 구독 → set_track_bounds_from_markers (원본 C++ 서버에는 없는, Python lib 의 기능).
+- 4 service 제공 (Glob2Frenet[Arr], Frenet2Glob[Arr]). PerceptionOnly=true 면 `_perception` 접미사.
+
+### 검증
+
+- `colcon build --packages-select frenet_conversion` ✅ 0.8s
+- `pytest test/test_frenet_converter.py` ✅ 16/16 (build_raceline 직선/3D 슬로프, get_cartesian, frenet round-trip, get_approx_s 2D/3D, set_track_bounds, e_psi 등)
+- `ros2 service list` → 4 service 등록 (`/convert_frenet2glob_service`, `/convert_glob2frenet_service`, `/convert_frenet2globarr_service`, `/convert_glob2frenetarr_service`)
+- 직선 트랙 (10 wpnts, x=0..9) 발행 후 service call 결과 (모두 정확):
+  - `Frenet2Glob(s=5.0, d=0.5)` → `(x=5.0, y=0.5, z=0.0)` ✓
+  - `Glob2Frenet(x=3.0, y=0.5, z=0)` → `(s=3.0, d=0.5, idx=3)` ✓
+  - `Frenet2GlobArr([(1,0),(5,0.5),(8,-0.3)])` → `[(1,0),(5,0.5),(8,-0.3)]` ✓
+  - `Glob2FrenetArr([(2,0,0),(5,0.3,0)])` → `s=[2,5], d=[0,0.3], idx=[2,5]` ✓
+- PerceptionOnly=true → service 이름에 `_perception` 접미사 적용 ✓
+
+### 신규 ROS2 패턴 (이후 재사용)
+
+| 카테고리 | ROS1 | ROS2 |
+|---|---|---|
+| Service 제공 | `nh.advertiseService(name, &Class::Cb, this)` | `self.create_service(SrvType, name, self._cb)` |
+| Service callback 시그니처 | `bool Cb(SrvType::Request &req, SrvType::Response &res)` | `def _cb(self, request, response):` (response 갱신 후 return response) |
+| Service 클라이언트 호출 | `rospy.ServiceProxy(name, SrvType)(req)` | `self.create_client(SrvType, name)` + `call_async(req)` (별도 Phase 시 사용) |
+| 인터페이스 패키지 분리 | `add_service_files` + `generate_messages` 같은 패키지 | 권장: `_msgs` / `_interfaces` 별도 패키지 (rosidl_default_generators) |
+
+### 부수 가드 (포팅 시 추가)
+
+`_on_global_traj` 에 try/except — `CubicSpline` 이 strictly-increasing 위반으로 throw 시 노드가 죽지 않게:
+
+```python
+try:
+    converter = FrenetConverter(x, y, z)
+except (ValueError, IndexError) as e:
+    self.get_logger().warn(f"... ignoring this msg")
+    return
+```
+
+이유: ros2 topic pub default-empty 메시지가 wpnts 5개 이상 가지고 있어도 모든 s_m=0 일 수 있고, scipy CubicSpline 이 `x must be strictly increasing` 으로 ValueError 발생.
+
+### 실행 환경 잔재 (운영 시 주의)
+
+호스트의 `~/catkin_ws/devel/.../frenet_conversion_server_node` (ROS1 노드) 가 4개 살아있는 것을 발견. 사용자의 다른 ROS1 작업 잔재로 보이며 우리 ROS2 검증과는 별개 (DDS / ROS_DOMAIN 격리). 죽이지 않고 그대로 두었음.
