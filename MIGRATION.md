@@ -148,6 +148,7 @@ Phase E — 외부 의존 (별도 일정)
 | **Phase A-2b: frenet_conversion (Python lib + 서버)** | ✅ **완료** | Python lib (404L) ROS-free + Python service server. C++ 미포팅 (분기 부채 청산). 16/16 단위 테스트 + 4 service 런타임 검증 |
 | **Phase B-1: fake_odom_publisher 포팅** | ✅ **완료** | 108→125 라인 + 100 라인 순수 함수 분리. 13/13 단위 테스트 + ros2 런타임 20Hz 발행 검증 |
 | **Phase B-2: random_obstacle_publisher 포팅** | ✅ **완료** | 109→160 라인 + 110 라인 순수 함수. 12/12 단위 테스트 + ros2 런타임 검증 (5 sectors, ids 정확) |
+| **Phase B-5: frenet_odom_republisher 포팅** | ✅ **완료** | 240L C++ → Python (160L 노드 + 20L 헬퍼). frenet_conversion lib 의 get_frenet_odometry 메서드 신규 추가. 6/6 + 3/3 단위 테스트 + ros2 런타임 검증 |
 | Phase B-3+: obstacle_publisher (frenet 의존) / global_republisher | pending | obstacle_publisher 본체는 frenet_conversion 서비스에 강하게 묶여 있어 A-2 후 진행 |
 | Phase C: state_machine | pending | 우리 핵심 작업 |
 | Phase D: planner / controller | pending | |
@@ -360,3 +361,74 @@ except (ValueError, IndexError) as e:
 ### 실행 환경 잔재 (운영 시 주의)
 
 호스트의 `~/catkin_ws/devel/.../frenet_conversion_server_node` (ROS1 노드) 가 4개 살아있는 것을 발견. 사용자의 다른 ROS1 작업 잔재로 보이며 우리 ROS2 검증과는 별개 (DDS / ROS_DOMAIN 격리). 죽이지 않고 그대로 두었음.
+
+---
+
+## Phase B-5 — frenet_odom_republisher 포팅 결과 (2026-05-04)
+
+원본: `ICRA2026_HJ/f110_utils/nodes/frenet_odom_republisher` (C++, 240L).
+포팅: `ICRA2026_SH_ros2/src/frenet_odom_republisher/` (Python).
+
+C++ 원본은 `frenet_conversion::FrenetConverter` C++ lib 를 link 하는데, 우리는
+Phase A-2 에서 C++ lib 미포팅 결정 → **Python 으로 재작성** + 우리 frenet_conversion
+Python lib 를 import 사용.
+
+### 신규 추가 (frenet_conversion lib 에)
+
+원본 C++ 의 `FrenetConverter::GetFrenetOdometry(x, y, z, yaw, vx_body, vy_body, ...)`
+한 함수가 **변환 + idx + frenet velocity** 까지 한 번에 계산. Python lib 에는
+이 메서드가 없었음 — A-2b 에 메서드 신규 추가:
+
+```python
+def get_frenet_odometry(self, x, y, z, yaw, vx_body, vy_body):
+    s_arr, idx_arr = self.get_approx_s_3d_with_idx(...)
+    s, d = self.get_frenet_coord(...)
+    psi_track = self.waypoints_psi[idx_arr[0]]
+    delta_psi = yaw - psi_track
+    vs = vx_body * cos(delta_psi) - vy_body * sin(delta_psi)
+    vd = vx_body * sin(delta_psi) + vy_body * cos(delta_psi)
+    return s, d, vs, vd, idx
+```
+
+원본 C++ 의 `CalcFrenetVelocity` 공식을 그대로 옮김 (`R(yaw - psi_track) * (vx_body, vy_body)`).
+주의: 원본은 wpnt.psi_rad 필드 (사용자가 별도 제공) 를 사용했으나, 우리 Python lib 는 받지 않음
+→ spline derivative 에서 자동 계산한 `waypoints_psi` 사용 (실용상 동일).
+
+### 노드 구조
+
+| 부분 | 라인 | 책임 |
+|---|---|---|
+| `transforms.py` | 20 | `quaternion_to_yaw` 순수 함수 (원본의 tf::Quaternion + getRPY 대체) |
+| `frenet_odom_republisher.py` | 160 | Node — sub 4개 + pub 2개 + odom 변환 |
+
+토픽 매핑 (원본 launch remap 그대로):
+| sub | / pub | 토픽 |
+|---|---|---|
+| sub | `/odom` (Odometry, launch remap → `/car_state/odom`) |
+| sub | `/global_waypoints` (WpntArray) → GB FrenetConverter 빌드 |
+| sub | `/planner/avoidance/smart_static_otwpnts` (OTWpntArray) → Fixed FrenetConverter 빌드 |
+| sub | `/trackbounds/markers` (MarkerArray, 한 번만) → 두 converter 에 set_track_bounds |
+| pub | `/odom_frenet` → `/car_state/odom_frenet` (GB frame) |
+| pub | `/odom_frenet_fixed` → `/car_state/odom_frenet_fixed` (Smart Static frame) |
+
+### 미포팅 (의도)
+
+- **Interactive marker "Force Full Search" 버튼** — ROS2 interactive_markers 가 별도 패키지 의존 + 부수 디버깅 기능. 보류 (필요 시 향후 ros2 service 또는 cli 로 재구현).
+- **C++ FrenetConverter::ForceFullSearch** — 위와 짝. 우리 Python lib 의 `get_approx_s_3d` 는 매 호출마다 search 하므로 first-call full search 개념 자체가 없음 (성능 차이 있을 수 있으나 실용상 OK).
+
+### 검증
+
+- `colcon build --packages-select frenet_odom_republisher` ✅ 0.8s
+- `pytest test/test_transforms.py` ✅ 6/6 (quaternion_to_yaw)
+- `pytest test/test_frenet_converter.py` ✅ **19/19** (16 + 신규 3 — `get_frenet_odometry` aligned / perpendicular yaw / lateral offset)
+- ros2 run + fake `/global_waypoints` (10 wpnts, x=0..9) + fake `/odom` (pos=(3,0.5,0), yaw=0, vx=2.0):
+  - `/odom_frenet` 출력: position.x=s=**3.0**, position.y=d=**0.5**, twist.linear.x=vs=**2.0**, twist.linear.y=vd=**0.0**, child_frame_id=**'3'** ✓
+  - topic hz: 5.0 Hz (odom 입력 그대로), std 0.25ms
+
+### 신규 ROS2 패턴
+
+| 카테고리 | ROS1 (C++) | ROS2 (Python) |
+|---|---|---|
+| `tf::Quaternion` + `getRPY` | tf 패키지 의존 | 직접 atan2 계산 (transforms.py) |
+| Launch `<remap from="/odom" to="/car_state/odom"/>` | xml | `Node(remappings=[('/odom', '/car_state/odom')])` |
+| 한 번 받고 unsub (`trackbounds_sub_.shutdown()`) | C++ Subscriber.shutdown | Python flag (`if self._has_track_bounds: return`) — destroy_subscription 도 가능하나 단순화 |

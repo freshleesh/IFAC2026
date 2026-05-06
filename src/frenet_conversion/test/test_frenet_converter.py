@@ -186,3 +186,36 @@ def test_e_psi_pi_over_2_when_perpendicular(straight_track):
     """직선 트랙 위에서 yaw=π/2 → e_psi=π/2."""
     e_psi = straight_track.get_e_psi(5.0, 0.0, np.pi / 2.0)
     assert e_psi == pytest.approx(np.pi / 2.0, abs=1e-3)
+
+
+# ---------- get_frenet_odometry ----------
+
+def test_get_frenet_odometry_aligned(straight_track):
+    """직선 트랙 + yaw=0 + body vx → frenet vs=vx, vd=0."""
+    s, d, vs, vd, idx = straight_track.get_frenet_odometry(
+        x=3.0, y=0.0, z=0.0, yaw=0.0, vx_body=2.5, vy_body=0.0
+    )
+    assert s == pytest.approx(3.0, abs=1e-3)
+    assert d == pytest.approx(0.0, abs=1e-3)
+    assert vs == pytest.approx(2.5, abs=1e-6)
+    assert vd == pytest.approx(0.0, abs=1e-6)
+    assert idx == 3
+
+
+def test_get_frenet_odometry_perpendicular_yaw(straight_track):
+    """직선 트랙 + yaw=π/2 (90도 회전) + body vx=2 → frenet vs=0, vd=2 (body 가 +d 방향 진행)."""
+    s, d, vs, vd, _ = straight_track.get_frenet_odometry(
+        x=5.0, y=0.0, z=0.0, yaw=np.pi / 2.0, vx_body=2.0, vy_body=0.0
+    )
+    assert vs == pytest.approx(0.0, abs=1e-6)
+    assert vd == pytest.approx(2.0, abs=1e-6)
+
+
+def test_get_frenet_odometry_lateral_offset(straight_track):
+    """직선 트랙에서 d=0.5 위치, yaw=0, body vy=1 → frenet vs=0, vd=1 (body lateral = +d)."""
+    s, d, vs, vd, _ = straight_track.get_frenet_odometry(
+        x=5.0, y=0.5, z=0.0, yaw=0.0, vx_body=0.0, vy_body=1.0
+    )
+    assert d == pytest.approx(0.5, abs=1e-3)
+    assert vs == pytest.approx(0.0, abs=1e-6)
+    assert vd == pytest.approx(1.0, abs=1e-6)

@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>frenet_odom_republisher</name>
+  <version>0.1.0</version>
+  <description>
+    /odom (cartesian) 을 frenet 좌표로 변환해 /odom_frenet 로 republish.
+    GB raceline (/global_waypoints) 과 Smart Static fixed path
+    (/planner/avoidance/smart_static_otwpnts) 두 frame 동시 지원.
+    원본 ROS1 (C++): f110_utils/nodes/frenet_odom_republisher.
+    SH ROS2 Jazzy 포팅 — Python (frenet_conversion lib import).
+  </description>
+
+  <maintainer email="freshleesh@gmail.com">SH</maintainer>
+  <license>Apache-2.0</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>visualization_msgs</exec_depend>
+  <exec_depend>f110_msgs</exec_depend>
+  <exec_depend>frenet_conversion</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

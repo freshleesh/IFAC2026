@@ -348,6 +348,40 @@ class FrenetConverter:
         y += d * np.sin(psi + np.pi / 2)
         return np.array([x, y, z])
 
+    # ---------- 한 번에 odom 변환 (frenet_odom_republisher 용) ----------
+
+    def get_frenet_odometry(
+        self,
+        x: float,
+        y: float,
+        z: float,
+        yaw: float,
+        vx_body: float,
+        vy_body: float,
+    ) -> Tuple[float, float, float, float, int]:
+        """
+        body frame (vx, vy) + yaw 를 frenet (s, d, vs, vd, idx) 로 한 번에 변환.
+
+        원본 C++ FrenetConverter::GetFrenetOdometry 와 동일 공식:
+            delta_psi = yaw - psi_track
+            vs = vx * cos(delta_psi) - vy * sin(delta_psi)
+            vd = vx * sin(delta_psi) + vy * cos(delta_psi)
+
+        psi_track 는 spline derivative 에서 계산된 self.waypoints_psi[idx] 사용.
+        (원본은 wpnt.psi_rad 필드 사용 — 사용자가 별도 제공한 트랙 tangent. 이번 포팅
+        에서는 wpnt.psi_rad 를 받지 않으므로 spline 에서 자동 계산한 값 사용 — 실용상 동일.)
+        """
+        s_arr, idx_arr = self.get_approx_s_3d_with_idx(
+            np.array([x]), np.array([y]), np.array([z])
+        )
+        s_out, d_out = self.get_frenet_coord(np.array([x]), np.array([y]), s_arr)
+        idx = int(idx_arr[0])
+        psi_track = float(self.waypoints_psi[idx])
+        delta_psi = yaw - psi_track
+        vs = vx_body * np.cos(delta_psi) - vy_body * np.sin(delta_psi)
+        vd = vx_body * np.sin(delta_psi) + vy_body * np.cos(delta_psi)
+        return float(s_out[0]), float(d_out[0]), float(vs), float(vd), idx
+
     # ---------- 헤딩 오차 ----------
 
     def get_e_psi(self, x: float, y: float, yaw: float) -> float:
