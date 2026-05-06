@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>global_republisher</name>
+  <version>0.1.0</version>
+  <description>
+    매핑 phase 에서 생성된 global_waypoints.json 을 로드해 0.5 Hz 로
+    트랙 관련 토픽 (global_waypoints / shortest_path / centerline /
+    trackbounds 등) 을 sticky 발행. state_machine, planner, frenet 변환의
+    공통 의존.
+    원본 ROS1: planner/gb_optimizer/src/global_trajectory_publisher.py.
+    SH ROS2 Jazzy 포팅 — write 기능은 mapping phase 라 미포팅.
+  </description>
+
+  <maintainer email="freshleesh@gmail.com">SH</maintainer>
+  <license>Apache-2.0</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>visualization_msgs</exec_depend>
+  <exec_depend>f110_msgs</exec_depend>
+  <exec_depend>rosidl_runtime_py</exec_depend>
+
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

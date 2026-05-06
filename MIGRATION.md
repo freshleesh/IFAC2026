@@ -149,6 +149,7 @@ Phase E — 외부 의존 (별도 일정)
 | **Phase B-1: fake_odom_publisher 포팅** | ✅ **완료** | 108→125 라인 + 100 라인 순수 함수 분리. 13/13 단위 테스트 + ros2 런타임 20Hz 발행 검증 |
 | **Phase B-2: random_obstacle_publisher 포팅** | ✅ **완료** | 109→160 라인 + 110 라인 순수 함수. 12/12 단위 테스트 + ros2 런타임 검증 (5 sectors, ids 정확) |
 | **Phase B-5: frenet_odom_republisher 포팅** | ✅ **완료** | 240L C++ → Python (160L 노드 + 20L 헬퍼). frenet_conversion lib 의 get_frenet_odometry 메서드 신규 추가. 6/6 + 3/3 단위 테스트 + ros2 런타임 검증 |
+| **Phase B-6: global_republisher 포팅** | ✅ **완료** | 173L Python → 220L (lib 분리 80L + 노드 240L). ROS1 → ROS2 dict↔msg 변환 + legacy 필드 cleanup (seq/secs/nsecs). 7/7 단위 테스트 + ROS1 실제 JSON (gazebo_wall_2) 로드 + 12 토픽 0.5Hz 발행 검증 |
 | Phase B-3+: obstacle_publisher (frenet 의존) / global_republisher | pending | obstacle_publisher 본체는 frenet_conversion 서비스에 강하게 묶여 있어 A-2 후 진행 |
 | Phase C: state_machine | pending | 우리 핵심 작업 |
 | Phase D: planner / controller | pending | |
@@ -432,3 +433,70 @@ def get_frenet_odometry(self, x, y, z, yaw, vx_body, vy_body):
 | `tf::Quaternion` + `getRPY` | tf 패키지 의존 | 직접 atan2 계산 (transforms.py) |
 | Launch `<remap from="/odom" to="/car_state/odom"/>` | xml | `Node(remappings=[('/odom', '/car_state/odom')])` |
 | 한 번 받고 unsub (`trackbounds_sub_.shutdown()`) | C++ Subscriber.shutdown | Python flag (`if self._has_track_bounds: return`) — destroy_subscription 도 가능하나 단순화 |
+
+---
+
+## Phase B-6 — global_republisher 포팅 결과 (2026-05-04)
+
+원본 ROS1: `planner/gb_optimizer/src/global_trajectory_publisher.py` (173L) +
+`readwrite_global_waypoints.py` (149L). 노드 이름이 `global_republisher` 인데
+패키지명 / 파일명은 `gb_optimizer/global_trajectory_publisher` 라 처음에 못 찾음.
+포팅: `ICRA2026_SH_ros2/src/global_republisher/`.
+
+### 책임
+
+매핑 phase 에서 만든 `<map>/global_waypoints.json` 을 한 번 로드한 뒤, 0.5 Hz 로
+**12개 트랙 관련 토픽** sticky 발행 + **`track_length` 파라미터 set**:
+
+| 토픽 | 메시지 |
+|---|---|
+| `/global_waypoints` | WpntArray |
+| `/global_waypoints/markers` | MarkerArray |
+| `/global_waypoints/shortest_path` + `/markers` | WpntArray + MarkerArray |
+| `/centerline_waypoints` + `/markers` | WpntArray + MarkerArray |
+| `/trackbounds/markers` | MarkerArray |
+| `/map_infos`, `/estimated_lap_time` | String, Float32 |
+| `/lattice_viz`, `/global_waypoints/vel_markers` | MarkerArray (옵셔널) |
+| `/global_waypoints/vel_markers_tuned` | 매 tick 새로 빌드 (vx_mps 기반) |
+
+자기가 발행하는 토픽도 sub → 외부 노드 (vel_planner 등) 가 같은 토픽 발행하면 그것을 대신 republish.
+
+### 미포팅 (의도)
+
+- **`write_global_waypoints`** — 매핑 phase 책임. 검증 / state_machine 진입에 불필요.
+- **`stack_master/maps/<name>/global_waypoints.json` 자동 경로 탐색** — `stack_master` 미포팅이라 `rospkg.RosPack().get_path("stack_master")` 사용 불가. 대안: 파라미터 `map_path` (절대경로) 또는 `map` (이름) → fallback `~/unicorn_ws/ICRA2026_HJ/stack_master/maps/<map>/global_waypoints.json` (B-1 패턴).
+
+### **ROS1 → ROS2 호환성 발견 — JSON legacy 필드 (다른 phase 도 영향 가능)**
+
+원본은 `rospy_message_converter` 사용. ROS2 native `rosidl_runtime_py.set_message_fields`
+로 대체했더니 **JSON 안의 ROS1 필드 두 가지가 ROS2 에서 fail**:
+
+| ROS1 필드 | ROS2 |
+|---|---|
+| `std_msgs/Header.seq` | **제거됨** |
+| `time.secs`, `time.nsecs` | **`builtin_interfaces/Time.sec`, `nanosec` 으로 이름 변경** |
+
+해결: `_strip_legacy_fields` 재귀 함수로 dict 사전 정리:
+```python
+_LEGACY_FIELDS_TO_STRIP = {"seq"}
+_LEGACY_FIELDS_TO_RENAME = {"secs": "sec", "nsecs": "nanosec"}
+```
+
+이게 **ROS1 → ROS2 마이그레이션의 일반적 함정**. 직렬화된 ROS1 데이터 (rosbag, JSON, YAML 등) 를 ROS2 에서 로드할 땐 같은 cleanup 필요.
+
+### 신규 ROS2 패턴
+
+| 카테고리 | ROS1 | ROS2 |
+|---|---|---|
+| dict ↔ msg 변환 | `rospy_message_converter.message_converter` | `rosidl_runtime_py.set_message_fields` (ROS2 native) |
+| 패키지 경로 찾기 | `rospkg.RosPack().get_path("pkg")` | `ament_index_python.packages.get_package_share_directory("pkg")` |
+| 동적 parameter set | `rospy.set_param("name", value)` | `declare_parameter` (이번엔 startup 만이라 declare 로 충분) |
+
+### 검증
+
+- `colcon build --packages-select global_republisher` ✅ 0.8s
+- `pytest test/test_readwrite.py` ✅ **7/7** (file_not_found, minimum dict, centerline, track_length, optional vel_markers missing/present, **실제 ROS1 JSON gazebo_wall_2 로드**)
+- ros2 run + 실제 ROS1 JSON (`gazebo_wall_2`) 로드 → `track_length=85.64m`, 12 토픽 발행
+- `/global_waypoints` topic hz: **0.500 Hz**, std 0.18ms ✓
+- `ros2 param get /global_republisher track_length` → `85.6356869406511` ✓
+- 첫 wpnt 의 모든 3D 필드 (s_m, x_m, y_m, **z_m**, **mu_rad**, kappa_radpm, vx_mps) 정상
