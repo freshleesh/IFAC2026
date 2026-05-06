@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>fake_odom_publisher</name>
+  <version>0.1.0</version>
+  <description>
+    3D 트랙 검증용 가짜 odometry publisher. global_waypoints.json 의 raceline 을 따라
+    레이스카가 주행하는 상황을 시뮬레이션 (실제 하드웨어 없이 frenet/state_machine 동작 확인용).
+    SH ROS2 Jazzy 포팅 (원본: stack_master/scripts/fake_odom_publisher.py — HJ).
+  </description>
+
+  <maintainer email="freshleesh@gmail.com">SH</maintainer>
+  <license>MIT</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

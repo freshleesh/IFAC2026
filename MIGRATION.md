@@ -145,7 +145,8 @@ Phase E — 외부 의존 (별도 일정)
 | ROS2 워크스페이스 셋업 | ✅ 완료 | `~/unicorn_ws/ICRA2026_SH_ros2/` |
 | **Phase A-1: f110_msgs 포팅** | ✅ **완료** | 18 msgs, OTWpntArray 의 `time` → `builtin_interfaces/Time` 만 변경. colcon build 7s |
 | Phase A-2: f110_utils 라이브러리 (frenet_conversion 등) | pending | |
-| Phase B: 단순 노드 (obstacle_publisher / fake_odom_publisher 등) | ⏳ 진행 중 | 첫 노드 포팅으로 패턴 확립 |
+| **Phase B-1: fake_odom_publisher 포팅** | ✅ **완료** | 108→125 라인 + 100 라인 순수 함수 분리. 13/13 단위 테스트 + ros2 런타임 20Hz 발행 검증 |
+| Phase B-2+: obstacle_publisher / global_republisher 등 | pending | |
 | Phase C: state_machine | pending | 우리 핵심 작업 |
 | Phase D: planner / controller | pending | |
 
@@ -166,3 +167,49 @@ Phase E — 외부 의존 (별도 일정)
 
 ### 발견 사항
 - 호스트의 다른 ws (`~/creating_autonomous_car_ws/`) 에 같은 이름 `f110_msgs` 존재 → colcon override 경고. 우리 새 ws의 install 이 우선 (overlay). 동작 영향 없음.
+
+---
+
+## Phase B-1 — fake_odom_publisher 포팅 결과 (2026-05-04)
+
+원본: `ICRA2026_HJ/stack_master/scripts/fake_odom_publisher.py` (108 라인, HJ 작성).
+포팅: `ICRA2026_SH_ros2/src/fake_odom_publisher/` (ament_python 패키지).
+
+### 변환 매핑 (검증된 패턴)
+
+| ROS1 (rospy) | ROS2 (rclpy) |
+|---|---|
+| `rospy.init_node("name", anonymous=True)` | `class Node(...): super().__init__("name")` |
+| `rospy.get_param("~map", default)` | `declare_parameter("map", default)` + `get_parameter("map").get_parameter_value().string_value` |
+| `rospy.Publisher(topic, MsgType, queue_size=10)` | `self.create_publisher(MsgType, topic, 10)` |
+| `rospy.Rate(50)` + `while not rospy.is_shutdown(): ... rate.sleep()` | `self.create_timer(1.0/50, self._tick)` + `rclpy.spin(node)` |
+| `rospy.Time.now()` | `self.get_clock().now().to_msg()` |
+| `tf.transformations.quaternion_from_euler(0,0,psi)` | `tf_transformations` 외부 의존 회피 — 직접 sin/cos 으로 yaw quaternion 계산 (`raceline.yaw_to_quaternion`) |
+| `rospy.loginfo(...)` | `self.get_logger().info(...)` |
+| `if __name__ == "__main__": Node()` | `def main(args=None): rclpy.init(args=args); rclpy.spin(node); rclpy.shutdown()` |
+| `package.xml` format=2 + `CMakeLists.txt` (catkin) | `package.xml` format=3 + `setup.py` + `setup.cfg` + `resource/<pkg>` (ament_python) |
+
+### 구조 개선 (포팅 + 동시 진행)
+
+원본 ROS1 노드는 모든 수치 로직이 `__init__` + `run()` 안에 묶여 있어 단위 테스트 불가능.
+포팅하면서 **순수 함수만 분리**:
+
+- `raceline.py` — `Waypoint` / `Pose3D` dataclass + `find_segment_index`,
+  `interpolate_pose`, `yaw_to_quaternion`, `waypoints_from_dicts` (ROS 의존 0)
+- `fake_odom_publisher.py` — Node 클래스 (파라미터 / 발행자 / 타이머만)
+- `test/test_raceline.py` — pytest 13개 (보간, slope vz, quaternion norm 검증)
+
+### 검증
+
+- `colcon build --packages-select fake_odom_publisher` ✅ 0.8s
+- `pytest test/test_raceline.py` ✅ 13/13 pass
+- `ros2 run fake_odom_publisher fake_odom_publisher --ros-args -p rate:=20.0` 기동
+  → `ros2 topic hz /glim_ros/base_odom` 결과 **20.001 Hz, std 0.1ms** (window=30)
+  → `ros2 topic echo --once` 으로 position xyz / orientation quaternion / twist vx,vz 정상
+
+### 부수 발견
+
+- 호스트 환경의 `~/.cyclonedds.xml` 이 192.168.70.x (차량 네트워크) hard-bind →
+  현재 머신 (192.168.50.x) 에서 노드 기동 시 `does not match an available interface` 에러.
+  **해결**: `unset CYCLONEDDS_URI` (검증 셸 한정) → cyclone 자동 인터페이스 선택. 사용자 시스템 설정 미수정.
+- 원본의 `map` 기본값 `gazebo_wall_3d_rc_car_10th_timeoptimal` 은 디렉터리명이 아니라 csv 파일명 → 디렉터리는 `gazebo_wall_2`. 포팅 노드 기본값을 `gazebo_wall_2` 로 수정 (호환성: `--ros-args -p map:=...` 로 override 가능).
