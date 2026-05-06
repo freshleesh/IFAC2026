@@ -1,0 +1,39 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>state_machine</name>
+  <version>0.1.0</version>
+  <description>
+    F1TENTH 자율주행 행동 FSM. GB raceline / Smart Static fixed path 두
+    Frenet frame 동시 지원. ICRA2026_HJ 의 3d_state_machine_node.py
+    (1212L 메인 + helper 모듈) 의 ROS2 Jazzy 포팅.
+
+    SH 가 ROS1 단계에서 분리한 순수 모듈 (path_checker, state_transitions,
+    states, states_types) + helper mixin + 단위 테스트 자산을 그대로 활용.
+
+    포팅 단계 (C-2..C-6):
+      C-2: 순수 모듈 + 67 pytest (rospy → logging)
+      C-3: mixin 모듈 + helper (rospy → rclpy)
+      C-4: 메인 노드 (3d_state_machine_node)
+      C-5: dynamic_*_server 2 개를 ROS2 native parameter 로 통합
+      C-6: 통합 검증 (4-노드 launch + state 전이 시나리오)
+  </description>
+
+  <maintainer email="freshleesh@gmail.com">SH</maintainer>
+  <license>Apache-2.0</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>visualization_msgs</exec_depend>
+  <exec_depend>f110_msgs</exec_depend>
+  <exec_depend>frenet_conversion_msgs</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

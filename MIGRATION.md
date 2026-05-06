@@ -152,7 +152,12 @@ Phase E — 외부 의존 (별도 일정)
 | **Phase B-6: global_republisher 포팅** | ✅ **완료** | 173L Python → 220L (lib 분리 80L + 노드 240L). ROS1 → ROS2 dict↔msg 변환 + legacy 필드 cleanup (seq/secs/nsecs). 7/7 단위 테스트 + ROS1 실제 JSON (gazebo_wall_2) 로드 + 12 토픽 0.5Hz 발행 검증 |
 | **Phase B-3: obstacle_publisher 포팅** | ✅ **완료** | 252L Python (frenet service client) → 250L 노드 + 40L 순수. ROS2 service client 패턴 (wait_for_message + spin_until_future_complete + call_async + done_callback) 확립. 12/12 단위 테스트 + 3-노드 통합 검증 (global_republisher + frenet_server + obstacle_publisher) → /tracking/obstacles 50Hz 정확 |
 | Phase B-3+: obstacle_publisher (frenet 의존) / global_republisher | pending | obstacle_publisher 본체는 frenet_conversion 서비스에 강하게 묶여 있어 A-2 후 진행 |
-| Phase C: state_machine | pending | 우리 핵심 작업 |
+| **Phase C-1: state_machine 분석** | ✅ **완료** | 3500L 포팅 대상 식별 + sub-phase 분할 (C-2..C-6) |
+| **Phase C-2: 순수 모듈 + 67 pytest** | ✅ **완료** | path_checker / state_transitions / states / states_types / waypoint_data 옮김 (rospy → logging). 67/67 pass |
+| Phase C-3: mixin 모듈 (init / callbacks / viz / smart_helper) | pending | rospy → rclpy 본격 |
+| Phase C-4: 메인 노드 (3d_state_machine_node) | pending | |
+| Phase C-5: dynamic_*_server → ROS2 native parameter 통합 | pending | |
+| Phase C-6: 4-노드 통합 launch + 시나리오 검증 | pending | |
 | Phase D: planner / controller | pending | |
 
 ---
@@ -584,3 +589,74 @@ def _on_done(self, future):
 ### 부수 이슈 (별도 phase 로 fix 예정)
 
 A-2b 의 `frenet_conversion_server` 가 `/global_waypoints` 가 0.5Hz 로 갱신될 때마다 새 `FrenetConverter` 인스턴스 만들면서 **track bounds 를 매번 다시 set** ("Track bounds loaded: 857 left, 857 right" 로그 반복). `_on_global_traj` 가 새 converter 빌드 시 기존 trackbounds 도 같이 옮기도록 수정 필요. **B-3 와는 별개**, 다음 작업으로 처리.
+
+→ **fix 완료** (commit `901cf7a`): `_on_global_traj` 가 새 converter 만들 때 기존 trackbounds 옮김. 12초 검증에서 "Track bounds loaded" 로그 1회만.
+
+---
+
+## Phase C-2 — state_machine 순수 모듈 포팅 결과 (2026-05-04)
+
+state_machine 의 sub-phase 첫 단계. SH 가 ROS1 단계에서 분리해 둔 순수 모듈을
+ROS2 ws 로 옮기고 67 pytest 통과 확인. 메인 노드 (1212L) 와 mixin 모듈은 C-3..C-6.
+
+### 포팅 대상 (state_machine 패키지의 lib 부분)
+
+| 파일 | ROS2 (state_machine/) | 변경 |
+|---|---|---|
+| `states_types.py` (12L) | 그대로 | enum 만 |
+| `states.py` (59L) | TYPE_CHECKING import 만 패키지 경로 | f110_msgs.msg.Wpnt 만 |
+| `path_checker.py` (367L) | rospy.loginfo/logwarn → logging 표준 | _logger 한 인스턴스로 통일 |
+| `state_transitions.py` (490L) | 동일 + 패키지 내부 import | sed 자동 변환 |
+| `waypoint_data.py` (134L) | dynamic_reconfigure 제거 + ROS2 attach_to_node 패턴 stub (C-3 에서 채움) | for_test 그대로 유지 |
+
+### **신규 패턴 — 모듈 레벨 logging** (이후 ROS-free lib 모듈에 재사용)
+
+원본 ROS1 의 `rospy.loginfo/logwarn` 을 표준 Python `logging` 으로 대체:
+```python
+import logging
+_logger = logging.getLogger(__name__)
+...
+_logger.info("...")
+_logger.warning("...")
+```
+
+ROS2 launch 환경에서도 정상 작동 (`rclpy` 가 standard logging 으로 통합). 테스트에서는
+mock 불필요 — sys.modules 조작 (원본 conftest 의 `setdefault("rospy", MagicMock())`)
+도 전부 제거.
+
+### conftest 단순화
+
+원본 ROS1 conftest:
+```python
+sys.modules.setdefault("rospy", MagicMock())
+sys.modules.setdefault("dynamic_reconfigure", MagicMock())
+sys.modules.setdefault("dynamic_reconfigure.msg", MagicMock())
+_SRC_DIR = ".../state_machine/src"
+sys.path.insert(0, _SRC_DIR)
+```
+
+ROS2 conftest:
+```python
+# rospy/dynamic_reconfigure mock 불필요
+# state_machine 패키지가 ament_python install 되므로 from state_machine.x 직접 import
+_TEST_DIR = os.path.abspath(os.path.dirname(__file__))
+sys.path.insert(0, _TEST_DIR)  # fake_msgs 만 위해 test 디렉터리 추가
+```
+
+### 검증
+
+- `colcon build --packages-select state_machine` ✅ 0.8s
+- `pytest test/` ✅ **67/67** (path_checker 40 + state_transitions 27)
+- 단 1개 fail 후 fix: `for_test` 가 ROS2 에서 `dyn_sub` 필드 제거했는데 테스트가 검사 → legacy 호환 위해 `obj.dyn_sub = None` 1줄 유지
+
+### waypoint_data 의 ROS2 wiring (C-3 에서 작업)
+
+`__init__` 에 `node` 파라미터 추가 (옵셔널). `attach_to_node(node)` 메서드는 stub —
+C-3 에서 다음 패턴으로 채움:
+```python
+def attach_to_node(self, node):
+    for name, default in self._param_defaults().items():
+        node.declare_parameter(f"{self.name}/{name}", default)
+        setattr(self, name, node.get_parameter(f"{self.name}/{name}").value)
+    node.add_on_set_parameters_callback(self._on_param_change)
+```
