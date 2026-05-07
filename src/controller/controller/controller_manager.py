@@ -775,14 +775,11 @@ class Controller_manager(Node):
                                                                                                                     self.acc_now,
                                                                                                                     self.track_length)
                 
-        # ROS2 strict 타입: viz markers 의 numpy.float64 → C-level abort (SIGABRT 라
-        # try/except 무력화). 진짜 fix (모든 numeric float() cast) 는 D-1d 별도 phase.
-        # 우선 viz 비활성 — ackermann 발행 보호.
-        # self.set_lookahead_marker(L1_point, 100)
-        # self.visualize_steering(steering_angle)
-        # self.visualize_trailing_opponent()
-
-        # self.viz_future_position(future_position, 200)  # TODO D-1d: numeric cast
+        # D-1d: viz 재활성 (모든 numeric 필드 float() cast 명시 후 — D-1c 에서 작업)
+        self.set_lookahead_marker(L1_point, 100)
+        self.visualize_steering(steering_angle)
+        self.visualize_trailing_opponent()
+        self.viz_future_position(future_position, 200)
 
         self.curvature_waypoints = curvature_waypoints
         # ROS2 strict 타입: Point.x/y/z 는 float64. int / numpy 모두 float() cast.

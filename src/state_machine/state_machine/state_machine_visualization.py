@@ -53,6 +53,7 @@ class VisualizationMixin:
         loc_wpnts.header.frame_id = "map"
         self.loc_wpnt_pub.publish(loc_wpnts)
 
+        # D-1d: marker viz 재활성 (모든 numeric 에 float() cast 명시)
         # 1) 이전 sphere markers 모두 삭제
         del_mrks = MarkerArray()
         del_mrk = Marker()

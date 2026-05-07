@@ -363,9 +363,8 @@ class Controller:
             marks.markers.append(mrk)
  
             
-        # ROS2 strict 타입 — marks 안 numeric 이 numpy.float64 면 C-level SIGABRT
-        # (try/except 무력화). 진짜 fix 는 D-1d. 우선 비활성 — controller core 보호.
-        # self.predict_pub.publish(marks)
+        # D-1d: predict_pub 재활성 (mrk numeric 모두 float() cast 명시 후)
+        self.predict_pub.publish(marks)
  
         if (self.state == "TRAILING") and (self.opponent is not None):
             speed_la_for_lu = self.speed_now
