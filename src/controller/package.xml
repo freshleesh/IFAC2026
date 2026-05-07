@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>controller</name>
+  <version>0.1.0</version>
+  <description>
+    F1TENTH controller manager — state_machine 의 /local_waypoints 를 받아
+    L1 / Pure Pursuit 으로 ackermann 명령 발행. FTG fallback 포함.
+    원본 ROS1: controller/controller_manager.py + combined/Controller.py + ftg/ftg.py.
+    SH ROS2 Jazzy 포팅.
+  </description>
+
+  <maintainer email="freshleesh@gmail.com">SH</maintainer>
+  <license>Apache-2.0</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>visualization_msgs</exec_depend>
+  <exec_depend>ackermann_msgs</exec_depend>
+  <exec_depend>f110_msgs</exec_depend>
+  <exec_depend>frenet_conversion</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
