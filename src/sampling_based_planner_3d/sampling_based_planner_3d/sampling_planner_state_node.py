@@ -236,7 +236,7 @@ class SamplingPlannerStateNode:
         self.debug_jump_threshold_m = float(self._get_param_or_default('~debug_jump_threshold_m', 2.0))
 
         # -- Subscribers ------------------------------------------------------------------------
-        self.create_subscription(Odometry, '/car_state/odom', self._cb_odom, queue_size=1, 10)
+        self.create_subscription(Odometry, '/car_state/odom', self._cb_odom, 10)
         # ### HJ : Phase 2 — opponent prediction wiring. Currently only one opponent is
         # published (3d_opp_prediction.py id-at-outer-level), but the cache keeps it keyed
         # so multi-opponent works with the same _build_prediction_dict.

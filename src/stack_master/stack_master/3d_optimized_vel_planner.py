@@ -487,7 +487,7 @@ class VelOptNode:
         self.last_wpnts_msg = None
         self.pub = rospy.Publisher('/global_waypoints', WpntArray, queue_size=1, latch=True)
         self._processed = False
-        self.sub = self.create_subscription(WpntArray, '/global_waypoints', self._cb, queue_size=1, 10)
+        self.sub = self.create_subscription(WpntArray, '/global_waypoints', self._cb, 10)
         self.reload_srv = rospy.Service('/velopt/reload', Trigger, self.reload_cb)
         self.get_logger().info('[velopt] /velopt/reload service ready')
         self.get_logger().info('[velopt] waiting for /global_waypoints template message ...')

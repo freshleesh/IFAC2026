@@ -86,7 +86,7 @@ class SimpleMuxNode:
         ### HJ : external abort trigger (e.g. test_control_publisher duration cutoff)
         # Same effect as LB rising: drop autodrive latch, reset launch state, force release_time so timer
         # broadcasts 1s of zero ackermann then idles.
-        self.create_subscription(Empty, "/launch_controller/abort", self._abort_cb, queue_size=1, 10)
+        self.create_subscription(Empty, "/launch_controller/abort", self._abort_cb, 10)
 
         self.drive_pub = self.create_publisher(AckermannDriveStamped, self.out_topic, 10)
         self.current_pub = self.create_publisher(Float64, "/vesc/commands/motor/current", 10)

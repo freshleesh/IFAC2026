@@ -90,7 +90,7 @@ class VelocityScaler:
             rospy.loginfo_throttle(5.0, f"Smart waypoints updated! {len(data.wpnts)} waypoints")
 
 
-    def dyn_param_cb(self, params:Config):
+    def dyn_param_cb(self, params:object):
         """
         Notices the change in the parameters and scales the global waypoints
         """

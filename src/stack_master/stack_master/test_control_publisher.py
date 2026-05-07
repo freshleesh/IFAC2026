@@ -133,11 +133,11 @@ class TestControlPublisher:
         ### HJ : abort trigger for simple_mux (sent on duration cutoff to switch to humandrive idle)
         self.abort_pub = self.create_publisher(Empty, "/launch_controller/abort", 1)
         # Subscribers
-        self.create_subscription(VescStateStamped, CORE_TOPIC, self._core_cb, queue_size=10, 10)
-        self.create_subscription(String, LAUNCH_DBG_TOPIC, self._launch_dbg_cb, queue_size=10, 10)
-        self.create_subscription(Joy, JOY_TOPIC, self._joy_cb, queue_size=10, 10)
-        self.create_subscription(Float64, VESC_CMD_CURRENT_TOPIC, self._vesc_cmd_current_cb, queue_size=10, 10)
-        self.create_subscription(Imu, VESC_IMU_TOPIC, self._vesc_imu_cb, queue_size=10, 10)
+        self.create_subscription(VescStateStamped, CORE_TOPIC, self._core_cb, 10)
+        self.create_subscription(String, LAUNCH_DBG_TOPIC, self._launch_dbg_cb, 10)
+        self.create_subscription(Joy, JOY_TOPIC, self._joy_cb, 10)
+        self.create_subscription(Float64, VESC_CMD_CURRENT_TOPIC, self._vesc_cmd_current_cb, 10)
+        self.create_subscription(Imu, VESC_IMU_TOPIC, self._vesc_imu_cb, 10)
 
         # rqt
         self.dyn_srv = DynRecServer(TestCtrlConfig, self._dyn_cb)

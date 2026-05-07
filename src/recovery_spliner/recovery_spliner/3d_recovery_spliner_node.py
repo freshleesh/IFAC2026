@@ -17,7 +17,7 @@ from std_msgs.msg import Float32
 from visualization_msgs.msg import Marker, MarkerArray
 from scipy.interpolate import BPoly
 from f110_msgs.msg import Wpnt, WpntArray
-from frenet_converter.frenet_converter import FrenetConverter
+from frenet_conversion.frenet_converter import FrenetConverter
 import tf.transformations as tf_trans
 from track_3d_validator import Track3DValidator
 import trajectory_planning_helpers as tph
@@ -168,7 +168,7 @@ class RecoverySpliner3D:
     def gb_scaled_cb(self, data: WpntArray):
         self.gb_scaled_wpnts = data
 
-    def dyn_param_cb(self, params: Config):
+    def dyn_param_cb(self, params: object):
         self.min_candidates_lookahead_n = self._get_param_or_default(
             "/dyn_planner_tuner/recovery/min_candidates_lookahead_n", 20)
         self.num_kappas = self._get_param_or_default(

@@ -22,7 +22,7 @@ from f110_msgs.msg import (
     Wpnt, WpntArray, Obstacle, ObstacleArray,
     OTWpntArray, OpponentTrajectory, OppWpnt, BehaviorStrategy,
 )
-from frenet_converter.frenet_converter import FrenetConverter
+from frenet_conversion.frenet_converter import FrenetConverter
 
 from sqp_casadi import CasadiSQPSolver, SQPProblem
 from warm_start import shift_solution

@@ -147,7 +147,7 @@ class SamplingPlannerNode:
         self.debug_jump_threshold_m = self._get_param_or_default('~debug_jump_threshold_m', 2.0)
 
         # -- Subscribers -----------------------------------------------------------------------------------------
-        self.create_subscription(Odometry, '/car_state/odom', self._cb_odom, queue_size=1, 10)
+        self.create_subscription(Odometry, '/car_state/odom', self._cb_odom, 10)
 
         # -- Publishers ------------------------------------------------------------------------------------------
         self.pub_wpnts         = self.create_publisher(WpntArray, '~best_trajectory', 1)

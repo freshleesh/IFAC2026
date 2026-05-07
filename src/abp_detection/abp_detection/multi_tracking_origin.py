@@ -10,7 +10,7 @@ from f110_msgs.msg import WpntArray, OTWpntArray
 from sensor_msgs.msg import LaserScan
 from filterpy.common import Q_discrete_white_noise
 from filterpy.kalman import ExtendedKalmanFilter as EKF
-from frenet_converter.frenet_converter import FrenetConverter
+from frenet_conversion.frenet_converter import FrenetConverter
 from nav_msgs.msg import Odometry
 from scipy.linalg import block_diag
 from visualization_msgs.msg import Marker,MarkerArray
@@ -369,7 +369,7 @@ class StaticDynamic:
             rospy.sleep(0.1)
         self.converter = self.initialize_converter()
 
-    def dyn_param_cb(self, params: Config):
+    def dyn_param_cb(self, params: object):
         self.ttl_dynamic = self._get_param_or_default("dyn_perception/ttl_dynamic")
         self.ratio_to_glob_path = self._get_param_or_default("dyn_perception/ratio_to_glob_path")
         self.ttl_static = self._get_param_or_default("dyn_perception/ttl_static")

@@ -46,7 +46,7 @@ from local_racing_line_planner import LocalRacinglinePlanner
 from point_mass_model import export_point_mass_ode_model
 
 ### HJ : centerline frenet converter — (x,y,z) → (s_cent, n_cent)
-from frenet_converter.frenet_converter import FrenetConverter
+from frenet_conversion.frenet_converter import FrenetConverter
 
 
 class LocalRacelineMux:

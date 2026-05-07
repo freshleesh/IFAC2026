@@ -685,9 +685,9 @@ class MPCPlannerStateNode:
         self._last_min_obs_ds = float('inf')
 
         # -- Subscribers ------------------------------------------------------
-        self.create_subscription(WpntArray, '/global_waypoints', self._global_wpnts_cb, queue_size=1, 10)
-        self.create_subscription(PoseStamped, '/car_state/pose', self._pose_cb, queue_size=1, 10)
-        self.create_subscription(Odometry, '/car_state/odom', self._odom_cb, queue_size=1, 10)
+        self.create_subscription(WpntArray, '/global_waypoints', self._global_wpnts_cb, 10)
+        self.create_subscription(PoseStamped, '/car_state/pose', self._pose_cb, 10)
+        self.create_subscription(Odometry, '/car_state/odom', self._odom_cb, 10)
         # ### HJ : frenet_odom_republisher — 3D-aware (z included in nearest search)
         rospy.Subscriber('/car_state/odom_frenet', Odometry,
                          self._frenet_odom_cb, queue_size=1)

@@ -72,7 +72,7 @@ class ServoCalibrationRecorder:
         # --- joy state ---
         self._rb_pressed = threading.Event()   # set once when RB pressed, cleared after consumed
         self._lb_pressed = False               # true while LB held
-        self.create_subscription(Joy, JOY_TOPIC, self._joy_cb, queue_size=10, 10)
+        self.create_subscription(Joy, JOY_TOPIC, self._joy_cb, 10)
 
         # --- publisher ---
         self.pub = self.create_publisher(AckermannDriveStamped, NAV_TOPIC, 10)

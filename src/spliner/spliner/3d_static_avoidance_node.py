@@ -22,7 +22,7 @@ from scipy.signal import savgol_filter
 from f110_msgs.msg import (
     Obstacle, ObstacleArray, OTWpntArray, Wpnt, WpntArray, BehaviorStrategy,
 )
-from frenet_converter.frenet_converter import FrenetConverter
+from frenet_conversion.frenet_converter import FrenetConverter
 import tf.transformations as tf_trans
 from track_3d_validator import Track3DValidator
 import trajectory_planning_helpers as tph
@@ -170,7 +170,7 @@ class StaticAvoidance3D:
     def gb_scaled_cb(self, data: WpntArray):
         self.gb_scaled_wpnts = data
 
-    def dyn_param_cb(self, params: Config):
+    def dyn_param_cb(self, params: object):
         self.evasion_dist = self._get_param_or_default("dyn_planner_tuner/static_avoidance/evasion_dist", 0.65)
         self.obs_traj_tresh = self._get_param_or_default("dyn_planner_tuner/static_avoidance/obs_traj_tresh", 0.3)
         self.spline_bound_mindist = self._get_param_or_default("dyn_planner_tuner/static_avoidance/spline_bound_mindist", 0.2)

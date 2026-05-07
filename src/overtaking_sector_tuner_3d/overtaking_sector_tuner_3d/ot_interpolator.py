@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 from f110_msgs.msg import Wpnt, WpntArray
 from scipy.interpolate import InterpolatedUnivariateSpline as Spline
 from visualization_msgs.msg import Marker, MarkerArray
-from frenet_converter.frenet_converter import FrenetConverter
+from frenet_conversion.frenet_converter import FrenetConverter
 
 
 class OvertakingInterpolator:
@@ -94,7 +94,7 @@ class OvertakingInterpolator:
         self.ot_spline_y = Spline(coords[:, 0], coords[:, 2])
         self.ot_spline_speed = Spline(coords[:, 0], coords[:, 3])
 
-    def dyn_param_cb(self, params:Config):
+    def dyn_param_cb(self, params:object):
         """
         Notices the change in the parameters and scales the global waypoints
         """
@@ -111,7 +111,7 @@ class OvertakingInterpolator:
         self.need_to_reinterpolate = True
         self.get_logger().info(self.sectors_params)
 
-    def dyn_speed_param_cb(self, params:Config):
+    def dyn_speed_param_cb(self, params:object):
         self.need_to_reinterpolate = True
 
     def initialize_converter(self) -> FrenetConverter:

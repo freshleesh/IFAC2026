@@ -57,7 +57,7 @@ class VelAnalyser:
     def gb_wpnt_sc_cb(self, data: WpntArray):
         self.gb_wpnt_sc = data.wpnts
 
-    def dyn_par_cb(self, data: Config):
+    def dyn_par_cb(self, data: object):
         rospy.wait_for_message("/global_waypoints_scaled", WpntArray)
 
         rate = rospy.Rate(2000)

@@ -4,7 +4,7 @@ import numpy as np
 from nav_msgs.msg import Odometry
 from f110_msgs.msg import WpntArray
 from visualization_msgs.msg import MarkerArray, Marker
-from frenet_conversion.srv import Frenet2GlobArr
+from frenet_conversion_msgs.srv import Frenet2GlobArr
 from std_msgs.msg import String
 import time
 
@@ -66,7 +66,7 @@ class UpdateWaypoints:
         else:
             pass
 
-    def dyn_param_cb(self, params: Config):
+    def dyn_param_cb(self, params: object):
         self.update_waypoints = self._get_param_or_default("dynamic_prediction_tuner_node/update_waypoints", True)
         self.speed_offset = self._get_param_or_default("dynamic_prediction_tuner_node/speed_offset")
 

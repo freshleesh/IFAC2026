@@ -8,7 +8,7 @@ class IDController:
   
   def __init__(self):
     #subscribers
-    # self.create_subscription(Record , "/vicon/F110rosbag_record", self.GUI_cb, queue_size=10, 10)
+    # self.create_subscription(Record , "/vicon/F110rosbag_record", self.GUI_cb, 10)
     
     #publishers
     self.cmd_pub = self.create_publisher(AckermannDriveStamped, 'drive_topic', 10)

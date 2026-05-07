@@ -90,9 +90,9 @@ class MPCPlannerNode:
         self.marker_pub = self.create_publisher(MarkerArray, '/planner/mpc/markers', 1)
 
         # Subscribers
-        self.create_subscription(WpntArray, '/global_waypoints', self._global_wpnts_cb, queue_size=1, 10)
-        self.create_subscription(PoseStamped, '/car_state/pose', self._pose_cb, queue_size=1, 10)
-        self.create_subscription(Odometry, '/car_state/odom', self._odom_cb, queue_size=1, 10)
+        self.create_subscription(WpntArray, '/global_waypoints', self._global_wpnts_cb, 10)
+        self.create_subscription(PoseStamped, '/car_state/pose', self._pose_cb, 10)
+        self.create_subscription(Odometry, '/car_state/odom', self._odom_cb, 10)
 
         self.get_logger().info("[MPC planner] Waiting for /global_waypoints...")
 

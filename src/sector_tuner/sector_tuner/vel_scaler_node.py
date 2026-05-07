@@ -57,7 +57,7 @@ class VelocityScaler:
         """
         self.glb_wpnts_sp_og = data
 
-    def dyn_param_cb(self, params:Config):
+    def dyn_param_cb(self, params:object):
         """
         Notices the change in the parameters and scales the global waypoints
         """

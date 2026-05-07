@@ -8,7 +8,7 @@ from visualization_msgs.msg import MarkerArray, Marker
 from geometry_msgs.msg import Point
 from std_msgs.msg import Float32MultiArray, Float32
 from scipy.optimize import minimize
-from frenet_converter.frenet_converter import FrenetConverter
+from frenet_conversion.frenet_converter import FrenetConverter
 from std_msgs.msg import Bool
 from copy import deepcopy
 
@@ -222,7 +222,7 @@ class ChangeAvoidanceNode:
     def ot_sections_check_cb(self, data: Bool):
         self.ot_section_check = data.data
 
-    def dyn_param_cb(self, params: Config):
+    def dyn_param_cb(self, params: object):
         self.evasion_dist = self._get_param_or_default("dynamic_change_tuner_node/evasion_dist", 0.65)
         self.obs_traj_tresh = self._get_param_or_default("dynamic_change_tuner_node/obs_traj_tresh", 1.5)
         self.spline_bound_mindist = self._get_param_or_default("dynamic_change_tuner_node/spline_bound_mindist", 0.2)

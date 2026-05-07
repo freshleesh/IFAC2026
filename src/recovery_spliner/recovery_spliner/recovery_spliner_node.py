@@ -10,7 +10,7 @@ from scipy.interpolate import InterpolatedUnivariateSpline as Spline
 from scipy.interpolate import BPoly
 from scipy.signal import argrelextrema
 from f110_msgs.msg import Obstacle, ObstacleArray, OTWpntArray, Wpnt, WpntArray
-from frenet_converter.frenet_converter import FrenetConverter
+from frenet_conversion.frenet_converter import FrenetConverter
 import tf.transformations as tf_trans
 from grid_filter.grid_filter import GridFilter
 import trajectory_planning_helpers as tph
@@ -200,7 +200,7 @@ class ObstacleSpliner:
         self.gb_scaled_wpnts = data
 
     # Callback triggered by dynamic spline reconf
-    def dyn_param_cb(self, params: Config):
+    def dyn_param_cb(self, params: object):
         """
         Notices the change in the parameters and changes spline params
         """

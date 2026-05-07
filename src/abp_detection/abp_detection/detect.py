@@ -2,8 +2,8 @@
 
 import tf
 import time
-from frenet_converter.frenet_converter import FrenetConverter
-from frenet_conversion.srv import Glob2FrenetArr, Frenet2GlobArr
+from frenet_conversion.frenet_converter import FrenetConverter
+from frenet_conversion_msgs.srv import Glob2FrenetArr, Frenet2GlobArr
 
 from f110_msgs.msg import WpntArray
 from sensor_msgs.msg import LaserScan, PointCloud2
@@ -192,7 +192,7 @@ class Detect :
     def carStateCb(self, data):
         self.car_s = data.pose.pose.position.x
     
-    def dyn_param_cb(self, params: Config):
+    def dyn_param_cb(self, params: object):
         self.min_size_n = self._get_param_or_default('dyn_perception/min_size_n', 10)
         self.max_size_m = self._get_param_or_default('dyn_perception/max_size_m', 0.5)
         self.max_viewing_distance = self._get_param_or_default('dyn_perception/max_viewing_distance', 9)
