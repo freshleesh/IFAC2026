@@ -12,8 +12,10 @@ setup(
         ("share/ament_index/resource_index/packages",
          ["resource/" + package_name]),
         ("share/" + package_name, ["package.xml"]),
-        (os.path.join("share", package_name, "launch"), glob("launch/*.py")),
+        (os.path.join("share", package_name, "launch"), glob("launch/*.py") + glob("launch/*.xml")),
+        (os.path.join("share", package_name, "config"), glob("config/*.yaml")),
         (os.path.join("share", package_name, "config", "SIM"), glob("config/SIM/*")),
+        (os.path.join("share", package_name, "maps", "midterm"), glob("maps/midterm/*")),
     ],
     install_requires=["setuptools"],
     zip_safe=True,
@@ -22,5 +24,6 @@ setup(
     description="stack_master (ROS2 Jazzy port)",
     license="Apache-2.0",
     entry_points={"console_scripts": [
+            "simple_mux_node.py = stack_master.simple_mux_node:main",
         ]},
 )

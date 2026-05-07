@@ -12,7 +12,7 @@ setup(
         ("share/ament_index/resource_index/packages",
          ["resource/" + package_name]),
         ("share/" + package_name, ["package.xml"]),
-        (os.path.join("share", package_name, "launch"), glob("launch/*.py")),
+        (os.path.join("share", package_name, "launch"), glob("launch/*.py") + glob("launch/*.xml")),
     ],
     install_requires=["setuptools"],
     zip_safe=True,
@@ -24,6 +24,8 @@ setup(
     entry_points={
         "console_scripts": [
             "obstacle_publisher = obstacle_publisher.obstacle_publisher:main",
+            "static_obstacle_manager = obstacle_publisher.static_obstacle_manager:main",
+            "dynamic_obstacle_publisher = obstacle_publisher.dynamic_obstacle_publisher:main",
         ],
     },
 )
