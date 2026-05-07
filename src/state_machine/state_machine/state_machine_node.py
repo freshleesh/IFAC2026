@@ -1265,24 +1265,24 @@ class StateMachine(Node, InitMixin, VisualizationMixin, CallbackMixin):
         if self.cur_state == StateType.LOSTLINE:
             self.cur_state = StateType.GB_TRACK
 
-        # behavior + state + 시각화 발행 (ROS2 strict 타입 — String 메시지 wrap)
+        # behavior + state + 시각화 발행 (Round 2: 모든 strict 타입 fix 후 재활성)
         from std_msgs.msg import String as _String
+        self._publish_behavior_strategy(local_wpnts)
         self.state_pub.publish(_String(data=self.cur_state.value))
+        self.visualize_state(state=self.cur_state.value)
         self._pub_local_wpnts(local_wpnts)
 
         # TRAILING/ATTACK 이외에서는 FTG 카운터 초기화
         if self.cur_state != StateType.TRAILING and self.cur_state != StateType.ATTACK:
             self.ftg_counter = 0
 
-        # TODO post-C-6 Round 2: 아래 publish 들의 메시지 (BehaviorStrategy /
-        # Marker) 안 numeric 필드가 numpy.float64 라 ROS2 PyFloat_Check assert fail.
-        # 모든 numeric 할당 시점에 float() cast 명시 필요. smoke 단계에서 비활성:
-        # self._publish_behavior_strategy(local_wpnts)
-        # self.visualize_state(state=self.cur_state.value)
-        # self._publish_target_marker(self.overtaking_marker_pub,
-        #     self.behavior_strategy.overtaking_targets, color_b=1.0)
-        # self._publish_target_marker(self.trailing_marker_pub,
-        #     self.behavior_strategy.trailing_targets, color_g=1.0)
+        # target 시각화 (overtaking=blue, trailing=green)
+        self._publish_target_marker(
+            self.overtaking_marker_pub, self.behavior_strategy.overtaking_targets, color_b=1.0
+        )
+        self._publish_target_marker(
+            self.trailing_marker_pub, self.behavior_strategy.trailing_targets, color_g=1.0
+        )
 
         if self.measuring:
             from std_msgs.msg import Float32 as _Float32

@@ -53,12 +53,7 @@ class VisualizationMixin:
         loc_wpnts.header.frame_id = "map"
         self.loc_wpnt_pub.publish(loc_wpnts)
 
-        # TODO post-C-6 Round 2: 아래 marker 발행 (sphere + cylinder vel) 의 numeric
-        # 필드 (geometry_msgs/Point.x/y/z) 가 numpy.float64 일 때 ROS2 PyFloat_Check
-        # assert fail. 모든 할당에 float() 명시 cast 필요. 시각화 비활성 (controller 가
-        # 의존하는 /local_waypoints 자체는 위에서 발행됨).
-        return
-        # ---- 아래 코드는 활성화 시 numpy → float() cast 필요 ----
+        # 1) 이전 sphere markers 모두 삭제
         del_mrks = MarkerArray()
         del_mrk = Marker()
         del_mrk.header.stamp = self.get_clock().now().to_msg()
@@ -66,6 +61,7 @@ class VisualizationMixin:
         del_mrks.markers.append(del_mrk)
         self.vis_loc_wpnt_pub.publish(del_mrks)
 
+        # 2) 위치 sphere 마커
         vx_vals = [wpnt.vx_mps for wpnt in loc_wpnts.wpnts]
         vx_min = min(vx_vals) if vx_vals else 0.0
         vx_max = max(vx_vals) if vx_vals else 1.0
@@ -79,9 +75,10 @@ class VisualizationMixin:
             mrk.scale.y = 0.15
             mrk.scale.z = 0.15
             mrk.color.a = 1.0
-            mrk.color.r, mrk.color.g, mrk.color.b = self._speed_to_color(
-                wpnt.vx_mps, vx_min, vx_max
-            )
+            r, g, b = self._speed_to_color(wpnt.vx_mps, vx_min, vx_max)
+            mrk.color.r = float(r)
+            mrk.color.g = float(g)
+            mrk.color.b = float(b)
             mrk.id = i
             mrk.pose.position.x = float(wpnt.x_m)
             mrk.pose.position.y = float(wpnt.y_m)
@@ -89,6 +86,31 @@ class VisualizationMixin:
             mrk.pose.orientation.w = 1.0
             loc_markers.markers.append(mrk)
         self.vis_loc_wpnt_pub.publish(loc_markers)
+
+        # 3) 속도 cylinder 마커
+        VEL_SCALE = 0.1317
+        vel_markers = MarkerArray()
+        for i, wpnt in enumerate(loc_wpnts.wpnts):
+            mrk = Marker()
+            mrk.header.frame_id = "map"
+            mrk.header.stamp = self.get_clock().now().to_msg()
+            mrk.type = Marker.CYLINDER
+            mrk.id = i
+            mrk.scale.x = 0.1
+            mrk.scale.y = 0.1
+            height = float(max(wpnt.vx_mps * VEL_SCALE, 0.02))
+            mrk.scale.z = height
+            mrk.color.a = 0.7
+            r, g, b = self._speed_to_color(wpnt.vx_mps, vx_min, vx_max)
+            mrk.color.r = float(r)
+            mrk.color.g = float(g)
+            mrk.color.b = float(b)
+            mrk.pose.position.x = float(wpnt.x_m)
+            mrk.pose.position.y = float(wpnt.y_m)
+            mrk.pose.position.z = float(wpnt.z_m) + height * 0.5
+            mrk.pose.orientation.w = 1.0
+            vel_markers.markers.append(mrk)
+        self.vis_loc_vel_pub.publish(vel_markers)
 
     def _publish_target_marker(self, publisher, targets, *, color_b=0.0, color_g=0.0):
         """target 좌표(첫 원소)를 마커로 발행. targets가 비어있으면 DELETEALL."""
@@ -100,10 +122,10 @@ class VisualizationMixin:
             marker.scale.y = 0.5
             marker.scale.z = 0.5
             marker.color.a = 1.0
-            marker.color.b = color_b
-            marker.color.g = color_g
-            marker.pose.position.x = targets[0].x_m
-            marker.pose.position.y = targets[0].y_m
+            marker.color.b = float(color_b)
+            marker.color.g = float(color_g)
+            marker.pose.position.x = float(targets[0].x_m)
+            marker.pose.position.y = float(targets[0].y_m)
             marker.pose.orientation.w = 1.0
         else:
             marker.action = Marker.DELETEALL
@@ -123,16 +145,16 @@ class VisualizationMixin:
         mrk.header.frame_id = "map"
         mrk.header.stamp = self.get_clock().now().to_msg()
         mrk.color.a = 1.0
-        mrk.color.r = r
-        mrk.color.g = g
-        mrk.color.b = b
-        mrk.pose.position.x = self.x_viz
-        mrk.pose.position.y = self.y_viz
-        mrk.pose.position.z = 0
+        mrk.color.r = float(r)
+        mrk.color.g = float(g)
+        mrk.color.b = float(b)
+        mrk.pose.position.x = float(self.x_viz)
+        mrk.pose.position.y = float(self.y_viz)
+        mrk.pose.position.z = 0.0
         mrk.pose.orientation.w = 1.0
-        mrk.scale.x = 1
-        mrk.scale.y = 1
-        mrk.scale.z = 1
+        mrk.scale.x = 1.0
+        mrk.scale.y = 1.0
+        mrk.scale.z = 1.0
         self.state_mrk.publish(mrk)
 
         # waypoint source + battery voltage 텍스트 마커
@@ -168,8 +190,8 @@ class VisualizationMixin:
         text_mrk.id = 2  # sphere 마커(id=1) 와 분리
         text_mrk.header.frame_id = "map"
         text_mrk.header.stamp = self.get_clock().now().to_msg()
-        text_mrk.pose.position.x = self.x_viz
-        text_mrk.pose.position.y = self.y_viz
+        text_mrk.pose.position.x = float(self.x_viz)
+        text_mrk.pose.position.y = float(self.y_viz)
         text_mrk.pose.position.z = 1.5  # sphere 위쪽
         text_mrk.pose.orientation.w = 1.0
         text_mrk.scale.z = 0.2
@@ -191,9 +213,9 @@ class VisualizationMixin:
         mrk.color.r = 1.0
         mrk.color.g = 0.0
         mrk.color.b = 0.0
-        # 트랙 중앙에 publish 하여 잘 보이도록
-        mrk.pose.position.x = np.mean([wpnt.x_m for wpnt in self.cur_gb_wpnts.list])
-        mrk.pose.position.y = np.mean([wpnt.y_m for wpnt in self.cur_gb_wpnts.list])
+        # 트랙 중앙에 publish 하여 잘 보이도록 (numpy.float64 → float() cast 명시)
+        mrk.pose.position.x = float(np.mean([wpnt.x_m for wpnt in self.cur_gb_wpnts.list]))
+        mrk.pose.position.y = float(np.mean([wpnt.y_m for wpnt in self.cur_gb_wpnts.list]))
         mrk.pose.position.z = 1.0
         mrk.pose.orientation.w = 1.0
         mrk.scale.x = 4.69
