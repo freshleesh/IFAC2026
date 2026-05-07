@@ -1,0 +1,15 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>ccma</name>
+  <version>0.0.1</version>
+  <description>Curvature Corrected Moving Average (ForzaETH/ccma — ROS2 ament_python wrapper).</description>
+  <maintainer email="freshleesh@gmail.com">SH</maintainer>
+  <license>MIT</license>
+  <url type="repository">https://github.com/ForzaETH/ccma</url>
+
+  <depend>python3-numpy</depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
