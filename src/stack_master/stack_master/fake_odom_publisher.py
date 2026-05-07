@@ -10,7 +10,6 @@ Usage:
 import json
 import numpy as np
 import os
-import tf
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import Quaternion
 
@@ -86,7 +85,7 @@ class FakeOdomPublisher:
             odom.pose.pose.position.x = x
             odom.pose.pose.position.y = y
             odom.pose.pose.position.z = z
-            q = tf.transformations.quaternion_from_euler(0, 0, psi)
+            q = tf_transformations.quaternion_from_euler(0, 0, psi)
             odom.pose.pose.orientation = Quaternion(*q)
             odom.twist.twist.linear.x = vx  # body frame forward
             odom.twist.twist.linear.y = 0.0

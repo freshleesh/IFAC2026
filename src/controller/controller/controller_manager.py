@@ -479,7 +479,7 @@ class Controller_manager(Node):
     def car_state_cb(self, data: PoseStamped):
         x = data.pose.position.x
         y = data.pose.position.y
-        # ROS2 포팅: tf.transformations.euler_from_quaternion → 직접 atan2 (yaw)
+        # ROS2 포팅: tf_transformations.euler_from_quaternion → 직접 atan2 (yaw)
         q = data.pose.orientation
         theta = math.atan2(
             2.0 * (q.w * q.z + q.x * q.y),

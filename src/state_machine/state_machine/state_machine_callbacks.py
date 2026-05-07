@@ -187,7 +187,7 @@ class CallbackMixin:
     def odom_cb(self, data):
         """/car_state/odom — Cartesian (x, y, theta) 위치.
 
-        ROS2 포팅: tf.transformations.euler_from_quaternion → 직접 atan2 계산.
+        ROS2 포팅: tf_transformations.euler_from_quaternion → 직접 atan2 계산.
         """
         import math
         x = data.pose.pose.position.x

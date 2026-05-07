@@ -130,7 +130,7 @@ class LaserMapOverlapChecker:
         t_laser_map = self.tf_listener.getLatestCommonTime("map", "laser")
         trans, quat = self.tf_listener.lookupTransform('/map', '/laser', t_laser_map)
         T = np.array(trans)
-        R = tf.transformations.quaternion_matrix(quat)
+        R = tf_transformations.quaternion_matrix(quat)
 
         # Filter out ranges that are under 0.1 meters
         valid_indices = np.array(laser.ranges) > 0.1

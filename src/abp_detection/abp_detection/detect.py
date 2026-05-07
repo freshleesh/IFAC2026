@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 
-import tf
 import time
+
+import rclpy
+import tf2_ros
 from frenet_conversion.frenet_converter import FrenetConverter
 from frenet_conversion_msgs.srv import Glob2FrenetArr, Frenet2GlobArr
 
@@ -116,7 +118,8 @@ class Detect :
         self.current_stamp = None
         self.tracked_obstacles = []
 
-        self.tf_listener = tf.TransformListener()
+        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
         self.path_needs_update = False
         # --- Subscribers ---
         self.create_subscription(LaserScan, '/scan', self.laserCb, 10)
@@ -243,15 +246,17 @@ class Detect :
 
         # --- transform the scan ranges to a cloud point ---
         self.current_stamp = self.get_clock().now().to_msg()
+        # ROS2 tf2_ros: latest 변환 (rclpy.time.Time() = 0 = latest)
         try:
-            lct = self.tf_listener.getLatestCommonTime("map", "laser")
-        except:
+            t = self.tf_buffer.lookup_transform("map", "laser", rclpy.time.Time())
+        except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
             self.get_logger().error("[Opponent Detection]: lookup Tranform between map and laser not possible")
             empty = []
             return empty
-        trans, quat = self.tf_listener.lookupTransform('/map', '/laser', lct)
+        trans = [t.transform.translation.x, t.transform.translation.y, t.transform.translation.z]
+        quat = [t.transform.rotation.x, t.transform.rotation.y, t.transform.rotation.z, t.transform.rotation.w]
         self.T = np.array(trans)
-        self.R = tf.transformations.quaternion_matrix(quat)
+        self.R = tf_transformations.quaternion_matrix(quat)
 
         angles = np.linspace(scan_msg.angle_min, scan_msg.angle_max, len(scan_msg.ranges))
         x_lf = (scan_msg.ranges * np.cos(angles)).flatten()

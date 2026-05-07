@@ -673,7 +673,7 @@ def extract_pcd_from_bag(bag_path, output_dir, pcl_topic="/livox/lidar",
     """Extract accumulated point cloud from rosbag, transform to target frame, save as PCD."""
     import struct
     import rosbag
-    import tf.transformations as tft
+    import tf_transformations as tft
 
     print(f"Opening bag: {bag_path}")
     bag = rosbag.Bag(bag_path, 'r')

@@ -40,7 +40,7 @@ import sys
 import yaml
 import numpy as np
 import time
-import tf.transformations
+import tf_transformations
 
 from nav_msgs.msg import Odometry
 from std_msgs.msg import String
@@ -360,7 +360,7 @@ class LocalRacelineMux:
     def _odom_cb(self, msg):
         """Map-frame odometry: yaw for chi calculation + cartesian for centerline conversion"""
         q = msg.pose.pose.orientation
-        _, _, yaw = tf.transformations.euler_from_quaternion([q.x, q.y, q.z, q.w])
+        _, _, yaw = tf_transformations.euler_from_quaternion([q.x, q.y, q.z, q.w])
         self.cur_yaw = yaw
         ### HJ : save cartesian pose for centerline-frenet conversion
         self.cur_x = msg.pose.pose.position.x
