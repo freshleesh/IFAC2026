@@ -6,7 +6,7 @@ from nav_msgs.msg import Odometry
 from visualization_msgs.msg import Marker, MarkerArray
 import time
 from std_msgs.msg import String
-from frenet_converter.frenet_converter import FrenetConverter
+from frenet_conversion.frenet_converter import FrenetConverter
 
 
 class Opponent_Trajectory:

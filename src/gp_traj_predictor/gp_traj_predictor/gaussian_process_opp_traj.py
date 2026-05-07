@@ -7,7 +7,7 @@ from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import RBF, Matern, WhiteKernel, ConstantKernel
 import time
 from scipy.optimize import fmin_l_bfgs_b
-from frenet_converter.frenet_converter import FrenetConverter
+from frenet_conversion.frenet_converter import FrenetConverter
 
 from ccma import CCMA
 

@@ -16,7 +16,7 @@ from scipy.optimize import fmin_cg
 from scipy.optimize import fmin_l_bfgs_b
 
 
-from frenet_converter.frenet_converter import FrenetConverter
+from frenet_conversion.frenet_converter import FrenetConverter
 
 class GaussianProcessOppTraj(object):
     def __init__(self):

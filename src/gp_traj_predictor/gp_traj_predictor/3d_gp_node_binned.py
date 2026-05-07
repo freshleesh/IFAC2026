@@ -72,7 +72,7 @@ from sklearn.exceptions import ConvergenceWarning
 from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import RBF, Matern, WhiteKernel, ConstantKernel
 from scipy.optimize import fmin_l_bfgs_b
-from frenet_converter.frenet_converter import FrenetConverter
+from frenet_conversion.frenet_converter import FrenetConverter
 from ccma import CCMA
 
 
@@ -182,10 +182,10 @@ class BinnedGPNode:
 
         # Subscribers AFTER init (and after Pool creation in __main__) so
         # fork() does not inherit ROS sockets and callbacks never see None state.
-        self.create_subscription(ObstacleArray, '/tracking/obstacles', self.tracker_cb, queue_size=10, 10)
+        self.create_subscription(ObstacleArray, '/tracking/obstacles', self.tracker_cb, 10)
         ### HJ : multi-opp — ego s position for forward s-gap assignment
         if self.NUM_OPPONENTS >= 2:
-            self.create_subscription(Odometry, '/car_state/odom_frenet', self.odom_frenet_cb, queue_size=10, 10)
+            self.create_subscription(Odometry, '/car_state/odom_frenet', self.odom_frenet_cb, 10)
         ### HJ : end
 
         self.get_logger().info(

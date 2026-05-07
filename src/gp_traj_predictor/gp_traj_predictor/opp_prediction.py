@@ -5,12 +5,12 @@ from std_msgs.msg import Bool, Float32, String
 from nav_msgs.msg import Odometry
 from f110_msgs.msg import ObstacleArray, WpntArray, Wpnt, Obstacle, ObstacleArray, OpponentTrajectory, OppWpnt, Prediction, PredictionArray, OTWpntArray
 from visualization_msgs.msg import Marker, MarkerArray
-from frenet_conversion.srv import Glob2FrenetArr, Frenet2GlobArr
-from frenet_converter.frenet_converter import FrenetConverter  # HJ ADDED: For smart static Frenet conversion
+from frenet_conversion_msgs.srv import Glob2FrenetArr, Frenet2GlobArr
+from frenet_conversion.frenet_converter import FrenetConverter  # HJ ADDED: For smart static Frenet conversion
 import time
 import copy
 
-from std_srvs.srv import SetBool, SetBoolResponse
+from std_srvs.srv import SetBool
 
 OPP_TRAJ_USE_THRESHOLD = 0.35
 
@@ -118,7 +118,7 @@ class OppTrajPredictor:
             self.get_logger().info("Received request: OFF")
             success = True
             message = "Feature turned OFF"
-        return SetBoolResponse(success, message)
+        return SetBool.Response(success, message)
     
     def global_to_opptraj(self, wptlist: list):
         wpnts_opponent = [OppWpnt(s_m=wp.s_m, d_m=wp.d_m, x_m=wp.x_m, y_m=wp.y_m, proj_vs_mps=wp.vx_mps) for wp in wptlist]
@@ -204,7 +204,7 @@ class OppTrajPredictor:
         self.state = data.data
 
         # Callback triggered by dynamic spline reconf
-    def dyn_param_cb(self, params: Config):
+    def dyn_param_cb(self, params: object):
         """
         Notices the change in the parameters and changes spline params
         """

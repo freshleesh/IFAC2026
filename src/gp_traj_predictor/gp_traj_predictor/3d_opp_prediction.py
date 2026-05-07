@@ -15,9 +15,9 @@ from std_msgs.msg import Bool, Float32, String
 from nav_msgs.msg import Odometry
 from f110_msgs.msg import ObstacleArray, WpntArray, Wpnt, Obstacle, OpponentTrajectory, OppWpnt, Prediction, PredictionArray
 from visualization_msgs.msg import Marker, MarkerArray
-from frenet_conversion.srv import Glob2FrenetArr, Frenet2GlobArr
+from frenet_conversion_msgs.srv import Glob2FrenetArr, Frenet2GlobArr
 
-from std_srvs.srv import SetBool, SetBoolResponse
+from std_srvs.srv import SetBool
 
 from track_3d_validator import circular_s_dist, signed_s_dist
 
@@ -120,7 +120,7 @@ class OppTrajPredictor:
             self.get_logger().info("Received request: OFF")
             success = True
             message = "Feature turned OFF"
-        return SetBoolResponse(success, message)
+        return SetBool.Response(success, message)
 
     def global_to_opptraj(self, wptlist: list):
         ### HJ : global Wpnt에는 z_m이 있으므로 그대로 전파해 OppWpnt.z_m 일관성 유지.
@@ -219,7 +219,7 @@ class OppTrajPredictor:
     def state_cb(self, data: String):
         self.state = data.data
 
-    def dyn_param_cb(self, params: Config):
+    def dyn_param_cb(self, params: object):
         self.time_steps = self._get_param_or_default("dynamic_prediction_tuner_node/n_time_steps", 200)
         self.dt = self._get_param_or_default("dynamic_prediction_tuner_node/dt", 0.02)
         self.save_distance_front = self._get_param_or_default("dynamic_prediction_tuner_node/save_distance_front", 0.6)
