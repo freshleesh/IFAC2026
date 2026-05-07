@@ -16,6 +16,7 @@ setup(
         (os.path.join("share", package_name, "config"), glob("config/*.yaml")),
         (os.path.join("share", package_name, "config", "SIM"), glob("config/SIM/*")),
         (os.path.join("share", package_name, "maps", "midterm"), glob("maps/midterm/*")),
+        (os.path.join("share", package_name, "maps", "f"), glob("maps/f/*")),
     ],
     install_requires=["setuptools"],
     zip_safe=True,

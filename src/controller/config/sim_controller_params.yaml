@@ -52,7 +52,7 @@ control_node:
     L1_controller/trailing_vel_gain: 1.0
     L1_controller/v_max: 8.0
     L1_controller/velocity_step: 0.5
-    controller_manager/LU_table: SIM_pacejka
+    controller_manager/LU_table: SIM
     controller_manager/ctrl_algo: PP
     controller_manager/mapping: false
     controller_manager/use_pose: true
