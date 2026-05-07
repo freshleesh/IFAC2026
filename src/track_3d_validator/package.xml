@@ -1,0 +1,11 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>track_3d_validator</name>
+  <version>0.1.0</version>
+  <description>3D track waypoint 검증 lib (ROS-free 알고리즘 + logger). SH ROS2 Jazzy 포팅.</description>
+  <maintainer email="freshleesh@gmail.com">SH</maintainer>
+  <license>Apache-2.0</license>
+  <exec_depend>python3-numpy</exec_depend>
+  <export><build_type>ament_python</build_type></export>
+</package>
