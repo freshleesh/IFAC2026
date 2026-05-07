@@ -97,7 +97,7 @@ class ObstacleSpliner:
             self.checkpoints_pub = self.create_publisher(MarkerArray, "/planner/recovery/checkpoints", 10)
 
         self.converter = self.initialize_converter()
-        self.map_filter = GridFilter(map_topic="/map", debug=False)
+        self.map_filter = GridFilter(node=self, map_topic="/map", debug=False)
 
         if not self.from_bag:
             self.create_subscription(Config, "/dyn_planner_recovery/parameter_updates", self.dyn_param_cb, 10)

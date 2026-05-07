@@ -179,7 +179,7 @@ class ObstacleSpliner:
         self.kernel_size = self._get_param_or_default("/kernel_size", 4)
         
         # ===== HJ ADDED: Dual grid filters =====
-        self.map_filter = GridFilter(map_topic="/map", debug=False)  # Original map
+        self.map_filter = GridFilter(node=self, map_topic="/map", debug=False)  # Original map
         self.map_filter.set_erosion_kernel_size(self.kernel_size)
         self.map_filter_fixed = None  # Modified map (with obstacles), created after fixed path generation
         self.map_filter_conservative_base = None  # Conservative base map (_for_spliner.png), always maintained
@@ -513,7 +513,7 @@ class ObstacleSpliner:
                 self.get_logger().info(f"[{self.name}] GB conservative bounds calculated: {len(self.gb_conservative_d_left)} waypoints")
 
                 # Create GB conservative GridFilter from _for_spliner.png
-                self.map_filter_conservative_base = GridFilter(map_topic=None, debug=False)
+                self.map_filter_conservative_base = GridFilter(node=self, map_topic=None, debug=False)
                 if self.map_filter_conservative_base.load_from_file(conservative_base_path, yaml_path):
                     self.map_filter_conservative_base.set_erosion_kernel_size(self.kernel_size)
                     self.get_logger().info(f"[{self.name}] Created GB conservative GridFilter from {conservative_base_path}")
@@ -2671,7 +2671,7 @@ class ObstacleSpliner:
                 )
 
                 if conservative_with_obs_path:
-                    self.map_filter_conservative_with_obs = GridFilter(map_topic=None, debug=False)
+                    self.map_filter_conservative_with_obs = GridFilter(node=self, map_topic=None, debug=False)
                     if self.map_filter_conservative_with_obs.load_from_file(conservative_with_obs_path, modified_yaml_path):
                         self.map_filter_conservative_with_obs.set_erosion_kernel_size(self.kernel_size)
                         self.get_logger().info(f"[{self.name}] Created Smart conservative GridFilter from {conservative_with_obs_path}")
@@ -2697,7 +2697,7 @@ class ObstacleSpliner:
             # ===== HJ MODIFIED: Use nearby obstacles-only map =====
             # ALWAYS create GridFilter (needed for do_spline collision checking)
             if os.path.exists(obstacles_only_png_path):
-                self.map_filter_fixed = GridFilter(map_topic=None, debug=False)
+                self.map_filter_fixed = GridFilter(node=self, map_topic=None, debug=False)
                 if self.map_filter_fixed.load_from_file(obstacles_only_png_path, modified_yaml_path):
                     self.map_filter_fixed.set_erosion_kernel_size(self.kernel_size)
                     self.get_logger().info(f"[{self.name}] Created GridFilter for nearby obstacles-only map: {obstacles_only_png_path}")

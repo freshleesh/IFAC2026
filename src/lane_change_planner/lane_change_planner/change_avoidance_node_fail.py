@@ -133,7 +133,7 @@ class ChangeAvoidanceNode:
 
         self.converter = self.initialize_converter()
 
-        self.map_filter = GridFilter(map_topic="/map", debug=False)
+        self.map_filter = GridFilter(node=self, map_topic="/map", debug=False)
         self.map_filter.set_erosion_kernel_size(7)
         self.map_filter_fixed = None  # Smart mode용 GridFilter (obstacles_only_nearby.png)
         
@@ -279,7 +279,7 @@ class ChangeAvoidanceNode:
         modified_yaml_path = os.path.join(self.map_dir, f'{self.map_name}.yaml')
 
         if os.path.exists(obstacles_only_png_path):
-            self.map_filter_fixed = GridFilter(map_topic=None, debug=False)
+            self.map_filter_fixed = GridFilter(node=self, map_topic=None, debug=False)
             if self.map_filter_fixed.load_from_file(obstacles_only_png_path, modified_yaml_path):
                 self.map_filter_fixed.set_erosion_kernel_size(self.kernel_size)
                 self.get_logger().info(f"[Change Avoidance] Loaded smart GridFilter from {obstacles_only_png_path}")

@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>f110_description</name>
+  <version>0.0.1</version>
+  <description>F1TENTH 1/10 racecar URDF/xacro + meshes (ROS2 포팅).</description>
+  <maintainer email="freshleesh@gmail.com">SH</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <exec_depend>xacro</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
