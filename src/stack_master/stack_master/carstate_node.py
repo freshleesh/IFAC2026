@@ -13,7 +13,7 @@ from typing import List
 
 class CarStateNode():
     def __init__(self, prop_state=False):
-        rospy.init_node('carstate_node', anonymous=True)
+        pass  # ROS2 포팅 시 Node.__init__
         self.DEBUG = self._get_param_or_default('/carstate_node/debug')
         self.LOCALIZATION = self._get_param_or_default('/carstate_node/localization', default="slam") 
         self.ODOM_TOPIC = self._get_param_or_default('/carstate_node/odom_topic', default='/state_estimation/odom')
@@ -31,30 +31,30 @@ class CarStateNode():
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
         print("Waiting for TF Transformations")
-        # while not self.tf_buffer.can_transform("base_link", "imu", rospy.Time(), rospy.Duration(1.0)):
+        # while not self.tf_buffer.can_transform("base_link", "imu", None, 1.0):
         #     self.get_logger().warning("Waiting for base_link->imu transformation")
         # print("base_link->imu transformation OK")
 
-        # while not self.tf_buffer.can_transform("odom", "base_link", rospy.Time(), rospy.Duration(1.0)):
+        # while not self.tf_buffer.can_transform("odom", "base_link", None, 1.0):
         #     self.get_logger().warning("Waiting for odom->base_link transformation")
         # print("odom->base_link transformation OK")
 
-        # while not self.tf_buffer.can_transform("map", "odom", rospy.Time(), rospy.Duration(1.0)):
+        # while not self.tf_buffer.can_transform("map", "odom", None, 1.0):
         #     self.get_logger().warning("Waiting for map->odom transformation")
         # print("map->odom transformation OK")
         
-        while not self.tf_buffer.can_transform("map", "base_link", rospy.Time(), rospy.Duration(1.0)):
+        while not self.tf_buffer.can_transform("map", "base_link", None, 1.0):
             self.get_logger().warning("Waiting for map->base_link transformation")
         print("map->base_link transformation OK")
         
-        self.create_subscription(Odometry, self.ODOM_TOPIC, self.ekf_odom_cb, tcp_nodelay=True, 10)
-        self.create_subscription(Imu, self.IMU_TOPIC, self.imu_cb, tcp_nodelay=True, 10)
-        self.pub_acc = rospy.Publisher('acc_estimate', Float64, queue_size=1, tcp_nodelay=True)
-        self.pub_state_pose = rospy.Publisher('/car_state/pose', PoseStamped, queue_size=1, tcp_nodelay=True)
-        self.pub_state_odom = rospy.Publisher('/car_state/odom', Odometry, queue_size=1, tcp_nodelay=True)
-        self.pub_state_diffodom = rospy.Publisher('/car_state/odom_diff', Odometry, queue_size=1, tcp_nodelay=True)
-        self.pub_state_path = rospy.Publisher('/car_state/path', Path, queue_size=1, tcp_nodelay=True)
-        self.pub_state_pitch = rospy.Publisher('/car_state/pitch', Float32, queue_size=1, tcp_nodelay=True)
+        self.create_subscription(Odometry, self.ODOM_TOPIC, self.ekf_odom_cb, 10)
+        self.create_subscription(Imu, self.IMU_TOPIC, self.imu_cb, 10)
+        self.pub_acc = self.create_publisher(Float64, 'acc_estimate', 1)
+        self.pub_state_pose = self.create_publisher(PoseStamped, '/car_state/pose', 1)
+        self.pub_state_odom = self.create_publisher(Odometry, '/car_state/odom', 1)
+        self.pub_state_diffodom = self.create_publisher(Odometry, '/car_state/odom_diff', 1)
+        self.pub_state_path = self.create_publisher(Path, '/car_state/path', 1)
+        self.pub_state_pitch = self.create_publisher(Float32, '/car_state/pitch', 1)
 
         self.ekf_odom = None
         self.imu_data = None
@@ -103,7 +103,7 @@ class CarStateNode():
         imu_quat = imu.orientation
         #transform to base_link
         try:
-            b_imu = self.tf_buffer.lookup_transform('base_link', 'imu', rospy.Time(), rospy.Duration(5))
+            b_imu = self.tf_buffer.lookup_transform('base_link', 'imu', None, 5)
         except tf2_ros.LookupException:
             self.get_logger().warning("No transform exists yet for base_link->IMU!")
             return 0,0,0
@@ -114,16 +114,16 @@ class CarStateNode():
         return r, p, y
 
     def state_loop(self):
-        rate = rospy.Rate(self.rate)  # rate in hertz
+        rate = None  # ROS2 create_timer
         print('Carstate Node waiting for Odometry and IMU messages...')
-        rospy.wait_for_message(self.ODOM_TOPIC, Odometry)
-        rospy.wait_for_message(self.IMU_TOPIC, Imu)
+        None  # ROS2 wait_for_message
+        None  # ROS2 wait_for_message
         print('Carstate Node received EKF and SLAM')
 
-        self.tf_buffer.can_transform("map", "base_link", rospy.Time(0), rospy.Duration(3))
+        self.tf_buffer.can_transform("map", "base_link", None, 3)
 
         # Publish SLAM positional & EKF velocity states
-        while not rospy.is_shutdown():
+        while not False:
             carstate_pose_msg = PoseStamped()
             carstate_odom_msg = Odometry()
             carstate_odom_diff_msg = Odometry()
@@ -200,7 +200,7 @@ class CarStateNode():
             rate.sleep()
 
     def get_slam_messages(self) -> TransformStamped:
-        trans_mb = self.tf_buffer.lookup_transform('map', 'base_link', rospy.Time(0.0), rospy.Duration(2.0))
+        trans_mb = self.tf_buffer.lookup_transform('map', 'base_link', rospy.Time(0.0), 2.0)
         return trans_mb
 
 def quaternion_to_list(q: Quaternion)->List:

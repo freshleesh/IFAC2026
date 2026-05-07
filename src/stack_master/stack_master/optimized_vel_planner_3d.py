@@ -46,7 +46,7 @@ import casadi as ca
 
 from f110_msgs.msg import WpntArray, Wpnt
 ## IY : Trigger service for /velopt/reload (hot-reload from gg_tuner_3d)
-from std_srvs.srv import Trigger, TriggerResponse
+from std_srvs.srv import Trigger
 ## IY : end
 
 # --- locate 3d_gb_optimizer modules ---
@@ -730,20 +730,20 @@ class VelOptNode:
                     except Exception:
                         pass
                     self._publish_solution(fresh_msg)
-                    return TriggerResponse(
+                    return Trigger.Response(
                         success=True, message='reloaded with fresh template')
                 elif self.last_wpnts_msg is not None:
                     self._publish_solution(self.last_wpnts_msg)
-                    return TriggerResponse(
+                    return Trigger.Response(
                         success=True, message='reloaded with cached template')
                 else:
-                    return TriggerResponse(
+                    return Trigger.Response(
                         success=False, message='no template message yet')
         except Exception as e:
             import traceback
             self.get_logger().error(f'[velopt] reload failed: {e}')
             self.get_logger().error(traceback.format_exc())
-            return TriggerResponse(success=False, message=str(e)[:200])
+            return Trigger.Response(success=False, message=str(e)[:200])
     ## IY : end
 
 

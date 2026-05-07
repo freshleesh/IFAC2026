@@ -12,7 +12,7 @@ import struct
 
 ## IY : hot-reload support (threading lock + Trigger service)
 import threading
-from std_srvs.srv import Trigger, TriggerResponse
+from std_srvs.srv import Trigger
 ## IY : end
 
 from f110_msgs.msg import WpntArray, Wpnt
@@ -441,16 +441,16 @@ class FBGAVelocityPlanner:
 
                 if self.last_wpnts_msg is not None:
                     self._process_and_publish(self.last_wpnts_msg)
-                    return TriggerResponse(
+                    return Trigger.Response(
                         success=True, message="reloaded and reprocessed")
                 else:
-                    return TriggerResponse(
+                    return Trigger.Response(
                         success=True, message="reloaded (no cached waypoints)")
         except Exception as e:
             self.get_logger().error(f"[FBGA] reload failed: {e}")
             import traceback
             self.get_logger().error(traceback.format_exc())
-            return TriggerResponse(success=False, message=str(e)[:200])
+            return Trigger.Response(success=False, message=str(e)[:200])
 
     def _process_and_publish(self, msg):
         """FBGA 반복 계산 + /global_waypoints publish. 기존 wpnts_callback 본문."""

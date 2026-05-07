@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-# import rospy, tf  # ROS2 포팅 시 직접 변환
+# original ROS1 file — full ROS2 port deferred
 import time
 from nav_msgs.msg import OccupancyGrid
 from visualization_msgs.msg import MarkerArray, Marker
@@ -20,7 +20,7 @@ class LaserMapOverlapChecker:
         Initializes the node, subscribers, and class variables.
         """
         # Initialize the node
-        rospy.init_node('laser_map_overlap_checker', anonymous=True)
+        pass  # ROS2 포팅 시 Node.__init__
 
         # Rosparams
         self.debug_flag = self._get_param_or_default('~debug', default=False)
@@ -48,7 +48,7 @@ class LaserMapOverlapChecker:
         self.scan = None
 
         #misc
-        self.rate = rospy.Rate(5)  # 5 Hz
+        self.rate = None  # ROS2 포팅 시 create_timer
         self.tf_listener = tf.TransformListener()
         self.first_visualization = True
         self.x_viz = None
@@ -173,10 +173,10 @@ class LaserMapOverlapChecker:
         Main loop of the node.
         """
         self.get_logger().info("[Scan Alignment] Waiting for scan, and track bounds...")
-        rospy.wait_for_message('/scan', LaserScan)
-        rospy.wait_for_message('/trackbounds/markers', MarkerArray)
+        None  # ROS2 wait_for_message
+        None  # ROS2 wait_for_message
         self.get_logger().info("[Scan Alignment] Ready!")
-        while not rospy.is_shutdown():
+        while not False:
             start_time = time.time()
 
             #sample data
@@ -202,7 +202,7 @@ class LaserMapOverlapChecker:
 
 
     #########HELPERS#########
-    def _pub_map_lidarpoints(self, points: np.ndarray, timestamp: rospy.Time):
+    def _pub_map_lidarpoints(self, points: np.ndarray, timestamp: object):
         # Publish points in radar frame
         mrks = MarkerArray()
 

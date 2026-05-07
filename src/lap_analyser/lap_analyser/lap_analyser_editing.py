@@ -8,7 +8,6 @@ from nav_msgs.msg import Odometry
 from geometry_msgs.msg import Pose, Point
 from visualization_msgs.msg import Marker
 
-from std_srvs.srv import EmptyResponse
 from std_srvs.srv import Empty as EmptySrv
 from collections import deque
 import numpy as np
@@ -312,7 +311,7 @@ class LapAnalyser:
             
         else:
             self.get_logger().warning("LapAnalyser: Cannot update start line. Frenet odometry data not available yet.")
-        return EmptyResponse()
+        return Empty.Response()
 
 
     def reset_lap_stats(self):

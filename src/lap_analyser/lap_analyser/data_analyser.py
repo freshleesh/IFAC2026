@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 from lap_analyser import LapAnalyser
-from vel_analyser import VelAnalyser
+from lap_analyser.vel_analyser import VelAnalyser
 
 if __name__ == "__main__":
     """
