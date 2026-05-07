@@ -1,0 +1,13 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>t2v_node_msgs</name>
+  <version>0.1.0</version>
+  <description>T2V (IR remote) custom msgs. SH ROS2 Jazzy 포팅.</description>
+  <maintainer email="freshleesh@gmail.com">SH</maintainer>
+  <license>Apache-2.0</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>rosidl_default_generators</buildtool_depend>
+  <exec_depend>rosidl_default_runtime</exec_depend>
+  <member_of_group>rosidl_interface_packages</member_of_group>
+  <export><build_type>ament_cmake</build_type></export>
+</package>

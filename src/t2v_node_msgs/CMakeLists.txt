@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.8)
+project(t2v_node_msgs)
+find_package(ament_cmake REQUIRED)
+find_package(rosidl_default_generators REQUIRED)
+rosidl_generate_interfaces(${PROJECT_NAME} msg/T2VCommand.msg)
+ament_export_dependencies(rosidl_default_runtime)
+ament_package()
