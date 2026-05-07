@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import rospy, rospkg
+
 import yaml, os, subprocess, time
 from f110_msgs.msg import WpntArray
 from visualization_msgs.msg import MarkerArray

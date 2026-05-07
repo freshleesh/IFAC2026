@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 ### HJ : 3D friction sector slicing — loads from global_waypoints.json (no topic dependency)
-import rospy, rospkg
+
 import yaml, os, subprocess, time, json
-from rospy_message_converter import message_converter
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider, Button
@@ -10,7 +9,7 @@ from mpl_toolkits.mplot3d import Axes3D
 
 class SectorSlicer:
     def __init__(self):
-        rospy.init_node('sector_node', anonymous=True)
+        pass  # ROS2 포팅 시 Node.__init__
 
         self.glob_slider_s = 0
         self.sector_pnts = [0]

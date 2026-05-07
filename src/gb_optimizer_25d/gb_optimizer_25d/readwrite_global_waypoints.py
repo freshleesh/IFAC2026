@@ -8,7 +8,6 @@ Now, this is done using binary files.
 
 import os
 import json
-from rospy_message_converter import message_converter
 
 from visualization_msgs.msg import MarkerArray
 from f110_msgs.msg import WpntArray

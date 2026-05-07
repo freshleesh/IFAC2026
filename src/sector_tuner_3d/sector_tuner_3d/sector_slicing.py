@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 ### HJ : 3D version of sector_slicing.py — loads from global_waypoints.json (no topic dependency)
-import rospy, rospkg
+
 import yaml, os, subprocess, time, json
-from rospy_message_converter import message_converter
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider, Button

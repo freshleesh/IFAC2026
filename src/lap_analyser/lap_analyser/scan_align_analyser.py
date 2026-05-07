@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-import rospy, tf
+# import rospy, tf  # ROS2 포팅 시 직접 변환
 import time
 from nav_msgs.msg import OccupancyGrid
 from visualization_msgs.msg import MarkerArray, Marker
