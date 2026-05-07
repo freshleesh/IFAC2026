@@ -479,8 +479,12 @@ class Controller_manager(Node):
     def car_state_cb(self, data: PoseStamped):
         x = data.pose.position.x
         y = data.pose.position.y
-        theta = euler_from_quaternion([data.pose.orientation.x, data.pose.orientation.y,
-                                       data.pose.orientation.z, data.pose.orientation.w])[2]
+        # ROS2 포팅: tf.transformations.euler_from_quaternion → 직접 atan2 (yaw)
+        q = data.pose.orientation
+        theta = math.atan2(
+            2.0 * (q.w * q.z + q.x * q.y),
+            1.0 - 2.0 * (q.y * q.y + q.z * q.z),
+        )
         self.position_in_map = np.array([x, y, theta])[np.newaxis]
         ### HJ : store z separately for 3D nearest waypoint search
         self.position_z = data.pose.position.z
@@ -649,42 +653,76 @@ class Controller_manager(Node):
     ############################################MAIN LOOP############################################
 
     def control_loop(self):
+        """Timer callback (50Hz). 첫 호출에서만 wait + setup, 그 후엔 tick body 만."""
+        if not getattr(self, "_loop_inited", False):
+            if self.mapping:
+                self._init_mapping_loop()
+            else:
+                self._init_controller_loop()
+            self._loop_inited = True
         if self.mapping:
             self.mapping_loop()
         else:
             self.controller_loop()
-    
-    def mapping_loop(self):
+
+    def _init_mapping_loop(self):
         wait_for_message(LaserScan, self, '/scan', time_to_wait=10.0)
         wait_for_message(Odometry, self, '/car_state/odom', time_to_wait=10.0)
         self.get_logger().info(f"[{self.name}] Ready for mapping!")
-        
-        if True:  # 한 번만 — timer 가 50Hz 로 호출
+
+    def _init_controller_loop(self):
+        self.get_logger().info(f"[{self.name}] Waiting for behavior_strategy")
+        wait_for_message(BehaviorStrategy, self, '/behavior_strategy', time_to_wait=10.0)
+        wait_for_message(WpntArray, self, '/global_waypoints', time_to_wait=10.0)
+        wait_for_message(Odometry, self, '/car_state/odom', time_to_wait=10.0)
+        self.get_logger().info(f"[{self.name}] BehaviorStrategy received")
+        self.get_logger().info(f"[{self.name}] Waiting for car_state/pose")
+        wait_for_message(PoseStamped, self, '/car_state/pose', time_to_wait=10.0)
+        self.track_length = self._get_param_or_default("/global_republisher/track_length")
+        self.get_logger().info(f"[{self.name}] Ready!")
+
+    def mapping_loop(self):
+        # ready check
+        if self.scan is None:
+            return
+        if True:  # 한 번 — timer 가 50Hz 로 호출
             speed, acceleration, jerk, steering_angle = 0, 0, 0, 0
             speed, steering_angle = self.ftg_controller.process_lidar(self.scan.ranges)
             ack_msg = self.create_ack_msg(speed, acceleration, jerk, steering_angle)
             self.drive_pub.publish(ack_msg)
-    def controller_loop(self):
-        self.get_logger().info(f"[{self.name}] Waiting for behavior_strategy")
-        wait_for_message(BehaviorStrategy, self, '/behavior_strategy', time_to_wait=10.0)
-        # wait_for_message(WpntArray, self, '/local_waypoints', time_to_wait=10.0)        
-        wait_for_message(WpntArray, self, '/global_waypoints', time_to_wait=10.0)
-        wait_for_message(Odometry, self, '/car_state/odom', time_to_wait=10.0)
-        # rospy.wait_for_service("convert_glob2frenet_service")
-        self.get_logger().info(f"[{self.name}] BehaviorStrategy received")
-        self.get_logger().info(f"[{self.name}] Waiting for car_state/pose")
-        wait_for_message(PoseStamped, self, '/car_state/pose', time_to_wait=10.0)
-        self.track_length = self._get_param_or_default("/global_republisher/track_length")   
-        self.get_logger().info(f"[{self.name}] Ready!")
 
-        if True:  # 한 번만 — timer 가 50Hz 로 호출
+    def controller_loop(self):
+        # ready check — callback 으로 set 되는 attribute 가 모두 채워졌나
+        # (numpy array 는 truth 가 ambiguous → 명시적 length check)
+        def _empty(v):
+            if v is None:
+                return True
+            try:
+                return len(v) == 0
+            except TypeError:
+                return False
+        if not hasattr(self, "waypoint_array_in_map") or _empty(self.waypoint_array_in_map):
+            return
+        if _empty(getattr(self, "position_in_map_frenet", None)):
+            return
+        if _empty(getattr(self, "position_in_map", None)):
+            return
+
+        if True:  # 한 번 — timer 가 50Hz 로 호출
             if self.measuring:
                 start = time.perf_counter()
             speed, acceleration, jerk, steering_angle = 0, 0, 0, 0
 
             #Logic to select controller
             if self.state != "FTGONLY":
-                speed, acceleration, jerk, steering_angle = self.controller_cycle()
+                try:
+                    speed, acceleration, jerk, steering_angle = self.controller_cycle()
+                except Exception as _e:
+                    # ROS2 strict 타입 fail 또는 callback 미수신 — ackermann 발행 보호
+                    if not getattr(self, "_cycle_warned", False):
+                        self.get_logger().warning(f"controller_cycle fail (silent after): {_e}")
+                        self._cycle_warned = True
+                    speed, acceleration, jerk, steering_angle = 0.0, 0.0, 0.0, 0.0
 
             else:
                 speed, steering_angle = self.ftg_cycle()
@@ -737,14 +775,22 @@ class Controller_manager(Node):
                                                                                                                     self.acc_now,
                                                                                                                     self.track_length)
                 
-        self.set_lookahead_marker(L1_point, 100)
-        self.visualize_steering(steering_angle)
-        self.visualize_trailing_opponent()
+        # ROS2 strict 타입: viz markers 의 numpy.float64 → C-level abort (SIGABRT 라
+        # try/except 무력화). 진짜 fix (모든 numeric float() cast) 는 D-1d 별도 phase.
+        # 우선 viz 비활성 — ackermann 발행 보호.
+        # self.set_lookahead_marker(L1_point, 100)
+        # self.visualize_steering(steering_angle)
+        # self.visualize_trailing_opponent()
 
-        self.viz_future_position(future_position, 200)
+        # self.viz_future_position(future_position, 200)  # TODO D-1d: numeric cast
 
         self.curvature_waypoints = curvature_waypoints
-        self.l1_pub.publish(Point(x=idx_nearest_waypoint, y=L1_distance, z=self.curvature_waypoints))
+        # ROS2 strict 타입: Point.x/y/z 는 float64. int / numpy 모두 float() cast.
+        self.l1_pub.publish(Point(
+            x=float(idx_nearest_waypoint),
+            y=float(L1_distance),
+            z=float(self.curvature_waypoints),
+        ))
 
         
         self.waypoint_safety_counter += 1
@@ -763,47 +809,49 @@ class Controller_manager(Node):
         
     def create_ack_msg(self, speed, acceleration, jerk, steering_angle):
         ack_msg = AckermannDriveStamped()
-        ack_msg.header.stamp = self.ros_time.now()
+        ack_msg.header.stamp = self.get_clock().now().to_msg()
         ack_msg.header.frame_id = 'base_link'
-        ack_msg.drive.steering_angle = steering_angle
-        ack_msg.drive.speed = speed
-        ack_msg.drive.jerk = jerk
-        ack_msg.drive.acceleration = acceleration
+        # ROS2 strict: numpy → float() cast 명시 (AckermannDrive 의 필드는 float32)
+        ack_msg.drive.steering_angle = float(steering_angle)
+        ack_msg.drive.speed = float(speed)
+        ack_msg.drive.jerk = float(jerk)
+        ack_msg.drive.acceleration = float(acceleration)
         return ack_msg
 
 ############################################MSG CREATION############################################
 # visualization utilities
     def visualize_steering(self, theta):
-        quaternions = quaternion_from_euler(0, 0, theta)
+        _half = float(theta) * 0.5
+        quaternions = (0.0, 0.0, math.sin(_half), math.cos(_half))
 
         lookahead_marker = Marker()
         lookahead_marker.header.frame_id = "base_link"
-        lookahead_marker.header.stamp = self.ros_time.now()
+        lookahead_marker.header.stamp = self.get_clock().now().to_msg()
         lookahead_marker.type = Marker.ARROW
         lookahead_marker.id = 50
         lookahead_marker.scale.x = 0.6
         lookahead_marker.scale.y = 0.05
-        lookahead_marker.scale.z = 0
+        lookahead_marker.scale.z = 0.0
         lookahead_marker.color.r = 1.0
         lookahead_marker.color.g = 0.0
         lookahead_marker.color.b = 0.0
         lookahead_marker.color.a = 1.0
         from rclpy.duration import Duration as _Duration
         lookahead_marker.lifetime = _Duration().to_msg()
-        lookahead_marker.pose.position.x = 0
-        lookahead_marker.pose.position.y = 0
-        lookahead_marker.pose.position.z = 0
-        lookahead_marker.pose.orientation.x = quaternions[0]
-        lookahead_marker.pose.orientation.y = quaternions[1]
-        lookahead_marker.pose.orientation.z = quaternions[2]
-        lookahead_marker.pose.orientation.w = quaternions[3]
+        lookahead_marker.pose.position.x = 0.0
+        lookahead_marker.pose.position.y = 0.0
+        lookahead_marker.pose.position.z = 0.0
+        lookahead_marker.pose.orientation.x = float(quaternions[0])
+        lookahead_marker.pose.orientation.y = float(quaternions[1])
+        lookahead_marker.pose.orientation.z = float(quaternions[2])
+        lookahead_marker.pose.orientation.w = float(quaternions[3])
         self.lookahead_pub.publish(lookahead_marker)
 
     def set_lookahead_marker(self, lookahead_point, id):
-        
+
         lookahead_marker = Marker()
         lookahead_marker.header.frame_id = "map"
-        lookahead_marker.header.stamp = self.ros_time.now()
+        lookahead_marker.header.stamp = self.get_clock().now().to_msg()
         lookahead_marker.type = 2
         lookahead_marker.id = id
         lookahead_marker.scale.x = 0.35
@@ -813,52 +861,49 @@ class Controller_manager(Node):
         lookahead_marker.color.g = 0.0
         lookahead_marker.color.b = 0.0
         lookahead_marker.color.a = 1.0
-        lookahead_marker.pose.position.x = lookahead_point[0]
-        lookahead_marker.pose.position.y = lookahead_point[1]
-        ### HJ : use actual z from L1 point for 3D visualization
-        lookahead_marker.pose.position.z = lookahead_point[2] if len(lookahead_point) > 2 else 0
+        lookahead_marker.pose.position.x = float(lookahead_point[0])
+        lookahead_marker.pose.position.y = float(lookahead_point[1])
+        lookahead_marker.pose.position.z = float(lookahead_point[2]) if len(lookahead_point) > 2 else 0.0
 
-        lookahead_marker.pose.orientation.x = 0
-        lookahead_marker.pose.orientation.y = 0
-        lookahead_marker.pose.orientation.z = 0
-        lookahead_marker.pose.orientation.w = 1
+        lookahead_marker.pose.orientation.x = 0.0
+        lookahead_marker.pose.orientation.y = 0.0
+        lookahead_marker.pose.orientation.z = 0.0
+        lookahead_marker.pose.orientation.w = 1.0
 
         self.lookahead_pub.publish(lookahead_marker)
 
     def viz_future_position(self, future_position,id):
 
-        quaternions = quaternion_from_euler(0, 0, future_position[0,2])
+        _half = float(future_position[0,2]) * 0.5
+        quaternions = (0.0, 0.0, math.sin(_half), math.cos(_half))
 
         future_position_marker = Marker()
         future_position_marker.header.frame_id = "map"
-        future_position_marker.header.stamp = self.ros_time.now()
+        future_position_marker.header.stamp = self.get_clock().now().to_msg()
         future_position_marker.type = Marker.ARROW
         future_position_marker.id = id
         future_position_marker.scale.x = 1.2
         future_position_marker.scale.y = 0.06
-        future_position_marker.scale.z = 0
+        future_position_marker.scale.z = 0.0
         future_position_marker.color.r = 0.5
         future_position_marker.color.g = 0.0
         future_position_marker.color.b = 0.5
         future_position_marker.color.a = 1.0
-        future_position_marker.pose.position.x = future_position[0,0]
-        future_position_marker.pose.position.y = future_position[0,1]
-        ### HJ : use spline-interpolated z for 3D visualization
-        future_position_marker.pose.position.z = self.controller.future_position_z
+        future_position_marker.pose.position.x = float(future_position[0,0])
+        future_position_marker.pose.position.y = float(future_position[0,1])
+        future_position_marker.pose.position.z = float(self.controller.future_position_z)
 
-        future_position_marker.pose.orientation.x = quaternions[0]
-        future_position_marker.pose.orientation.y = quaternions[1]
-        future_position_marker.pose.orientation.z = quaternions[2]
-        future_position_marker.pose.orientation.w = quaternions[3]
+        future_position_marker.pose.orientation.x = float(quaternions[0])
+        future_position_marker.pose.orientation.y = float(quaternions[1])
+        future_position_marker.pose.orientation.z = float(quaternions[2])
+        future_position_marker.pose.orientation.w = float(quaternions[3])
 
         self.future_position_pub.publish(future_position_marker)
-
-
 
     def set_test_lookahead_marker(self, lookahead_point, id):
         lookahead_marker = Marker()
         lookahead_marker.header.frame_id = "map"
-        lookahead_marker.header.stamp = self.ros_time.now()
+        lookahead_marker.header.stamp = self.get_clock().now().to_msg()
         lookahead_marker.type = 2
         lookahead_marker.id = id
         lookahead_marker.scale.x = 0.35
@@ -868,14 +913,13 @@ class Controller_manager(Node):
         lookahead_marker.color.g = 0.0
         lookahead_marker.color.b = 1.0
         lookahead_marker.color.a = 1.0
-        lookahead_marker.pose.position.x = lookahead_point[0]
-        lookahead_marker.pose.position.y = lookahead_point[1]
-        ### HJ : use actual z for 3D visualization
-        lookahead_marker.pose.position.z = lookahead_point[2] if len(lookahead_point) > 2 else 0
-        lookahead_marker.pose.orientation.x = 0
-        lookahead_marker.pose.orientation.y = 0
-        lookahead_marker.pose.orientation.z = 0
-        lookahead_marker.pose.orientation.w = 1
+        lookahead_marker.pose.position.x = float(lookahead_point[0])
+        lookahead_marker.pose.position.y = float(lookahead_point[1])
+        lookahead_marker.pose.position.z = float(lookahead_point[2]) if len(lookahead_point) > 2 else 0.0
+        lookahead_marker.pose.orientation.x = 0.0
+        lookahead_marker.pose.orientation.y = 0.0
+        lookahead_marker.pose.orientation.z = 0.0
+        lookahead_marker.pose.orientation.w = 1.0
         self.lookahead_pub.publish(lookahead_marker)
 
     def visualize_trailing_opponent(self):
@@ -885,7 +929,7 @@ class Controller_manager(Node):
             on = False
         opponent_marker = Marker()
         opponent_marker.header.frame_id = "map"
-        opponent_marker.header.stamp = self.ros_time.now()
+        opponent_marker.header.stamp = self.get_clock().now().to_msg()
         opponent_marker.type = 2
         opponent_marker.scale.x = 0.3
         opponent_marker.scale.y = 0.3
@@ -895,16 +939,15 @@ class Controller_manager(Node):
         opponent_marker.color.b = 0.0
         opponent_marker.color.a = 1.0
         if self.opponent is not None:
-            ### HJ : use 3D cartesian for opponent marker visualization
             pos = self.converter.get_cartesian_3d([self.opponent[0]], [self.opponent[1]])
-            opponent_marker.pose.position.x = pos[0]
-            opponent_marker.pose.position.y = pos[1]
-            opponent_marker.pose.position.z = pos[2]
+            opponent_marker.pose.position.x = float(pos[0])
+            opponent_marker.pose.position.y = float(pos[1])
+            opponent_marker.pose.position.z = float(pos[2])
 
-        opponent_marker.pose.orientation.x = 0
-        opponent_marker.pose.orientation.y = 0
-        opponent_marker.pose.orientation.z = 0
-        opponent_marker.pose.orientation.w = 1
+        opponent_marker.pose.orientation.x = 0.0
+        opponent_marker.pose.orientation.y = 0.0
+        opponent_marker.pose.orientation.z = 0.0
+        opponent_marker.pose.orientation.w = 1.0
         if on == False:
             opponent_marker.action = Marker.DELETE
         self.trailing_pub.publish(opponent_marker)
@@ -918,12 +961,9 @@ def main(args=None):
         print(f"[controller_manager] startup error: {e}")
         rclpy.shutdown()
         return
-    # control_loop 한 번 호출 — wait_for_message + 첫 iteration
-    node.control_loop()
-    # 그 후 spin: control_loop body 가 timer 로 50Hz 호출되어야 진짜 동작.
-    # 일단 import 검증을 위해 spin 진입.
+    # control_loop 의 init 단계 (wait_for_message + 첫 setup) 는 첫 timer callback
+    # 안에서 처리 (_loop_inited flag). 그 후 매 50Hz tick.
     try:
-        # control_loop 의 mapping/controller body 를 timer 로 등록
         node.create_timer(1.0 / node.loop_rate, node.control_loop)
         rclpy.spin(node)
     except KeyboardInterrupt:

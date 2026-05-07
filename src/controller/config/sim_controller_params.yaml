@@ -4,24 +4,32 @@ control_node:
     /measure: false
     /sim: true
     /vesc/wheelbase: 0.33
+    L1_controller/AEB_thres: 0.0
     L1_controller/KD: 0.05
     L1_controller/KD_for_speed: 0.2
     L1_controller/KI: 0.0
     L1_controller/KI_for_speed: 0.5
     L1_controller/KP: 0.5
     L1_controller/KP_for_speed: 1.5
+    L1_controller/K_yr: 0.0
     L1_controller/a_x_max: 5.0
     L1_controller/a_y_max: 5.0
     L1_controller/acc_scaler_for_steer: 1.0
     L1_controller/b_ax_max_machines: 3.0
     L1_controller/blind_trailing_speed: 1.5
+    L1_controller/brake_current: 5.0
+    L1_controller/brake_current_min: 1.0
+    L1_controller/brake_mode: 0
+    L1_controller/brake_speed_diff_thres: 0.5
     L1_controller/curvature_factor: 2.5
     L1_controller/dec_scaler_for_steer: 1.0
     L1_controller/downscale_factor: 0.5
     L1_controller/dyn_model_exp: 1.2
+    L1_controller/enable_brake_ctrl: false
     L1_controller/end_scale_speed: 8.0
     L1_controller/future_constant: 0.0
     L1_controller/heading_error_thres: 10.0
+    L1_controller/lat_correction_mode: 0
     L1_controller/lat_err_coeff: 1.0
     L1_controller/m_l1: 0.32
     L1_controller/prioritize_dyn: true
@@ -41,10 +49,12 @@ control_node:
     L1_controller/trailing_gap: 1.0
     L1_controller/trailing_i_gain: 0.0
     L1_controller/trailing_p_gain: 1.5
+    L1_controller/trailing_vel_gain: 1.0
     L1_controller/v_max: 8.0
     L1_controller/velocity_step: 0.5
     controller_manager/LU_table: SIM_pacejka
     controller_manager/ctrl_algo: PP
     controller_manager/mapping: false
+    controller_manager/use_pose: true
     racecar_version: SIM
     state_machine/rate: 50.0

@@ -356,15 +356,16 @@ class Controller:
             mrk.color.b = 1.0
  
             mrk.id = i
-            mrk.pose.position.x = self.future_position[0, 0]
-            mrk.pose.position.y = self.future_position[0, 1]
-            ### HJ : use spline-interpolated z for 3D marker
-            mrk.pose.position.z = self.future_position_z
-            mrk.pose.orientation.w = 1
+            mrk.pose.position.x = float(self.future_position[0, 0])
+            mrk.pose.position.y = float(self.future_position[0, 1])
+            mrk.pose.position.z = float(self.future_position_z)
+            mrk.pose.orientation.w = 1.0
             marks.markers.append(mrk)
  
             
-        self.predict_pub.publish(marks)
+        # ROS2 strict 타입 — marks 안 numeric 이 numpy.float64 면 C-level SIGABRT
+        # (try/except 무력화). 진짜 fix 는 D-1d. 우선 비활성 — controller core 보호.
+        # self.predict_pub.publish(marks)
  
         if (self.state == "TRAILING") and (self.opponent is not None):
             speed_la_for_lu = self.speed_now

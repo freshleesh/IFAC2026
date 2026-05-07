@@ -324,7 +324,8 @@ class FrenetConverter:
         return None, proj, d
 
     def get_derivative(self, s) -> np.ndarray:
-        s = s % self.raceline_length
+        # list / scalar 도 수용 — np.asarray 로 강제 변환 후 modulo
+        s = np.asarray(s, dtype=float) % self.raceline_length
         return [self.spline_x(s, 1), self.spline_y(s, 1)]
 
     # ---------- Cartesian 변환 ----------
