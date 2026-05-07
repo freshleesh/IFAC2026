@@ -1,19 +1,17 @@
-"""C-6 통합 smoke launch.
+"""C-6 / D-1b 통합 smoke launch.
 
-state_machine 노드와 그 의존을 모두 한 번에 띄움 — startup 진입 검증용.
+state_machine + controller 노드를 모든 의존과 함께 launch.
 
-기동 순서 (TimerAction 으로 staggered):
-  t=0:    global_republisher (트랙 sticky 발행)
-  t=1:    frenet_conversion_server (service)
-  t=1:    fake_odom_publisher (raceline 따라 odom 발행 → /car_state/odom)
-  t=2:    frenet_odom_republisher (/car_state/odom → /car_state/odom_frenet)
-  t=2:    fake_topic_relay (/global_waypoints alias 두 개 + recovery 빈 메시지)
-  t=2:    random_obstacle_publisher (/obstacles → 그대로 /tracking/obstacles 으로 사용)
-  t=4:    state_machine (모든 의존 ready 후 startup)
-
-map=gazebo_wall_2 default. trajectory_planning_helpers (tph) 가 필요한 노드는
-state_machine 의 _load_vehicle_dynamics 안. 검증 시점에 pip install 결정.
+기동 순서 (TimerAction):
+  t=0:  global_republisher (트랙 sticky 발행)
+  t=1:  frenet_conversion_server (service) + fake_odom_publisher (/car_state/odom)
+  t=2:  frenet_odom_republisher + fake_topic_relay + random_obstacle_publisher
+  t=4:  state_machine
+  t=5:  controller_manager (state_machine 의 /local_waypoints + /behavior_strategy 받음)
 """
+import os
+
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, TimerAction
 from launch.substitutions import LaunchConfiguration
@@ -127,10 +125,23 @@ def generate_launch_description() -> LaunchDescription:
         output="screen",
     )])
 
+    # 8) controller_manager — t=5 (state_machine 발행 후)
+    controller_yaml = os.path.join(
+        get_package_share_directory("controller"), "config", "sim_controller_params.yaml"
+    )
+    controller_node = TimerAction(period=5.0, actions=[Node(
+        package="controller",
+        executable="controller_manager",
+        name="control_node",
+        parameters=[controller_yaml],
+        output="screen",
+    )])
+
     return LaunchDescription([
         map_arg, racecar_arg, ot_planner_arg,
         global_repub,
         frenet_server, fake_odom,
         frenet_odom_repub, fake_relay, random_obs,
         sm_node,
+        controller_node,
     ])

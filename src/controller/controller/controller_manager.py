@@ -177,7 +177,7 @@ class Controller_manager(Node):
         # Parameters
         for i in range(5):
             # waiting for this message twice, as the republisher needs it first to compute the wanted param
-            waypoints = wait_for_message(WpntArray, self, '/global_waypoints', time_to_wait=10.0)
+            _ok, waypoints = wait_for_message(WpntArray, self, '/global_waypoints', time_to_wait=10.0)
         self.waypoints = np.array([[wpnt.x_m, wpnt.y_m, wpnt.z_m] for wpnt in waypoints.wpnts])
 
         # ===== HJ MODIFIED: Dual track length for GB and Fixed =====
@@ -246,6 +246,7 @@ class Controller_manager(Node):
 
             self.converter,
 
+            node=self,  # ROS2 포팅: Controller 가 self.create_publisher 등 호출 위해 노드 ref
             logger_info=self.get_logger().info,
             logger_warn=self.get_logger().warning
         )

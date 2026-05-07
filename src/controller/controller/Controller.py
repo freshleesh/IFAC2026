@@ -10,7 +10,13 @@ import numpy as np
 try:
     from steering_lookup.lookup_steer_angle import LookupSteerAngle
 except ImportError:
-    LookupSteerAngle = None  # ROS2 ws 미포팅 — Controller 사용 시 conditional
+    # ROS2 ws 미포팅 — system_identification 패키지가 ROS1 docker 안에만 있음.
+    # smoke 검증용 stub: 모든 angle / current 0 반환 (실 차량 운영 시 진짜 lookup 필수).
+    class LookupSteerAngle:
+        def __init__(self, *a, **kw):
+            pass
+        def lookup_steer_angle(self, *a, **kw):
+            return 0.0
 
 from visualization_msgs.msg import Marker, MarkerArray
 from geometry_msgs.msg import Point
@@ -78,10 +84,14 @@ class Controller:
                 AEB_thres,
  
                 converter,
- 
+
                 logger_info = logging.info,
                 logger_warn = logging.warn,
+                node = None,  # ROS2 포팅: Controller 가 Node 아니므로 외부 노드 ref 받음
             ):
+
+        # ROS2 포팅: 외부 노드 ref (controller_manager) — create_publisher / get_logger / get_clock 위임
+        self._node = node
 
         # Parameters from manager
         self.t_clip_min = t_clip_min
@@ -97,7 +107,7 @@ class Controller:
         self.downscale_factor = downscale_factor
         self.speed_lookahead_for_steer = speed_lookahead_for_steer
  
-        self.predict_pub = self.create_publisher(MarkerArray, "/controller_prediction/markers", 10)
+        self.predict_pub = self._node.create_publisher(MarkerArray, "/controller_prediction/markers", 10)
  
         # L1 dist calc param
         self.curvature_factor = curvature_factor
@@ -160,29 +170,29 @@ class Controller:
         self.boost_mode = False
 
         ### HJ : lateral correction params (updated via dyn_reconfigure)
-        lat_mode_int = self._get_param_or_default('L1_controller/lat_correction_mode', 0)
+        lat_mode_int = self._node._get_param_or_default('L1_controller/lat_correction_mode', 0)
         self.lat_correction_mode = ['none', 'stanley', 'predictive'][lat_mode_int]
-        self.lat_K_stanley = self._get_param_or_default('L1_controller/lat_K_stanley', 1.5)
-        self.lat_pred_horizon = self._get_param_or_default('L1_controller/lat_pred_horizon', 0.3)
-        self.lat_pred_alpha = self._get_param_or_default('L1_controller/lat_pred_alpha', 0.3)
-        self.get_logger().info(f"[Controller] Lateral correction mode: {self.lat_correction_mode}")
-        self.speed_ff_gain_accel = self._get_param_or_default('L1_controller/speed_ff_gain_accel', 0.0)
-        self.speed_ff_gain_brake = self._get_param_or_default('L1_controller/speed_ff_gain_brake', 0.0)
-        self.ff_accel_lookahead = self._get_param_or_default('L1_controller/ff_accel_lookahead', 0.0)
-        self.ff_brake_lookahead = self._get_param_or_default('L1_controller/ff_brake_lookahead', 0.0)
+        self.lat_K_stanley = self._node._get_param_or_default('L1_controller/lat_K_stanley', 1.5)
+        self.lat_pred_horizon = self._node._get_param_or_default('L1_controller/lat_pred_horizon', 0.3)
+        self.lat_pred_alpha = self._node._get_param_or_default('L1_controller/lat_pred_alpha', 0.3)
+        self._node.get_logger().info(f"[Controller] Lateral correction mode: {self.lat_correction_mode}")
+        self.speed_ff_gain_accel = self._node._get_param_or_default('L1_controller/speed_ff_gain_accel', 0.0)
+        self.speed_ff_gain_brake = self._node._get_param_or_default('L1_controller/speed_ff_gain_brake', 0.0)
+        self.ff_accel_lookahead = self._node._get_param_or_default('L1_controller/ff_accel_lookahead', 0.0)
+        self.ff_brake_lookahead = self._node._get_param_or_default('L1_controller/ff_brake_lookahead', 0.0)
 
         ### HJ : friction-ellipse accel limiter params
-        self.accel_limiter_enabled = self._get_param_or_default('L1_controller/accel_limiter_enabled', True)
-        self.accel_lim_ax_max = self._get_param_or_default('L1_controller/accel_lim_ax_max', 5.0)
-        self.accel_lim_ay_max = self._get_param_or_default('L1_controller/accel_lim_ay_max', 4.5)
-        self.accel_lim_horizon = self._get_param_or_default('L1_controller/accel_lim_horizon', 0.3)
-        self.accel_lim_lookahead = self._get_param_or_default('L1_controller/accel_lim_lookahead', 0.3)
+        self.accel_limiter_enabled = self._node._get_param_or_default('L1_controller/accel_limiter_enabled', True)
+        self.accel_lim_ax_max = self._node._get_param_or_default('L1_controller/accel_lim_ax_max', 5.0)
+        self.accel_lim_ay_max = self._node._get_param_or_default('L1_controller/accel_lim_ay_max', 4.5)
+        self.accel_lim_horizon = self._node._get_param_or_default('L1_controller/accel_lim_horizon', 0.3)
+        self.accel_lim_lookahead = self._node._get_param_or_default('L1_controller/accel_lim_lookahead', 0.3)
         ### HJ : end
 
         ### HJ : yaw rate feedback (oversteer/understeer compensation)
-        self.K_yr = self._get_param_or_default('L1_controller/K_yr', 0.0)
-        self.K_yr_sat = self._get_param_or_default('L1_controller/K_yr_sat', 0.05)  ### HJ : corr clip [rad]
-        self.K_us = self._get_param_or_default('L1_controller/K_us', 0.0)  ### HJ : understeer gradient [s^2/m] (0=kinematic)
+        self.K_yr = self._node._get_param_or_default('L1_controller/K_yr', 0.0)
+        self.K_yr_sat = self._node._get_param_or_default('L1_controller/K_yr_sat', 0.05)  ### HJ : corr clip [rad]
+        self.K_us = self._node._get_param_or_default('L1_controller/K_us', 0.0)  ### HJ : understeer gradient [s^2/m] (0=kinematic)
         ### HJ : end
 
         ### HJ : GP steering correction
@@ -387,7 +397,7 @@ class Controller:
             steering_angle = np.arctan(2*self.wheelbase*np.sin(eta)/L1_distance)
  
         else :
-            self.get_logger().warning(f"Wrong control algorithm({self.ctrl_algo}) selected!!")
+            self._node.get_logger().warning(f"Wrong control algorithm({self.ctrl_algo}) selected!!")
  
         dt = 1.0 / self.loop_rate  
         
@@ -432,7 +442,7 @@ class Controller:
             if self.K_yr > 0:
                 steering_angle += corr
             applied = "ON " if self.K_yr > 0 else "obs"
-            self.get_logger().info(f"[YawFB {applied}] v={v:.2f} δ={steering_angle - (corr if self.K_yr > 0 else 0.0):+.4f} "
+            self._node.get_logger().info(f"[YawFB {applied}] v={v:.2f} δ={steering_angle - (corr if self.K_yr > 0 else 0.0):+.4f} "
                 f"K_us={self.K_us:.3f} exp_yr={expected_yr:+.3f} act_yr={self.yaw_rate:+.3f} "
                 f"err={yr_error:+.3f} corr_raw={corr_raw:+.4f} corr={corr:+.4f}")
         ### HJ : end
@@ -459,7 +469,7 @@ class Controller:
 
         # ===== HJ ADDED: Final NaN check before returning =====
         if np.isnan(steering_angle):
-            self.get_logger().error("[Controller] NaN in steering_angle, using previous value")
+            self._node.get_logger().error("[Controller] NaN in steering_angle, using previous value")
             steering_angle = self.curr_steering_angle if not np.isnan(self.curr_steering_angle) else 0.0
         # ===== HJ ADDED END =====
 
@@ -620,7 +630,7 @@ class Controller:
 
             speed_before = speed_command
             speed_command = min(speed_command, v_max_lat, v_max_long)
-            self.get_logger().info(f"[AccelLim] v={cur_speed:.2f} cmd={speed_before:.2f}->{speed_command:.2f} "
+            self._node.get_logger().info(f"[AccelLim] v={cur_speed:.2f} cmd={speed_before:.2f}->{speed_command:.2f} "
                 f"k_now={kappa_now:.3f} k_ref={kappa_ref:.3f} "
                 f"v_lat={v_max_lat:.2f} v_long={v_max_long:.2f} ax_av={ax_available:.2f}")
         ### HJ : end
@@ -720,7 +730,7 @@ class Controller:
             out = self._predictive_correction(steering_angle, signed_d, yaw)
         else:
             out = steering_angle  # 'none' — no correction
-        self.get_logger().info(f"[LatCorr] mode={self.lat_correction_mode} "
+        self._node.get_logger().info(f"[LatCorr] mode={self.lat_correction_mode} "
             f"d={signed_d:+.3f} v={self.speed_now:.2f} "
             f"δ_in={steering_angle:+.4f} δ_out={out:+.4f} Δ={out-steering_angle:+.4f}")
         return out
@@ -792,8 +802,8 @@ class Controller:
     def _load_gp_model(self):
         """Init GP model tracking. Actual load happens via _try_reload_gp()."""
         self._gp_model_mtime = 0.0
-        self.gp_max_correction = self._get_param_or_default('L1_controller/gp_max_correction', 0.05)
-        self.gp_uncertainty_thres = self._get_param_or_default('L1_controller/gp_uncertainty_thres', 0.1)
+        self.gp_max_correction = self._node._get_param_or_default('L1_controller/gp_max_correction', 0.05)
+        self.gp_uncertainty_thres = self._node._get_param_or_default('L1_controller/gp_uncertainty_thres', 0.1)
         self._try_reload_gp()
 
     def _try_reload_gp(self):
@@ -815,10 +825,10 @@ class Controller:
                 self.gp_steer_model = pickle.load(f)
             self._gp_model_mtime = mtime
             self._gp_load_warned = False
-            self.get_logger().info(f"[Controller] GP model hot-reloaded: {self.GP_MODEL_PATH}")
+            self._node.get_logger().info(f"[Controller] GP model hot-reloaded: {self.GP_MODEL_PATH}")
         except Exception as e:
             if not hasattr(self, '_gp_load_warned') or not self._gp_load_warned:
-                self.get_logger().warning(f"[Controller] GP reload failed: {e}")
+                self._node.get_logger().warning(f"[Controller] GP reload failed: {e}")
                 self._gp_load_warned = True
 
     def _apply_gp_correction(self, steering_angle, yaw):
@@ -867,7 +877,7 @@ class Controller:
         """
         # ===== HJ ADDED: NaN safety check =====
         if np.any(np.isnan(self.future_position)):
-            self.get_logger().warning("[Controller] NaN in future_position, returning 0 for lateral error norm")
+            self._node.get_logger().warning("[Controller] NaN in future_position, returning 0 for lateral error norm")
             return 0.0, 0.0
         # ===== HJ ADDED END =====
 
@@ -885,7 +895,7 @@ class Controller:
             future_position_d = future_position_d[0]  # Keep sign
             future_lat_err = abs(future_position_d - future_local_wpnts_d)  # Distance between car and waypoint
         except (ValueError, Exception) as e:
-            self.get_logger().warning(f"[Controller] Frenet conversion failed: {e}, returning 0 for lateral error norm")
+            self._node.get_logger().warning(f"[Controller] Frenet conversion failed: {e}, returning 0 for lateral error norm")
             return 0.0, 0.0
         ### HJ : end
         # ===== HJ MODIFIED END =====
@@ -947,7 +957,7 @@ class Controller:
         heading_error = target_heading - yaw
         # ===== HJ MODIFIED: Add NaN check before modulo operation =====
         if np.isnan(heading_error):
-            self.get_logger().error("[Controller] NaN in heading_error, setting to 0")
+            self._node.get_logger().error("[Controller] NaN in heading_error, setting to 0")
             heading_error = 0.0
         else:
             heading_error = (heading_error + np.pi) % (2 * np.pi) - np.pi
@@ -1017,7 +1027,7 @@ class Controller:
             if np.isnan(psi_current): nan_sources.append(f"psi={psi_current}")
             if np.isnan(v): nan_sources.append(f"v={v}")
             if np.isnan(delta): nan_sources.append(f"delta={delta}")
-            self.get_logger().error(f"[Controller] NaN in calc_future_position: {', '.join(nan_sources)}")
+            self._node.get_logger().error(f"[Controller] NaN in calc_future_position: {', '.join(nan_sources)}")
 
             future_position = np.zeros((1, 3))
             future_position[0, 0] = x_current if not np.isnan(x_current) else 0.0
