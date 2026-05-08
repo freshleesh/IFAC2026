@@ -135,6 +135,7 @@ def _build(context: LaunchContext, *_args, **_kwargs):
         name="state_machine",
         parameters=[{
             "racecar_version": racecar_version,
+            "map": map_name,    # ROS2: state_machine init 의 ot_sectors.yaml fallback 용
             "state_machine/rate": 50.0,
             "state_machine/n_loc_wpnts": 80,
             "state_machine/ot_planner": ot_planner,

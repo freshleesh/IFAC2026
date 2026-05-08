@@ -74,6 +74,25 @@ class InitMixin:
         if not isinstance(self.ot_sectors_params, dict):
             self.ot_sectors_params = {"n_sectors": 0}
         self.n_ot_sectors = self.ot_sectors_params.get("n_sectors", 0)
+
+        # ROS2 fallback: /ot_map_params 가 launch 에서 안 넘어올 때 stack_master/maps/<map>/ot_sectors.yaml 직접 로드
+        if self.n_ot_sectors == 0:
+            map_name = self._get_param_or_default("map", "")
+            if map_name:
+                try:
+                    import yaml as _yaml
+                    import os as _os
+                    from ament_index_python.packages import get_package_share_directory as _gpsd
+                    _yaml_path = _os.path.join(_gpsd("stack_master"), "maps", map_name, "ot_sectors.yaml")
+                    with open(_yaml_path) as _f:
+                        self.ot_sectors_params = _yaml.safe_load(_f)
+                    self.n_ot_sectors = int(self.ot_sectors_params.get("n_sectors", 0))
+                    self.get_logger().info(
+                        f"[StateMachine] ot_sectors fallback loaded from {_yaml_path}: "
+                        f"n_sectors={self.n_ot_sectors}"
+                    )
+                except Exception as _e:
+                    self.get_logger().warn(f"[StateMachine] ot_sectors yaml fallback failed: {_e}")
         self.volt_threshold = self._get_param_or_default("state_machine/volt_threshold", default=10)
         self.ot_planner = self._get_param_or_default("state_machine/ot_planner", default="predictive_spliner")
 
@@ -209,7 +228,20 @@ class InitMixin:
 
         # Overtaking 상태
         self.overtake_wpnts = None
+        # ROS2: dyn_reconfigure ot_dyn_param_cb 가 overtake_zones 채우는데 우리는 그 cb 비활성
+        # → ot_sectors_params 에서 직접 채움 (ot_flag=true 인 sector 만 추가)
         self.overtake_zones = []
+        try:
+            for _i in range(self.n_ot_sectors):
+                _sec = self.ot_sectors_params.get(f"Overtaking_sector{_i}", {})
+                if _sec.get("ot_flag", False):
+                    self.overtake_zones.append([_sec["start"], _sec["end"] + 1])
+            if self.overtake_zones:
+                self.get_logger().info(
+                    f"[StateMachine] overtake_zones initialized from yaml: {self.overtake_zones}"
+                )
+        except Exception as _e:
+            self.get_logger().warn(f"[StateMachine] overtake_zones init failed: {_e}")
         self.ot_begin_margin = 0.5
         self.cur_volt = 11.69  # default value for sim
         self.static_overtaking_mode = False
