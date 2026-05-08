@@ -50,7 +50,7 @@ from state_machine.state_machine_callbacks import (
 )
 
 # ===== HJ ADDED: Debug logging helper for state_machine_node =====
-DEBUG_LOGGING_ENABLED = False  # Set to False to disable all debug logging
+DEBUG_LOGGING_ENABLED = True  # Set to False to disable all debug logging
 _debug_log_cache = {}
 
 # NOTE: ENABLE_STATIC_SECTOR_FILTERING / HORIZON_FOR_TTL 은 state_machine_callbacks 로 이동.

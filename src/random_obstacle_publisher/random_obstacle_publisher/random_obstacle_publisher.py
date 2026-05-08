@@ -163,6 +163,13 @@ class RandomObstaclePublisher(Node):
         ob.d_left = spec.d_left
         ob.d_right = spec.d_right
         ob.is_actually_a_gap = spec.is_actually_a_gap
+        # spliner do_spline 이 정적 분기에서만 spline 생성 — random sim 장애물은 정적 처리
+        ob.is_static = True
+        ob.is_visible = True
+        # s_center / d_center / size — spliner _more_space 가 사용
+        ob.s_center = (spec.s_start + spec.s_end) * 0.5
+        ob.d_center = (spec.d_left + spec.d_right) * 0.5
+        ob.size = abs(spec.d_left - spec.d_right)
         return ob
 
 

@@ -412,8 +412,8 @@ class InitMixin:
             # Smart Static 모드 (HJ 추가)
             self.create_subscription(OTWpntArray, "/planner/avoidance/smart_static_otwpnts", self.smart_static_avoidance_cb, 10)
             self.create_subscription(Bool, "/planner/avoidance/smart_static_active", self.smart_static_active_cb, 10)
-            if self.ot_planner == "predictive_spliner":
-                self.create_subscription(OTWpntArray, "/planner/avoidance/static_otwpnts", self.static_avoidance_cb, 10)
+            # static_avoidance_cb 는 spliner / predictive_spliner 둘 다 — _check_static_overtaking_mode 활성용
+            self.create_subscription(OTWpntArray, "/planner/avoidance/static_otwpnts", self.static_avoidance_cb, 10)
         if self.ot_planner == "predictive_spliner":
             self.create_subscription(Float32MultiArray, "/planner/avoidance/merger", self.merger_cb, 10)
             self.create_subscription(Bool, "collision_prediction/force_trailing", self.force_trailing_cb, 10)

@@ -87,7 +87,7 @@ class ObstacleSpliner(Node):
         self.spline_scale = self._get_param_or_default("/spline_scale", 0.8)
         self.post_min_dist = self._get_param_or_default("/post_min_dist", 1.5)
         self.post_max_dist = self._get_param_or_default("/post_max_dist", 5.0)
-        self.kernel_size = self._get_param_or_default("/kernel_size", 4)
+        self.kernel_size = self._get_param_or_default("/kernel_size", 1)  # ROS2: default 4 → 1 (f 맵 좁은 트랙 호환)
         
         self.map_filter = GridFilter(node=self, map_topic="/map", debug=False)
         self.map_filter.set_erosion_kernel_size(self.kernel_size)
@@ -110,6 +110,10 @@ class ObstacleSpliner(Node):
 
         self.mrks_pub = self.create_publisher(MarkerArray, "/planner/avoidance/markers", 10)
         self.evasion_pub = self.create_publisher(OTWpntArray, "/planner/avoidance/otwpnts", 10)
+        # state_machine 의 _check_static_overtaking_mode 가 사용 — spliner 모드에서
+        # 정적 OT 분기 활성화하려면 별도 토픽도 발행 필요 (avoidance_cb / static_avoidance_cb 가
+        # 각각 다른 attribute 채움).
+        self.evasion_static_pub = self.create_publisher(OTWpntArray, "/planner/avoidance/static_otwpnts", 10)
         self.closest_obs_pub = self.create_publisher(Marker, "/planner/avoidance/considered_OBS", 10)
         self.pub_propagated = self.create_publisher(Marker, "/planner/avoidance/propagated_obs", 10)
         if self.measuring:
@@ -199,17 +203,46 @@ class ObstacleSpliner(Node):
     # MAIN LOOP #
     #############
     def _tick(self):
-        """ROS2 timer 기반 tick (원본 loop() body 1회). 의존 토픽 ready 안 됐으면 skip."""
-        if not self.gb_scaled_wpnts.wpnts:
-            return
+        """ROS2 timer tick (원본 loop() body 1회).
+
+        매 tick 마다 빈 OTWpntArray 라도 publish — state_machine 의 wpnts_are_latest
+        체크가 stamp 기반이라 안 발행하면 OVERTAKE 영원히 진입 못 함.
+        """
+        # 진단: 매 1 초 (20 tick) 마다 한 번 출력
+        if not hasattr(self, "_tick_count"):
+            self._tick_count = 0
+        self._tick_count += 1
+        if self._tick_count % 20 == 1:
+            obs_n = 0 if self.obs_in_interest is None else 1
+            self.get_logger().info(
+                f"[spliner] _tick #{self._tick_count}: gb_scaled={len(self.gb_scaled_wpnts.wpnts)}, "
+                f"obs_in_interest={obs_n}"
+            )
         if self.measuring:
             start = time.perf_counter()
-        gb_scaled_wpnts = self.gb_scaled_wpnts.wpnts
+        # gb_scaled_wpnts callback 없으면 gb_wpnts (raceline) 로 fallback
+        gb_scaled_wpnts = (
+            self.gb_scaled_wpnts.wpnts if self.gb_scaled_wpnts.wpnts else self.gb_wpnts.wpnts
+        )
         wpnts = OTWpntArray()
+        wpnts.header.stamp = self.get_clock().now().to_msg()
+        wpnts.header.frame_id = "map"
         mrks = MarkerArray()
 
-        if self.obs_in_interest is not None:
-            wpnts, mrks = self.do_spline(obs=copy.deepcopy(self.obs_in_interest), gb_wpnts=gb_scaled_wpnts)
+        if self.obs_in_interest is not None and gb_scaled_wpnts:
+            try:
+                wpnts, mrks = self.do_spline(obs=copy.deepcopy(self.obs_in_interest), gb_wpnts=gb_scaled_wpnts)
+            except Exception as _e:
+                self.get_logger().warn(f"[spliner] do_spline raised: {_e}")
+                wpnts = OTWpntArray()
+                mrks = MarkerArray()
+            # do_spline 이 stamp 안 set 하면 fallback
+            if not wpnts.header.stamp.sec and not wpnts.header.stamp.nanosec:
+                wpnts.header.stamp = self.get_clock().now().to_msg()
+                wpnts.header.frame_id = "map"
+            # 진단
+            if self._tick_count % 20 == 1:
+                self.get_logger().info(f"[spliner] do_spline → wpnts len={len(wpnts.wpnts)}")
         else:
             del_mrk = Marker()
             del_mrk.header.stamp = self.get_clock().now().to_msg()
@@ -220,6 +253,7 @@ class ObstacleSpliner(Node):
             end = time.perf_counter()
             self.latency_pub.publish(end - start)
         self.evasion_pub.publish(wpnts)
+        self.evasion_static_pub.publish(wpnts)  # static_otwpnts 도 동일 발행
         self.mrks_pub.publish(mrks)
 
     def loop(self):
@@ -308,7 +342,17 @@ class ObstacleSpliner(Node):
         # If there are obstacles within the lookahead distance, then we need to generate an evasion trajectory considering the closest one
         if obs.is_static == True:
             pre_dist = (obs.s_center - self.cur_s) % self.gb_max_s
-            
+
+            # 진단: 왜 빈 반환되는지
+            if not hasattr(self, "_dospline_diag_count"):
+                self._dospline_diag_count = 0
+            self._dospline_diag_count += 1
+            if self._dospline_diag_count % 10 == 1:
+                self.get_logger().info(
+                    f"[do_spline] cur_s={self.cur_s:.2f} obs.s_center={obs.s_center:.2f} "
+                    f"pre_dist={pre_dist:.2f} gb_max_s={self.gb_max_s:.2f}"
+                )
+
             if pre_dist < 0.5 or pre_dist > self.gb_max_s / 2:
                 wpnts.wpnts = []
                 mrks.markers = []

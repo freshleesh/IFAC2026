@@ -85,7 +85,7 @@ def _is_base_path_valid(ctx: ModeContext) -> bool:
 
 # ===== HJ ADDED: Debug logging helper - only logs when values change =====
 _debug_log_cache = {}
-DEBUG_LOGGING_ENABLED = False  # Set to False to disable all debug logging
+DEBUG_LOGGING_ENABLED = True  # Set to False to disable all debug logging
 
 def debug_log_on_change(tag, **kwargs):
     """이전 호출과 kwargs 값이 다를 때만 로그.
