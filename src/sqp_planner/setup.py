@@ -22,5 +22,6 @@ setup(
     license="Apache-2.0",
     entry_points={"console_scripts": [
             "sqp_avoidance_node = sqp_planner.sqp_avoidance_node:main",
+            "sqp_avoidance_node_3d = sqp_planner.sqp_avoidance_node_3d:main",
         ]},
 )

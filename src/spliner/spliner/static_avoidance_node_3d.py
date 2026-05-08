@@ -9,6 +9,8 @@
     Replaced: GridFilter → Track3DValidator (s-based boundary + d-bound)
     Added: 3D fields (z_m, mu_rad, d_right, d_left), 80Hz, marker throttle
 """
+import rclpy
+from rclpy.node import Node
 import copy
 import time
 from typing import List, Any, Tuple
@@ -37,15 +39,38 @@ GB_BLEND_LEN = 40             # waypoints for quadratic easing back to GB
 OPPOSITE_SPACE_THRESHOLD = 0.6  # meters
 
 
-class StaticAvoidance3D:
+class StaticAvoidance3D(Node):
     """
     3D static obstacle avoidance via spline generation.
     Uses Track3DValidator instead of GridFilter.
     """
 
+    def _get_param_or_default(self, name, default=None):
+        """rospy.get_param 호환 helper."""
+        candidates = [name]
+        if "/" in name:
+            candidates.append(name.replace("/", "."))
+            candidates.append(name.lstrip("/"))
+            candidates.append(name.lstrip("/").replace("/", "."))
+        for n in candidates:
+            try:
+                v = self.get_parameter(n).value
+                if v is not None:
+                    return v
+            except Exception:
+                continue
+        if default is None:
+            return None
+        try:
+            self.declare_parameter(name, default)
+            v = self.get_parameter(name).value
+            return v if v is not None else default
+        except Exception:
+            return default
+
     def __init__(self):
         self.name = "3d_static_avoidance_node"
-        rospy.init_node(self.name)
+        super().__init__(self.name, allow_undeclared_parameters=True, automatically_declare_parameters_from_overrides=True)
 
         # State
         self.obs_in_interest = None
@@ -114,7 +139,7 @@ class StaticAvoidance3D:
             rospy.Subscriber(
                 "/dyn_planner_tuner/static_avoidance/parameter_updates", Config, self.dyn_param_cb)
 
-        self.rate = rospy.Rate(20)  # same as original static avoidance
+        # self.rate = rospy.Rate(20)  # ROS2: timer 또는 spin_once + time.sleep 으로 대체  # same as original static avoidance
 
     # =========================================================================
     # INIT
@@ -190,12 +215,12 @@ class StaticAvoidance3D:
 
     def loop(self):
         self.get_logger().info(f"[{self.name}] Waiting for messages...")
-        rospy.wait_for_message("/global_waypoints_scaled", WpntArray)
-        rospy.wait_for_message("/car_state/odom", Odometry)
-        rospy.wait_for_message("/dyn_planner_tuner/static_avoidance/parameter_updates", Config)
+        # rospy.wait_for_message("/global_waypoints_scaled", WpntArray)  # ROS2: ready flag polling 으로 변환 필요
+        # rospy.wait_for_message("/car_state/odom", Odometry)  # ROS2: ready flag polling 으로 변환 필요
+        # rospy.wait_for_message("/dyn_planner_tuner/static_avoidance/parameter_updates", Config)  # ROS2: ready flag polling 으로 변환 필요
         self.get_logger().info(f"[{self.name}] Ready! (80Hz)")
 
-        while not rospy.is_shutdown():
+        while not (not rclpy.ok()):
             if self.measuring:
                 start = time.perf_counter()
             self.frame_count += 1
@@ -219,7 +244,7 @@ class StaticAvoidance3D:
                 self.latency_pub.publish(end - start)
             self.evasion_pub.publish(wpnts)
             self.mrks_pub.publish(mrks)
-            self.rate.sleep()
+            # self.rate.sleep()  # ROS2: timer-based 또는 rclpy.spin_once + time.sleep 으로 대체
 
     # =========================================================================
     # _more_space — ported from smart (gb-aware direction decision)
@@ -589,6 +614,18 @@ class StaticAvoidance3D:
         return wpnts, mrks
 
 
-if __name__ == "__main__":
+
+def main(args=None):
+    rclpy.init(args=args)
     node = StaticAvoidance3D()
-    node.loop()
+    try:
+        node.loop()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    main()

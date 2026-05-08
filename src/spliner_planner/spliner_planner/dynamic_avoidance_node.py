@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+import rclpy
+from rclpy.node import Node
 import time
 import numpy as np
 from nav_msgs.msg import Odometry
@@ -17,11 +19,34 @@ from scipy.interpolate import BPoly
 from grid_filter.grid_filter import GridFilter
 
 
-class DynamicAvoidanceNode:
+class DynamicAvoidanceNode(Node):
+    def _get_param_or_default(self, name, default=None):
+        """rospy.get_param 호환 helper."""
+        candidates = [name]
+        if "/" in name:
+            candidates.append(name.replace("/", "."))
+            candidates.append(name.lstrip("/"))
+            candidates.append(name.lstrip("/").replace("/", "."))
+        for n in candidates:
+            try:
+                v = self.get_parameter(n).value
+                if v is not None:
+                    return v
+            except Exception:
+                continue
+        if default is None:
+            return None
+        try:
+            self.declare_parameter(name, default)
+            v = self.get_parameter(name).value
+            return v if v is not None else default
+        except Exception:
+            return default
+
     def __init__(self):
         # Initialize node
-        rospy.init_node('dynamic_avoidance_node')
-        self.rate = rospy.Rate(20)
+        super().__init__('dynamic_avoidance_node', allow_undeclared_parameters=True, automatically_declare_parameters_from_overrides=True)
+        # self.rate = rospy.Rate(20)  # ROS2: timer 또는 spin_once + time.sleep 으로 대체
 
         # Params
         self.local_wpnts = None
@@ -191,7 +216,7 @@ class DynamicAvoidanceNode:
     def initialize_converter(self) -> bool:
             """
             Initialize the FrenetConverter object"""
-            rospy.wait_for_message("/global_waypoints", WpntArray)
+            # rospy.wait_for_message("/global_waypoints", WpntArray)  # ROS2: ready flag polling 으로 변환 필요
 
             # Initialize the FrenetConverter object
             converter = FrenetConverter(self.global_waypoints[:, 0], self.global_waypoints[:, 1], self.global_waypoints[:, 2])
@@ -477,13 +502,13 @@ class DynamicAvoidanceNode:
     def loop(self):
         # Wait for critical Messages and services
         self.get_logger().info("[OBS Spliner] Waiting for messages and services...")
-        rospy.wait_for_message("/global_waypoints_scaled", WpntArray)
-        rospy.wait_for_message("/car_state/odom", Odometry)
-        rospy.wait_for_message("/dynamic_avoidance_tuner_node/parameter_updates", Config)
-        rospy.wait_for_message("/behavior_strategy", BehaviorStrategy)
+        # rospy.wait_for_message("/global_waypoints_scaled", WpntArray)  # ROS2: ready flag polling 으로 변환 필요
+        # rospy.wait_for_message("/car_state/odom", Odometry)  # ROS2: ready flag polling 으로 변환 필요
+        # rospy.wait_for_message("/dynamic_avoidance_tuner_node/parameter_updates", Config)  # ROS2: ready flag polling 으로 변환 필요
+        # rospy.wait_for_message("/behavior_strategy", BehaviorStrategy)  # ROS2: ready flag polling 으로 변환 필요
         self.get_logger().info("[OBS Spliner] Ready!")
 
-        while not rospy.is_shutdown():
+        while not (not rclpy.ok()):
             start_time = time.perf_counter()
 
             # Obstacle pre-processing
@@ -509,9 +534,21 @@ class DynamicAvoidanceNode:
             if self.measure:
                 self.measure_pub.publish(Float32(data=time.perf_counter() - start_time))
 
-            self.rate.sleep()
+            # self.rate.sleep()  # ROS2: timer-based 또는 rclpy.spin_once + time.sleep 으로 대체
+
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = DynamicAvoidanceNode()
+    try:
+        node.loop()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
 
 
 if __name__ == "__main__":
-    DynamicAvoidance = DynamicAvoidanceNode()
-    DynamicAvoidance.loop()
+    main()

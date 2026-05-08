@@ -12,6 +12,8 @@
     - Original structure / objective / constraints / SLSQP retained; only
       bugs are fixed.
 """
+import rclpy
+from rclpy.node import Node
 import time
 import numpy as np
 from nav_msgs.msg import Odometry
@@ -33,10 +35,33 @@ from track_3d_validator import (
 )
 
 
-class SQPAvoidance3DNode:
+class SQPAvoidance3DNode(Node):
+    def _get_param_or_default(self, name, default=None):
+        """rospy.get_param 호환 helper."""
+        candidates = [name]
+        if "/" in name:
+            candidates.append(name.replace("/", "."))
+            candidates.append(name.lstrip("/"))
+            candidates.append(name.lstrip("/").replace("/", "."))
+        for n in candidates:
+            try:
+                v = self.get_parameter(n).value
+                if v is not None:
+                    return v
+            except Exception:
+                continue
+        if default is None:
+            return None
+        try:
+            self.declare_parameter(name, default)
+            v = self.get_parameter(name).value
+            return v if v is not None else default
+        except Exception:
+            return default
+
     def __init__(self):
-        rospy.init_node('3d_sqp_avoidance_node')
-        self.rate = rospy.Rate(20)
+        super().__init__('3d_sqp_avoidance_node', allow_undeclared_parameters=True, automatically_declare_parameters_from_overrides=True)
+        # self.rate = rospy.Rate(20)  # ROS2: timer 또는 spin_once + time.sleep 으로 대체
 
         # Params
         self.frenet_state = Odometry()
@@ -204,15 +229,15 @@ class SQPAvoidance3DNode:
 
     def loop(self):
         self.get_logger().info("[3D SQP] Waiting for messages and services...")
-        rospy.wait_for_message("/global_waypoints_scaled", WpntArray)
-        rospy.wait_for_message("/car_state/odom", Odometry)
-        rospy.wait_for_message("/car_state/odom_frenet", Odometry)
-        rospy.wait_for_message("/dynamic_sqp_tuner_node/parameter_updates", Config)
-        rospy.wait_for_message("/behavior_strategy", BehaviorStrategy)
-        rospy.wait_for_message("/global_waypoints_updated", WpntArray)
+        # rospy.wait_for_message("/global_waypoints_scaled", WpntArray)  # ROS2: ready flag polling 으로 변환 필요
+        # rospy.wait_for_message("/car_state/odom", Odometry)  # ROS2: ready flag polling 으로 변환 필요
+        # rospy.wait_for_message("/car_state/odom_frenet", Odometry)  # ROS2: ready flag polling 으로 변환 필요
+        # rospy.wait_for_message("/dynamic_sqp_tuner_node/parameter_updates", Config)  # ROS2: ready flag polling 으로 변환 필요
+        # rospy.wait_for_message("/behavior_strategy", BehaviorStrategy)  # ROS2: ready flag polling 으로 변환 필요
+        # rospy.wait_for_message("/global_waypoints_updated", WpntArray)  # ROS2: ready flag polling 으로 변환 필요
         self.get_logger().info("[3D SQP] Ready!")
 
-        while not rospy.is_shutdown():
+        while not (not rclpy.ok()):
             start_time = time.perf_counter()
             obs = deepcopy(self.obs)
             mrks = MarkerArray()
@@ -228,7 +253,7 @@ class SQPAvoidance3DNode:
                 and self.scaled_max_s is not None
             )
             if not ready:
-                self.rate.sleep()
+                # self.rate.sleep()  # ROS2: timer-based 또는 rclpy.spin_once + time.sleep 으로 대체
                 continue
 
             # Obstacle pre-processing — wrap-safe forward distance
@@ -269,7 +294,7 @@ class SQPAvoidance3DNode:
 
             if self.measure:
                 self.measure_pub.publish(Float32(data=time.perf_counter() - start_time))
-            self.rate.sleep()
+            # self.rate.sleep()  # ROS2: timer-based 또는 rclpy.spin_once + time.sleep 으로 대체
 
     def sqp_solver(self, considered_obs: list, cur_s: float):
         # Initial guess obstacle (ROC bounds)
@@ -662,7 +687,7 @@ class SQPAvoidance3DNode:
         self.mrks_pub.publish(mrks)
 
     def initialize_converter(self):
-        rospy.wait_for_message("/global_waypoints", WpntArray)
+        # rospy.wait_for_message("/global_waypoints", WpntArray)  # ROS2: ready flag polling 으로 변환 필요
         converter = FrenetConverter(
             self.global_waypoints[:, 0], self.global_waypoints[:, 1], self.global_waypoints[:, 2]
         )
@@ -675,6 +700,18 @@ class SQPAvoidance3DNode:
         return converter
 
 
-if __name__ == "__main__":
+
+def main(args=None):
+    rclpy.init(args=args)
     node = SQPAvoidance3DNode()
-    node.loop()
+    try:
+        node.loop()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    main()

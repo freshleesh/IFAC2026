@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import rclpy
+from rclpy.node import Node
 import os
 import sys
 import time
@@ -24,24 +26,46 @@ from f110_msgs.msg import (
 )
 from frenet_conversion.frenet_converter import FrenetConverter
 
-from sqp_casadi import CasadiSQPSolver, SQPProblem
-from warm_start import shift_solution
-from velocity_profiler import VelocityProfiler
-from abort_checker import AbortChecker, AbortConfig, AbortReason
+from fast_sqp_planner.sqp_casadi import CasadiSQPSolver, SQPProblem
+from fast_sqp_planner.warm_start import shift_solution
+from fast_sqp_planner.velocity_profiler import VelocityProfiler
+from fast_sqp_planner.abort_checker import AbortChecker, AbortConfig, AbortReason
 ## IY : nlp velocity mode
-from nlp_velocity import solve_velocity_nlp
+from fast_sqp_planner.nlp_velocity import solve_velocity_nlp
 ## IY : end
 
 
-class OvertakingIYNode:
+class OvertakingIYNode(Node):
+    def _get_param_or_default(self, name, default=None):
+        """rospy.get_param 호환 helper."""
+        candidates = [name]
+        if "/" in name:
+            candidates.append(name.replace("/", "."))
+            candidates.append(name.lstrip("/"))
+            candidates.append(name.lstrip("/").replace("/", "."))
+        for n in candidates:
+            try:
+                v = self.get_parameter(n).value
+                if v is not None:
+                    return v
+            except Exception:
+                continue
+        if default is None:
+            return None
+        try:
+            self.declare_parameter(name, default)
+            v = self.get_parameter(name).value
+            return v if v is not None else default
+        except Exception:
+            return default
 
     def __init__(self):
-        rospy.init_node('fast_sqp_planner_node')
+        super().__init__('fast_sqp_planner_node', allow_undeclared_parameters=True, automatically_declare_parameters_from_overrides=True)
 
         # ---- params -------------------------------------------------------
         pp = rospy.get_param
         self.rate_hz = pp('~rate_hz', 20.0)
-        self.rate = rospy.Rate(self.rate_hz)
+        # self.rate = rospy.Rate(self.rate_hz)  # ROS2: timer 또는 spin_once + time.sleep 으로 대체
         self.dt = 1.0 / self.rate_hz
 
         self.racecar_version = os.environ.get('CAR_NAME', pp('~racecar_version', 'SRX1'))
@@ -424,7 +448,7 @@ class OvertakingIYNode:
     # Utilities
     # =====================================================================
     def _init_converter(self) -> FrenetConverter:
-        rospy.wait_for_message('/global_waypoints', WpntArray)
+        # rospy.wait_for_message('/global_waypoints', WpntArray)  # ROS2: ready flag polling 으로 변환 필요
         conv = FrenetConverter(self.global_waypoints[:, 0],
                                self.global_waypoints[:, 1],
                                self.global_waypoints[:, 2])
@@ -960,16 +984,16 @@ class OvertakingIYNode:
 
     def loop(self):
         self.get_logger().info('[OvertakingIY] waiting for upstream topics...')
-        rospy.wait_for_message('/global_waypoints_scaled', WpntArray)
-        rospy.wait_for_message('/car_state/odom', Odometry)
-        rospy.wait_for_message('/behavior_strategy', BehaviorStrategy)
+        # rospy.wait_for_message('/global_waypoints_scaled', WpntArray)  # ROS2: ready flag polling 으로 변환 필요
+        # rospy.wait_for_message('/car_state/odom', Odometry)  # ROS2: ready flag polling 으로 변환 필요
+        # rospy.wait_for_message('/behavior_strategy', BehaviorStrategy)  # ROS2: ready flag polling 으로 변환 필요
         self._prewarm_solver()
         # notify state_machine that fast_sqp_planner is active
         self.active_pub.publish(Bool(data=True))
         rospy.on_shutdown(lambda: self.active_pub.publish(Bool(data=False)))
         self.get_logger().info('[OvertakingIY] ready')
 
-        while not rospy.is_shutdown():
+        while not (not rclpy.ok()):
             t0 = time.perf_counter()
 
             # snapshot
@@ -1068,7 +1092,7 @@ class OvertakingIYNode:
                 side=side, abort_reason=abort_reason, dry_run=dry_run)
             if self.measure:
                 self.measure_pub.publish(Float32(time.perf_counter() - t0))
-            self.rate.sleep()
+            # self.rate.sleep()  # ROS2: timer-based 또는 rclpy.spin_once + time.sleep 으로 대체
 
     # ---------------------------------------------------------------------
     def _rolling_step(self, considered_obs, dry_run=False):
@@ -1656,6 +1680,18 @@ class OvertakingIYNode:
         return d, dvar
 
 
-if __name__ == '__main__':
+
+def main(args=None):
+    rclpy.init(args=args)
     node = OvertakingIYNode()
-    node.loop()
+    try:
+        node.loop()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    main()

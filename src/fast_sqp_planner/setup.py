@@ -10,5 +10,7 @@ setup(
     install_requires=["setuptools"], zip_safe=True,
     maintainer="SH", maintainer_email="freshleesh@gmail.com",
     description="fast_sqp_planner", license="Apache-2.0",
-    entry_points={"console_scripts": []},
+    entry_points={"console_scripts": [
+            "fast_sqp_planner_node = fast_sqp_planner.fast_sqp_planner_node:main",
+        ]},
 )
