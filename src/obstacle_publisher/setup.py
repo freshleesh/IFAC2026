@@ -26,6 +26,8 @@ setup(
             "obstacle_publisher = obstacle_publisher.obstacle_publisher:main",
             "static_obstacle_manager = obstacle_publisher.static_obstacle_manager:main",
             "dynamic_obstacle_publisher = obstacle_publisher.dynamic_obstacle_publisher:main",
+            "collision_detector = obstacle_publisher.collision_detector:main",
+            "gazebo_static_obstacle_publisher = obstacle_publisher.gazebo_static_obstacle_publisher:main",
         ],
     },
 )
