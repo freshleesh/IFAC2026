@@ -147,21 +147,22 @@ def _build(context: LaunchContext, *_args, **_kwargs):
             "state_machine/ot_planner": ot_planner,
             "state_machine/timetrials_only": timetrials_only,
             "state_machine/gb_ego_width_m": 0.3,
-            "state_machine/gb_horizon_m": 1.0,
+            # OVERTAKE ↔ GB_TRACK 진동 방지 — sim hysteresis 강화
+            "state_machine/gb_horizon_m": 5.0,         # 1.0 → 5.0 (enemy_in_front 더 길게 True)
             "state_machine/lateral_width_gb_m": 0.3,
             "state_machine/interest_horizon_m": 20.0,
             "state_machine/use_force_trailing": False,
-            "state_machine/splini_ttl": 2.0,
+            "state_machine/splini_ttl": 5.0,            # 2.0 → 5.0 (회피 wpnts freshness)
             "state_machine/pred_splini_ttl": 0.2,
             "state_machine/overtaking_horizon_m": 6.9,
             "state_machine/lateral_width_ot_m": 0.3,
-            "state_machine/splini_hyst_timer_sec": 0.75,
+            "state_machine/splini_hyst_timer_sec": 3.0,  # 0.75 → 3.0
             "state_machine/emergency_break_horizon": 1.1,
             "state_machine/ftg_speed_mps": 1.0,
             "state_machine/ftg_timer_sec": 3.0,
             "state_machine/ftg_active": False,
             "state_machine/force_GBTRACK": force_gbtrack,
-            "state_machine/overtaking_ttl_sec": 3.0,
+            "state_machine/overtaking_ttl_sec": 10.0,    # 3.0 → 10.0 (OVERTAKE 종료 지연)
             "state_machine/volt_threshold": 10.0,
             "/global_republisher/track_length": 25.0,
             "measure": False,

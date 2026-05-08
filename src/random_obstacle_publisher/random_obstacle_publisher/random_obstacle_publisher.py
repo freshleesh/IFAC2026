@@ -54,7 +54,9 @@ class RandomObstaclePublisher(Node):
         self.declare_parameter("rate_hz", 25.0)
 
         # 원본 코드: self.n_sectors = n_obstacles + 1 (margin sector)
-        self._n_sectors = self.get_parameter("n_obstacles").value + 1
+        # ROS2: n_obstacles=0 일 때 sector 0 → 장애물 0개 (사용자 publish_point 만 사용 모드)
+        _n_obs = self.get_parameter("n_obstacles").value
+        self._n_sectors = (_n_obs + 1) if _n_obs > 0 else 0
         self._publish_at_lookahead = self.get_parameter("publish_at_lookahead").value
         self._lookahead_distance = self.get_parameter("lookahead_distance").value
         self._obstacle_width = self.get_parameter("obstacle_width").value
