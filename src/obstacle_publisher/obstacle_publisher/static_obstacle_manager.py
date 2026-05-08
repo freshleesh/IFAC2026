@@ -16,6 +16,7 @@ from interactive_markers import InteractiveMarkerServer
 from std_msgs.msg import ColorRGBA
 from f110_msgs.msg import ObstacleArray, Obstacle, WpntArray
 from frenet_conversion.frenet_converter import FrenetConverter
+from grid_filter.grid_filter import GridFilter
 
 
 class StaticObstacleManager(Node):
@@ -42,6 +43,11 @@ class StaticObstacleManager(Node):
         self._track_length = 0.0
         self.create_subscription(WpntArray, '/global_waypoints', self._wpnts_cb, 10)
 
+        # GridFilter — clicked point 가 트랙 안인지 검사 (벽 너머 클릭 reject).
+        # /map (OccupancyGrid) sub 후 image 빌드. erosion kernel=2 정도 (장애물 다이어 반쪽 만큼 안전).
+        self._track_filter = GridFilter(node=self, map_topic='/map', debug=False)
+        self._track_filter.set_erosion_kernel_size(2)
+
         # ===== ROS Subscribers =====
         self.point_sub = self.create_subscription(
             PointStamped,
@@ -63,9 +69,21 @@ class StaticObstacleManager(Node):
         self.get_logger().info('  - Interactive Marker: Clear Obstacles button at (0, 0)')
 
     def clicked_point_cb(self, msg: PointStamped):
-        """Callback for RViz publish_point - add static obstacle"""
+        """Callback for RViz publish_point - add static obstacle.
+
+        트랙 안 검사 — GridFilter.is_point_inside() 가 True 인 점만 등록.
+        벽 너머 클릭은 reject (spliner 가 벽 무시 회피 경로 만드는 사고 방지).
+        """
         x_m = msg.point.x
         y_m = msg.point.y
+
+        # GridFilter 의 map image 가 init 안 됐으면 (map 토픽 못 받음) 일단 통과
+        if self._track_filter.eroded_image is not None:
+            if not self._track_filter.is_point_inside(x_m, y_m):
+                self.get_logger().warn(
+                    f'[StaticObstacleManager] REJECT clicked point ({x_m:.2f}, {y_m:.2f}) — outside track boundary'
+                )
+                return
 
         self.static_obstacles.append((x_m, y_m))
         self.get_logger().info(f'[StaticObstacleManager] Added static obstacle at ({x_m:.2f}, {y_m:.2f})')
