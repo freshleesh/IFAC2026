@@ -106,7 +106,7 @@ class ObstacleSpliner(Node):
         self.n_loc_wpnts = 80
         self.width_car = 0.30
         if not self.from_bag:
-            self.create_subscription(Config, "/dynamic_spline_tuner_node/parameter_updates", self.dyn_param_cb, 10)
+            pass  # ROS2: dyn_reconfigure tuner 미포팅 — 비활성
 
         self.mrks_pub = self.create_publisher(MarkerArray, "/planner/avoidance/markers", 10)
         self.evasion_pub = self.create_publisher(OTWpntArray, "/planner/avoidance/otwpnts", 10)
@@ -116,11 +116,18 @@ class ObstacleSpliner(Node):
             self.latency_pub = self.create_publisher(Float32, "/planner/avoidance/latency", 10)
 
 
+        # ROS2: callback 으로 채워지는 self.waypoints 가 init 시점엔 없으므로 미리 빈 값 + spin_once 로 채워질 때까지 대기
+        self.waypoints = None
+        self.get_logger().info(f"[{self.name}] Waiting for /global_waypoints...")
+        while self.waypoints is None and rclpy.ok():
+            rclpy.spin_once(self, timeout_sec=0.1)
+        self.get_logger().info(f"[{self.name}] /global_waypoints received ({len(self.waypoints)} pts)")
+
         self.converter = self.initialize_converter()
 
-
-        # Set the rate at which the loop runs
-        # self.rate = rospy.Rate(20)  # ROS2: timer 또는 spin_once + time.sleep 으로 대체  # Hz
+        # ROS2: 50 Hz 메인 루프 — timer-based
+        self._rate_hz = 20.0
+        self.create_timer(1.0 / self._rate_hz, self._tick)
 
     #############
     # CALLBACKS #
@@ -191,42 +198,33 @@ class ObstacleSpliner(Node):
     #############
     # MAIN LOOP #
     #############
+    def _tick(self):
+        """ROS2 timer 기반 tick (원본 loop() body 1회). 의존 토픽 ready 안 됐으면 skip."""
+        if not self.gb_scaled_wpnts.wpnts:
+            return
+        if self.measuring:
+            start = time.perf_counter()
+        gb_scaled_wpnts = self.gb_scaled_wpnts.wpnts
+        wpnts = OTWpntArray()
+        mrks = MarkerArray()
+
+        if self.obs_in_interest is not None:
+            wpnts, mrks = self.do_spline(obs=copy.deepcopy(self.obs_in_interest), gb_wpnts=gb_scaled_wpnts)
+        else:
+            del_mrk = Marker()
+            del_mrk.header.stamp = self.get_clock().now().to_msg()
+            del_mrk.action = Marker.DELETEALL
+            mrks.markers.append(del_mrk)
+
+        if self.measuring:
+            end = time.perf_counter()
+            self.latency_pub.publish(end - start)
+        self.evasion_pub.publish(wpnts)
+        self.mrks_pub.publish(mrks)
+
     def loop(self):
-        # Wait for critical Messages and services
-        self.get_logger().info(f"[{self.name}] Waiting for messages and services...")
-        # rospy.wait_for_message("/global_waypoints", WpntArray)  # ROS2: ready flag polling 으로 변환 필요
-        # rospy.wait_for_message("/global_waypoints_scaled", WpntArray)  # ROS2: ready flag polling 으로 변환 필요
-        # rospy.wait_for_message("/car_state/odom", Odometry)  # ROS2: ready flag polling 으로 변환 필요
-        # rospy.wait_for_message("/dynamic_spline_tuner_node/parameter_updates", Config)  # ROS2: ready flag polling 으로 변환 필요
-        self.get_logger().info(f"[{self.name}] Ready!")
-
-        while not (not rclpy.ok()):
-            if self.measuring:
-                start = time.perf_counter()
-            # Sample data
-            # obs = self.obs
-            gb_scaled_wpnts = self.gb_scaled_wpnts.wpnts
-            wpnts = OTWpntArray()
-            mrks = MarkerArray()
-
-            # If obs then do splining around it
-            if self.obs_in_interest is not None:
-                # obs_in_interest = copy.deepcopy(self.obs_in_interest)
-                wpnts, mrks = self.do_spline(obs=copy.deepcopy(self.obs_in_interest), gb_wpnts=gb_scaled_wpnts)
-            # Else delete spline markers
-            else:
-                del_mrk = Marker()
-                del_mrk.header.stamp = self.get_clock().now().to_msg()
-                del_mrk.action = Marker.DELETEALL
-                mrks.markers.append(del_mrk)
-
-            # Publish wpnts and markers
-            if self.measuring:
-                end = time.perf_counter()
-                self.latency_pub.publish(end - start)
-            self.evasion_pub.publish(wpnts)
-            self.mrks_pub.publish(mrks)
-            # self.rate.sleep()  # ROS2: timer-based 또는 rclpy.spin_once + time.sleep 으로 대체
+        """ROS2 호환 loop — timer 가 _tick 처리하므로 spin 만."""
+        rclpy.spin(self)
     
     #########
     # UTILS #

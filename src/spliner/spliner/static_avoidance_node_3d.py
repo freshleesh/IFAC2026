@@ -137,7 +137,7 @@ class StaticAvoidance3D(Node):
         self.create_subscription(WpntArray, "/global_waypoints_scaled", self.gb_scaled_cb, 10)
         if not self.from_bag:
             rospy.Subscriber(
-                "/dyn_planner_tuner/static_avoidance/parameter_updates", Config, self.dyn_param_cb)
+                pass  # ROS2: 비활성
 
         # self.rate = rospy.Rate(20)  # ROS2: timer 또는 spin_once + time.sleep 으로 대체  # same as original static avoidance
 

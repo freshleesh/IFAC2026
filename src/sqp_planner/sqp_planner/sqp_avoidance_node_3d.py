@@ -130,7 +130,7 @@ class SQPAvoidance3DNode(Node):
         self.create_subscription(Odometry, "/car_state/odom", self.state_cartesian_cb, 10)
         self.create_subscription(WpntArray, "/global_waypoints_scaled", self.scaled_wpnts_cb, 10)
         self.create_subscription(BehaviorStrategy, "/behavior_strategy", self.behavior_cb, 10)
-        self.create_subscription(Config, "/dynamic_sqp_tuner_node/parameter_updates", self.dyn_param_cb, 10)
+        pass  # ROS2: dyn_reconfigure tuner 미포팅 — 비활성
         self.create_subscription(WpntArray, "/global_waypoints", self.gb_cb, 10)
         self.create_subscription(WpntArray, "/global_waypoints_updated", self.updated_wpnts_cb, 10)
         self.create_subscription(OpponentTrajectory, "/opponent_trajectory", self.opponent_trajectory_cb, 10)

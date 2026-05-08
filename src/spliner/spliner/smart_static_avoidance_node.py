@@ -375,9 +375,9 @@ class ObstacleSpliner(Node):
         # ===== HJ EDITED END =====
 
         if not self.from_bag:
-            self.create_subscription(Config, "/dynamic_spline_tuner_node/parameter_updates", self.dyn_param_cb, 10)
+            pass  # ROS2: dyn_reconfigure tuner 미포팅 — 비활성
             # ===== HJ EDITED START: Subscribe to state machine dynamic params =====
-            self.create_subscription(Config, "/dyn_statemachine/parameter_updates", self.state_machine_dyn_param_cb, 10)
+            pass  # ROS2: dyn_reconfigure tuner 미포팅 — 비활성
             # ===== HJ EDITED END =====
 
         self.mrks_pub = self.create_publisher(MarkerArray, "/planner/avoidance/markers", 10)

@@ -107,7 +107,7 @@ class ObstacleSpliner(Node):
         self.n_loc_wpnts = 80
         self.width_car = 0.30
         # if not self.from_bag:
-        self.create_subscription(Config, "/dyn_statemachine/parameter_updates", self.dyn_param_cb, 10)
+        pass  # ROS2: dyn_reconfigure tuner 미포팅 — 비활성
 
         self.mrks_pub = self.create_publisher(MarkerArray, "/planner/start_wpnts/markers", 10)
         self.evasion_pub = self.create_publisher(OTWpntArray, "/planner/start_wpnts", 10)

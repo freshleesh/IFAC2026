@@ -125,7 +125,7 @@ class ObstacleSpliner(Node):
         self.map_filter = GridFilter(node=self, map_topic="/map", debug=False)
 
         if not self.from_bag:
-            self.create_subscription(Config, "/dyn_planner_recovery/parameter_updates", self.dyn_param_cb, 10)
+            pass  # ROS2: dyn_reconfigure tuner 미포팅 — 비활성
 
         # self.rate = rospy.Rate(40)  # ROS2: timer 또는 spin_once + time.sleep 으로 대체  # Hz
 
