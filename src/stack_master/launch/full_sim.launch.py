@@ -41,8 +41,12 @@ def _build(context: LaunchContext, *_args, **_kwargs):
     mode = LaunchConfiguration("mode").perform(context)
     n_obstacles_str = LaunchConfiguration("n_obstacles").perform(context)
 
-    if mode not in ("timetrial", "overtake"):
-        raise ValueError(f"mode must be 'timetrial' or 'overtake', got {mode!r}")
+    if mode not in ("timetrial", "overtake", "avoid"):
+        raise ValueError(f"mode must be 'timetrial' / 'overtake' / 'avoid', got {mode!r}")
+
+    # 'avoid' = 'overtake' alias — 정적 장애물 회피 의도 명시. 코드 동작 동일.
+    if mode == "avoid":
+        mode = "overtake"
 
     # mode 에 따른 default. n_obstacles="auto" 면 mode 기준.
     if n_obstacles_str == "auto":
