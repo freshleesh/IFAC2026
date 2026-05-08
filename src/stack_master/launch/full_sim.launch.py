@@ -49,8 +49,10 @@ def _build(context: LaunchContext, *_args, **_kwargs):
         mode = "overtake"
 
     # mode 에 따른 default. n_obstacles="auto" 면 mode 기준.
+    # avoid / overtake 모드에서도 random_obstacle 은 0 (사용자 publish_point 가 진짜 장애물)
+    # → 회피 경로가 random 장애물에 부딪혀 path_is_free=False 되는 chicken-and-egg 회피.
     if n_obstacles_str == "auto":
-        n_obstacles = 4 if mode == "overtake" else 0
+        n_obstacles = 0
     else:
         n_obstacles = int(n_obstacles_str)
 

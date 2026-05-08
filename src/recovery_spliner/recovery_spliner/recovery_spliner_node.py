@@ -215,8 +215,8 @@ class ObstacleSpliner(Node):
                 mrk.id = idx
                 mrk.pose.position.x = data.wpnts[idx].x_m
                 mrk.pose.position.y = data.wpnts[idx].y_m
-                mrk.pose.position.z = 0
-                mrk.pose.orientation.w = 1
+                mrk.pose.position.z = 0.0
+                mrk.pose.orientation.w = 1.0
                 mrks.markers.append(mrk)
             self.checkpoints_pub.publish(mrks)
 
@@ -453,7 +453,7 @@ class ObstacleSpliner(Node):
                 mrk.pose.position.x = xy_m[tangent_idx, 0]
                 mrk.pose.position.y = xy_m[tangent_idx, 1]
                 mrk.pose.position.z = 0.01
-                mrk.pose.orientation.w = 1
+                mrk.pose.orientation.w = 1.0
                 self.recovery_lookahead_pub.publish(mrk)
 
             if tangent_idx != 0:
@@ -590,7 +590,7 @@ class ObstacleSpliner(Node):
         mrk.pose.position.x = x
         mrk.pose.position.y = y
         mrk.pose.position.z = v / self.gb_vmax / 2
-        mrk.pose.orientation.w = 1
+        mrk.pose.orientation.w = 1.0
 
         return mrk
 
@@ -604,13 +604,13 @@ class ObstacleSpliner(Node):
         mrk.scale.z = 0.5
         mrk.color.a = 0.8
         mrk.color.b = 0.65
-        mrk.color.r = 1 if opponent else 0
+        mrk.color.r = 1.0 if opponent else 0
         mrk.color.g = 0.65
 
         mrk.pose.position.x = x
         mrk.pose.position.y = y
         mrk.pose.position.z = 0.01
-        mrk.pose.orientation.w = 1
+        mrk.pose.orientation.w = 1.0
 
         return mrk
 

@@ -592,7 +592,7 @@ class SQPAvoidanceNode(Node):
                 mrk.pose.position.x = evasion_x[i]
                 mrk.pose.position.y = evasion_y[i]
                 mrk.pose.position.z = evasion_v[i] / self.scaled_vmax / 2
-                mrk.pose.orientation.w = 1
+                mrk.pose.orientation.w = 1.0
                 mrks.markers.append(mrk)
             self.mrks_pub.publish(mrks)
 

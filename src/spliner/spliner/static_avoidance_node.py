@@ -641,7 +641,7 @@ class ObstacleSpliner(Node):
         mrk.pose.position.x = x
         mrk.pose.position.y = y
         mrk.pose.position.z = v / self.gb_vmax / 2
-        mrk.pose.orientation.w = 1
+        mrk.pose.orientation.w = 1.0
 
         return mrk
 
@@ -655,28 +655,28 @@ class ObstacleSpliner(Node):
         mrk.scale.z = 0.5
         mrk.color.a = 0.8
         mrk.color.b = 0.65
-        mrk.color.r = 1 if opponent else 0
+        mrk.color.r = 1.0 if opponent else 0
         mrk.color.g = 0.65
 
         mrk.pose.position.x = x
         mrk.pose.position.y = y
         mrk.pose.position.z = 0.01
-        mrk.pose.orientation.w = 1
+        mrk.pose.orientation.w = 1.0
 
         return mrk
 
     def xyv_to_wpnts(self, s: float, d: float, x: float, y: float, v: float, psi: float, kappa: float ,wpnts: WpntArray) -> Wpnt:
         wpnt = Wpnt()
-        wpnt.id = len(wpnts.wpnts)
-        wpnt.x_m = x
-        wpnt.y_m = y
-        wpnt.s_m = s
-        wpnt.d_m = d
-        wpnt.vx_mps = v
-        wpnt.psi_rad = psi
-        wpnt.kappa_radpm = kappa
-        
-
+        wpnt.id = int(len(wpnts.wpnts))
+        # ROS2 strict type check: float64 필드에 Python int 들어가면 PyFloat_Check assert fail (SIGABRT).
+        # 호출부에서 v=2 (int) 같은 값 들어오는 케이스 fix.
+        wpnt.x_m = float(x)
+        wpnt.y_m = float(y)
+        wpnt.s_m = float(s)
+        wpnt.d_m = float(d)
+        wpnt.vx_mps = float(v)
+        wpnt.psi_rad = float(psi)
+        wpnt.kappa_radpm = float(kappa)
         return wpnt
 
 

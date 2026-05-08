@@ -341,7 +341,7 @@ class StaticAvoidance3D(Node):
             mrk.pose.position.y = float(resp[1])
             z = float(self.converter.spline_z(np.array([obstacle.s_center])))
             mrk.pose.position.z = z
-            mrk.pose.orientation.w = 1
+            mrk.pose.orientation.w = 1.0
             mrks.markers.append(mrk)
 
         self.debug_space_pub.publish(mrks)
@@ -605,7 +605,7 @@ class StaticAvoidance3D(Node):
             mrk.pose.position.x = samples[i, 0]
             mrk.pose.position.y = samples[i, 1]
             mrk.pose.position.z = float(z_arr[i])
-            mrk.pose.orientation.w = 1
+            mrk.pose.orientation.w = 1.0
             mrks.markers.append(mrk)
 
         if danger_flag:

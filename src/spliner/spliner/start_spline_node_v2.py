@@ -442,7 +442,7 @@ class ObstacleSpliner(Node):
         mrk.pose.position.x = x
         mrk.pose.position.y = y
         mrk.pose.position.z = v / self.gb_vmax / 2
-        mrk.pose.orientation.w = 1
+        mrk.pose.orientation.w = 1.0
 
         return mrk
 
@@ -456,13 +456,13 @@ class ObstacleSpliner(Node):
         mrk.scale.z = 0.5
         mrk.color.a = 0.8
         mrk.color.b = 0.65
-        mrk.color.r = 1 if opponent else 0
+        mrk.color.r = 1.0 if opponent else 0
         mrk.color.g = 0.65
 
         mrk.pose.position.x = x
         mrk.pose.position.y = y
         mrk.pose.position.z = 0.01
-        mrk.pose.orientation.w = 1
+        mrk.pose.orientation.w = 1.0
 
         return mrk
 

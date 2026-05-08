@@ -2272,7 +2272,7 @@ class ObstacleSpliner(Node):
         mrk.pose.position.x = x
         mrk.pose.position.y = y
         mrk.pose.position.z = v / self.gb_vmax / 2
-        mrk.pose.orientation.w = 1
+        mrk.pose.orientation.w = 1.0
 
         return mrk
 
@@ -2286,13 +2286,13 @@ class ObstacleSpliner(Node):
         mrk.scale.z = 0.5
         mrk.color.a = 0.8
         mrk.color.b = 0.65
-        mrk.color.r = 1 if opponent else 0
+        mrk.color.r = 1.0 if opponent else 0
         mrk.color.g = 0.65
 
         mrk.pose.position.x = x
         mrk.pose.position.y = y
         mrk.pose.position.z = 0.01
-        mrk.pose.orientation.w = 1
+        mrk.pose.orientation.w = 1.0
 
         return mrk
 
@@ -6050,8 +6050,8 @@ class ObstacleSpliner(Node):
         bg_marker.header.stamp = self.get_clock().now().to_msg()
         bg_marker.pose.position.x = x_viz + 0.8
         bg_marker.pose.position.y = y_viz 
-        bg_marker.pose.position.z = 0  # Above STATE MARKER sphere (STATE is at z=0)
-        bg_marker.pose.orientation.w = 1
+        bg_marker.pose.position.z = 0.0  # Above STATE MARKER sphere (STATE is at z=0)
+        bg_marker.pose.orientation.w = 1.0
         bg_marker.scale.x = 0.4  # Width (horizontal - long)
         bg_marker.scale.y = 1.0  # Depth
         bg_marker.scale.z = 0.0  # Height (short - horizontal)
@@ -6065,8 +6065,8 @@ class ObstacleSpliner(Node):
         text_marker.header.stamp = self.get_clock().now().to_msg()
         text_marker.pose.position.x = x_viz + 0.8
         text_marker.pose.position.y = y_viz
-        text_marker.pose.position.z = 0  # Same as background
-        text_marker.pose.orientation.w = 1
+        text_marker.pose.position.z = 0.0  # Same as background
+        text_marker.pose.orientation.w = 1.0
         text_marker.scale.z = 0.3  # Text height
         text_marker.color.r = 0.0  # Black text
         text_marker.color.g = 0.0
