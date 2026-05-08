@@ -122,6 +122,9 @@ class ObstacleSpliner(Node):
             self.latency_pub = self.create_publisher(Float32, "/planner/avoidance/latency", 10)
 
 
+        # ROS2: 마지막 유효 회피 경로 payload (Wpnt list) cache. ROS2 메시지 객체 자체 caching 은
+        # C++/Python proxy 충돌로 SIGABRT 위험 → primitive list 만.
+        self._last_valid_payload = []
         # ROS2: callback 으로 채워지는 self.waypoints 가 init 시점엔 없으므로 미리 빈 값 + spin_once 로 채워질 때까지 대기
         self.waypoints = None
         self.get_logger().info(f"[{self.name}] Waiting for /global_waypoints...")
@@ -205,6 +208,13 @@ class ObstacleSpliner(Node):
     # MAIN LOOP #
     #############
     def _tick(self):
+        try:
+            self._tick_impl()
+        except Exception as _e:
+            import traceback
+            self.get_logger().error(f"[_tick] EXCEPTION: {_e}\n{traceback.format_exc()}")
+
+    def _tick_impl(self):
         """ROS2 timer tick (원본 loop() body 1회).
 
         매 tick 마다 빈 OTWpntArray 라도 publish — state_machine 의 wpnts_are_latest
@@ -254,11 +264,17 @@ class ObstacleSpliner(Node):
         if self.measuring:
             end = time.perf_counter()
             self.latency_pub.publish(end - start)
-        # ROS2: 장애물 없을 때 빈 OTWpntArray publish 하면 state_machine 의 last-valid wpnts 가
-        # 매 tick 덮어씌워져 _check_latest_wpnts 영구 False. 회피 경로 있을 때만 publish.
+        # ROS2: do_spline 이 새 OTWpntArray 반환할 때만 publish. last-valid 캐시는 list 만 저장
+        # (C++/Python proxy ROS2 message deepcopy 시 SIGABRT 가능 — primitive 만 복사).
         if len(wpnts.wpnts) > 0:
-            self.evasion_pub.publish(wpnts)
-            self.evasion_static_pub.publish(wpnts)
+            self._last_valid_payload = list(wpnts.wpnts)  # Wpnt 리스트만 캐시
+        if self._last_valid_payload:
+            out = OTWpntArray()
+            out.header.stamp = self.get_clock().now().to_msg()
+            out.header.frame_id = "map"
+            out.wpnts = list(self._last_valid_payload)  # 새 list reference (publisher 안전)
+            self.evasion_pub.publish(out)
+            self.evasion_static_pub.publish(out)
         self.mrks_pub.publish(mrks)
 
     def loop(self):
