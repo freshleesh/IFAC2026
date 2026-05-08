@@ -88,6 +88,8 @@ class ObstacleSpliner(Node):
         self.post_min_dist = self._get_param_or_default("/post_min_dist", 1.5)
         self.post_max_dist = self._get_param_or_default("/post_max_dist", 5.0)
         self.kernel_size = self._get_param_or_default("/kernel_size", 1)  # ROS2: default 4 → 1 (f 맵 좁은 트랙 호환)
+        # ROS2 sim 검증용: trackbound (GridFilter is_point_inside) check 우회. 진짜 차량 운영 시엔 False.
+        self.skip_trackbound_check = self._get_param_or_default("/spliner/skip_trackbound_check", True)
         
         self.map_filter = GridFilter(node=self, map_topic="/map", debug=False)
         self.map_filter.set_erosion_kernel_size(self.kernel_size)
@@ -252,8 +254,11 @@ class ObstacleSpliner(Node):
         if self.measuring:
             end = time.perf_counter()
             self.latency_pub.publish(end - start)
-        self.evasion_pub.publish(wpnts)
-        self.evasion_static_pub.publish(wpnts)  # static_otwpnts 도 동일 발행
+        # ROS2: 장애물 없을 때 빈 OTWpntArray publish 하면 state_machine 의 last-valid wpnts 가
+        # 매 tick 덮어씌워져 _check_latest_wpnts 영구 False. 회피 경로 있을 때만 publish.
+        if len(wpnts.wpnts) > 0:
+            self.evasion_pub.publish(wpnts)
+            self.evasion_static_pub.publish(wpnts)
         self.mrks_pub.publish(mrks)
 
     def loop(self):
@@ -354,13 +359,17 @@ class ObstacleSpliner(Node):
                 )
 
             if pre_dist < 0.5 or pre_dist > self.gb_max_s / 2:
+                if self._dospline_diag_count % 20 == 1:
+                    self.get_logger().warn(f"[do_spline] ABORT pre_dist (={pre_dist:.2f}) out of [0.5, {self.gb_max_s/2:.2f}]")
                 wpnts.wpnts = []
                 mrks.markers = []
                 return wpnts, mrks
-            
+
             obs_s_idx = int(obs.s_center / wpnt_dist) % self.gb_max_idx
 
             more_space, d_apex = self._more_space(obs, gb_wpnts, obs_s_idx)
+            if self._dospline_diag_count % 20 == 1:
+                self.get_logger().info(f"[do_spline] more_space={more_space}, d_apex={d_apex:.3f}")
             s_list = [obs.s_center]
             d_list = [d_apex]
             
@@ -461,16 +470,18 @@ class ObstacleSpliner(Node):
                 )
             
             danger_flag = False
+            danger_idx = -1
+            danger_pt = (0.0, 0.0)
             for i in range(samples.shape[0]):
                 gb_wpnt_i = int((s_[i] / wpnt_dist) % self.gb_max_idx)
-                
-                inside = self.map_filter.is_point_inside(samples[i, 0], samples[i, 1])
-                if not inside:
-                    rospy.loginfo_throttle_identical(
-                        2, f"[{self.name}]: Evasion trajectory too close to TRACKBOUNDS, aborting evasion"
-                    )            # if abs(evasion_d[i]) > abs(tb_dist) - self.spline_bound_mindist:
-                    danger_flag = True
-                    break
+
+                if not self.skip_trackbound_check:
+                    inside = self.map_filter.is_point_inside(samples[i, 0], samples[i, 1])
+                    if not inside:
+                        danger_flag = True
+                        danger_idx = i
+                        danger_pt = (samples[i, 0], samples[i, 1])
+                        break
                 outside = True
                 # Get V from gb wpnts and go slower if we are going through the inside
                 vi = gb_wpnts[gb_wpnt_i].vx_mps if outside else gb_wpnts[gb_wpnt_i].vx_mps * 0.9 # TODO make speed scaling ros param
@@ -484,8 +495,16 @@ class ObstacleSpliner(Node):
 
             
             if danger_flag:
+                if self._dospline_diag_count % 20 == 1:
+                    self.get_logger().warn(
+                        f"[do_spline] ABORT danger (TRACKBOUNDS) at sample idx={danger_idx}/{samples.shape[0]}, "
+                        f"pt=({danger_pt[0]:.2f}, {danger_pt[1]:.2f}), kernel_size={self.kernel_size}"
+                    )
                 wpnts.wpnts = []
                 mrks.markers = []
+            else:
+                if self._dospline_diag_count % 20 == 1:
+                    self.get_logger().info(f"[do_spline] OK wpnts len={len(wpnts.wpnts)}")
         return wpnts, mrks
 
     def _obs_filtering(self, obstacles: ObstacleArray) -> List[Obstacle]:

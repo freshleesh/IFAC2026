@@ -49,15 +49,27 @@ class CallbackMixin:
 
     def avoidance_cb(self, data: OTWpntArray):
         """splini waypoints"""
-        if len(data.wpnts) != 0:
-            self.update_velocity(data, self.cur_avoidance_wpnts.vel_planner_safety_factor)
+        # ROS2: update_velocity throw 시에도 self.avoidance_wpnts 보장 — 순서 변경
         self.avoidance_wpnts = data
+        if len(data.wpnts) != 0:
+            try:
+                self.update_velocity(data, self.cur_avoidance_wpnts.vel_planner_safety_factor)
+            except Exception as _e:
+                self.get_logger().warn(f"[avoidance_cb] update_velocity raised: {_e}")
 
     def static_avoidance_cb(self, data: OTWpntArray):
         """static splini waypoints"""
-        if len(data.wpnts) != 0:
-            self.update_velocity(data, self.cur_static_avoidance_wpnts.vel_planner_safety_factor)
+        if not hasattr(self, "_static_cb_count"):
+            self._static_cb_count = 0
+        self._static_cb_count += 1
+        if self._static_cb_count % 50 == 1:
+            self.get_logger().info(f"[static_avoidance_cb] #{self._static_cb_count} len={len(data.wpnts)}")
         self.static_avoidance_wpnts = data
+        if len(data.wpnts) != 0:
+            try:
+                self.update_velocity(data, self.cur_static_avoidance_wpnts.vel_planner_safety_factor)
+            except Exception as _e:
+                self.get_logger().warn(f"[static_avoidance_cb] update_velocity raised: {_e}")
 
     def smart_static_avoidance_cb(self, data: OTWpntArray):
         """Smart static avoidance waypoints from GB optimizer fixed path.
