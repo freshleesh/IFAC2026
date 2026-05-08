@@ -7,12 +7,15 @@ Provides Clear button via Interactive Marker.
 Publishes obstacle positions for map_publisher or obstacle_publisher_grid to use.
 """
 
+import numpy as np
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import PointStamped, Point
 from visualization_msgs.msg import Marker, MarkerArray, InteractiveMarker, InteractiveMarkerControl, InteractiveMarkerFeedback
 from interactive_markers import InteractiveMarkerServer
 from std_msgs.msg import ColorRGBA
+from f110_msgs.msg import ObstacleArray, Obstacle, WpntArray
+from frenet_conversion.frenet_converter import FrenetConverter
 
 
 class StaticObstacleManager(Node):
@@ -31,6 +34,13 @@ class StaticObstacleManager(Node):
         # ===== ROS Publishers =====
         self.obstacle_marker_pub = self.create_publisher(MarkerArray, '/static_obstacle_markers', 1)
         self.obstacle_positions_pub = self.create_publisher(MarkerArray, '/static_obstacles', 10)
+        # state_machine 이 sub. random_obstacle 과 dual publisher 가능 (state_machine 의 cb 가 둘 다 받음).
+        self.tracking_obstacles_pub = self.create_publisher(ObstacleArray, '/tracking/obstacles', 10)
+
+        # FrenetConverter — /global_waypoints 한 번 받으면 빌드. (x,y) → (s,d) 변환용.
+        self._frenet_converter = None
+        self._track_length = 0.0
+        self.create_subscription(WpntArray, '/global_waypoints', self._wpnts_cb, 10)
 
         # ===== ROS Subscribers =====
         self.point_sub = self.create_subscription(
@@ -169,6 +179,68 @@ class StaticObstacleManager(Node):
             marker_array.markers.append(delete_marker)
 
         self.obstacle_positions_pub.publish(marker_array)
+
+        # ObstacleArray (state_machine 이 sub) — frenet 변환 후 발행
+        self._publish_tracking_obstacles()
+
+    def _wpnts_cb(self, msg: WpntArray):
+        """첫 /global_waypoints 받으면 FrenetConverter 빌드."""
+        if self._frenet_converter is not None:
+            return
+        if len(msg.wpnts) < 2:
+            return
+        x = np.array([w.x_m for w in msg.wpnts])
+        y = np.array([w.y_m for w in msg.wpnts])
+        z = np.array([w.z_m for w in msg.wpnts])
+        try:
+            self._frenet_converter = FrenetConverter(x, y, z)
+            self._track_length = float(self._frenet_converter.raceline_length)
+            self.get_logger().info(
+                f"[StaticObstacleManager] FrenetConverter ready, "
+                f"track_length={self._track_length:.2f}m"
+            )
+        except Exception as e:
+            self.get_logger().warn(f"[StaticObstacleManager] FrenetConverter build failed: {e}")
+
+    def _publish_tracking_obstacles(self):
+        """static_obstacles → ObstacleArray on /tracking/obstacles (state_machine 회피 chain)."""
+        if self._frenet_converter is None or not self.static_obstacles:
+            # 빈 ObstacleArray 도 발행 안 함 — random_obstacle 과의 dual publisher 충돌 회피
+            return
+        radius = self.obstacle_diameter_m * 0.5
+        msg = ObstacleArray()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = "map"
+        # 모든 점을 한 번에 변환
+        xs = np.array([p[0] for p in self.static_obstacles])
+        ys = np.array([p[1] for p in self.static_obstacles])
+        zs = np.zeros_like(xs)
+        try:
+            s_d = self._frenet_converter.get_frenet_3d(xs, ys, zs)
+            s_arr = s_d[0]
+            d_arr = s_d[1]
+        except Exception as e:
+            self.get_logger().warn(f"[StaticObstacleManager] frenet conv failed: {e}")
+            return
+        for i, (x, y) in enumerate(self.static_obstacles):
+            obs = Obstacle()
+            obs.id = i
+            obs.x_m = float(x)
+            obs.y_m = float(y)
+            obs.z_m = 0.0
+            obs.s_center = float(s_arr[i])
+            obs.d_center = float(d_arr[i])
+            obs.s_start = (obs.s_center - radius) % self._track_length
+            obs.s_end = (obs.s_center + radius) % self._track_length
+            obs.d_right = obs.d_center - radius
+            obs.d_left = obs.d_center + radius
+            obs.size = self.obstacle_diameter_m
+            obs.is_static = True
+            obs.is_visible = True
+            obs.vs = 0.0
+            obs.vd = 0.0
+            msg.obstacles.append(obs)
+        self.tracking_obstacles_pub.publish(msg)
 
     def publish_markers(self):
         """Publish visualization markers for static obstacles (blue cylinders)"""
