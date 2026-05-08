@@ -182,11 +182,21 @@ class FrenetConverter:
         return s
 
     def get_approx_s_3d_with_idx(
-        self, x, y, z
+        self, x, y, z, yaw=None
     ) -> Tuple[np.ndarray, np.ndarray]:
-        """get_approx_s_3d 와 동일하되 (s, idx) 둘 다 반환 — service idx 응답용 (SH 추가)."""
+        """get_approx_s_3d 와 동일하되 (s, idx) 둘 다 반환 — service idx 응답용 (SH 추가).
+
+        yaw (optional, scalar 또는 array): 주어지면 차량 yaw 와 waypoint psi 의 차이가
+        90도 초과인 wpnt 는 후보에서 제외. F자 트랙처럼 굽은 부분에서 같은 cartesian
+        위치 인근에 반대 방향 점이 있을 때 잘못된 closest 선택 방지.
+        """
         lenx = len(x)
         result_indices = np.zeros(lenx, dtype=int)
+        yaw_arr = None
+        if yaw is not None:
+            yaw_arr = np.atleast_1d(yaw)
+            if len(yaw_arr) == 1 and lenx > 1:
+                yaw_arr = np.repeat(yaw_arr, lenx)
 
         for qi in range(lenx):
             qx, qy, qz = x[qi], y[qi], z[qi]
@@ -202,6 +212,13 @@ class FrenetConverter:
             d_sq_all = dx_all ** 2 + dy_all ** 2 + dz_all ** 2
             d_sq = d_sq_all.copy()
             d_sq[~height_mask] = np.inf
+
+            # yaw 필터: 차량 진행방향과 raceline tangent 가 90도 초과 차이나면 제외
+            # (반대 방향 lane / loop 의 다른 부분 잘못 선택 방지)
+            if yaw_arr is not None:
+                delta_psi = (yaw_arr[qi] - self.waypoints_psi + np.pi) % (2 * np.pi) - np.pi
+                psi_mask = np.abs(delta_psi) <= np.pi / 2
+                d_sq[~psi_mask] = np.inf
 
             nearest_idx = int(np.argmin(d_sq))
 
@@ -372,8 +389,10 @@ class FrenetConverter:
         (원본은 wpnt.psi_rad 필드 사용 — 사용자가 별도 제공한 트랙 tangent. 이번 포팅
         에서는 wpnt.psi_rad 를 받지 않으므로 spline 에서 자동 계산한 값 사용 — 실용상 동일.)
         """
+        # yaw 전달 — closest 검색 시 반대 방향 wpnt 제외 (F자 트랙처럼 같은 (x,y)
+        # 인근에 두 다른 방향 점이 있을 때 차량이 다른 lane 잡고 벽 박는 버그 fix)
         s_arr, idx_arr = self.get_approx_s_3d_with_idx(
-            np.array([x]), np.array([y]), np.array([z])
+            np.array([x]), np.array([y]), np.array([z]), yaw=yaw
         )
         s_out, d_out = self.get_frenet_coord(np.array([x]), np.array([y]), s_arr)
         idx = int(idx_arr[0])
