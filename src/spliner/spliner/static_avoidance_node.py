@@ -87,7 +87,10 @@ class ObstacleSpliner(Node):
         self.spline_scale = self._get_param_or_default("/spline_scale", 0.8)
         self.post_min_dist = self._get_param_or_default("/post_min_dist", 1.5)
         self.post_max_dist = self._get_param_or_default("/post_max_dist", 5.0)
-        self.kernel_size = self._get_param_or_default("/kernel_size", 1)  # ROS2: default 4 → 1 (f 맵 좁은 트랙 호환)
+        # erosion kernel × map_resolution(0.05m) = 트랙 가장자리 안전 buffer.
+        # kernel=4 → 20cm 안쪽까지 spline 머물어야 inside 판정 (차량 폭 0.3m + 5cm margin).
+        # 너무 크면 좁은 트랙에서 모든 spline abort. 좁은 sim 트랙 (f) 이라 4 가 marginal.
+        self.kernel_size = self._get_param_or_default("/kernel_size", 4)
         # ROS2 sim 검증용: trackbound (GridFilter is_point_inside) check 우회. 진짜 차량 운영 시엔 False.
         # ROS2: 회피 spline 이 트랙 boundary 침범 시 abort. False=검사 활성 (default).
         # True 면 spline 이 벽 무시 → 차량이 벽 통과 시도. sim 검증 시에만 True 권장.
@@ -104,11 +107,12 @@ class ObstacleSpliner(Node):
         self.create_subscription(WpntArray, "/global_waypoints", self.gb_cb, 10)
         self.create_subscription(WpntArray, "/global_waypoints_scaled", self.gb_scaled_cb, 10)
         # dyn params sub
-        # ROS2 sim: f 맵 좁은 트랙 호환 위해 evasion 거리 축소 (0.65 → 0.35) +
-        # bound mindist 도 줄임. trackbound check enable 시 spline abort 회피.
+        # ROS2 sim: f 맵 좁은 트랙 호환 + 벽 안전 buffer.
+        # evasion_dist 0.35 = obstacle 끝 + 0.35m d_apex.
+        # spline_bound_mindist 0.2 = _more_space 의 회피측 결정 임계값 (벽까지 0.55m 이상 gap 확인).
         self.evasion_dist = 0.35
         self.obs_traj_tresh = 0.3
-        self.spline_bound_mindist = 0.1
+        self.spline_bound_mindist = 0.2
         self.n_loc_wpnts = 80
         self.width_car = 0.30
         if not self.from_bag:
