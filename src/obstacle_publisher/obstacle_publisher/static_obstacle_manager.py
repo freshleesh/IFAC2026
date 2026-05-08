@@ -149,24 +149,24 @@ class StaticObstacleManager(Node):
             marker.header.frame_id = "map"
             marker.header.stamp = self.get_clock().now().to_msg()
             marker.id = i
-            marker.type = Marker.SPHERE
+            marker.type = Marker.CYLINDER
             marker.action = Marker.ADD
 
             marker.pose.position.x = x_m
             marker.pose.position.y = y_m
-            marker.pose.position.z = 0.0
+            marker.pose.position.z = 0.15
             marker.pose.orientation.w = 1.0
 
-            # Size from parameter
             marker.scale.x = self.obstacle_diameter_m
             marker.scale.y = self.obstacle_diameter_m
-            marker.scale.z = 0.01  # Flat marker for position info
+            marker.scale.z = 0.3  # 사용자가 잘 보이도록 높이
 
-            # Invisible color (just position data)
-            marker.color.r = 0.0
-            marker.color.g = 0.0
-            marker.color.b = 0.0
-            marker.color.a = 0.0
+            # 빨간 cylinder — 사용자가 클릭한 잔재 장애물 즉시 가시화
+            # (이전 alpha=0 라 보이지 않아 누적된 잔재가 spliner 의 obs_in_interest 가 되는 사고 방지)
+            marker.color.r = 1.0
+            marker.color.g = 0.2
+            marker.color.b = 0.2
+            marker.color.a = 0.85
 
             marker_array.markers.append(marker)
 

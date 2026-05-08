@@ -554,6 +554,18 @@ Visualization Manager:
         Reliability Policy: Reliable
         Value: /state_machine/obstacles_in_interest
       Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: StaticObstaclesPositions
+      Namespaces:
+        "": true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /static_obstacles
+      Value: true
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
