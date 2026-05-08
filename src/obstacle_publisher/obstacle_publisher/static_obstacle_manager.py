@@ -204,8 +204,15 @@ class StaticObstacleManager(Node):
 
     def _publish_tracking_obstacles(self):
         """static_obstacles → ObstacleArray on /tracking/obstacles (state_machine 회피 chain)."""
-        if self._frenet_converter is None or not self.static_obstacles:
-            # 빈 ObstacleArray 도 발행 안 함 — random_obstacle 과의 dual publisher 충돌 회피
+        if self._frenet_converter is None:
+            return
+        # 빈 list 라도 발행 — state_machine 이 obstacle 사라짐 알아채도록 (Clear 후
+        # _publish_target_marker 가 DELETEALL 보내고 cur_obstacles_in_interest 비워짐).
+        if not self.static_obstacles:
+            empty_msg = ObstacleArray()
+            empty_msg.header.stamp = self.get_clock().now().to_msg()
+            empty_msg.header.frame_id = "map"
+            self.tracking_obstacles_pub.publish(empty_msg)
             return
         radius = self.obstacle_diameter_m * 0.5
         msg = ObstacleArray()
