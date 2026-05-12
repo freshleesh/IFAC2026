@@ -39,7 +39,6 @@ def _build(context: LaunchContext, *_args, **_kwargs):
     map_name = LaunchConfiguration("map").perform(context)
     racecar_version = LaunchConfiguration("racecar_version").perform(context)
     mode = LaunchConfiguration("mode").perform(context)
-    n_obstacles_str = LaunchConfiguration("n_obstacles").perform(context)
 
     if mode not in ("timetrial", "overtake", "avoid"):
         raise ValueError(f"mode must be 'timetrial' / 'overtake' / 'avoid', got {mode!r}")
@@ -47,14 +46,6 @@ def _build(context: LaunchContext, *_args, **_kwargs):
     # 'avoid' = 'overtake' alias — 정적 장애물 회피 의도 명시. 코드 동작 동일.
     if mode == "avoid":
         mode = "overtake"
-
-    # mode 에 따른 default. n_obstacles="auto" 면 mode 기준.
-    # avoid / overtake 모드에서도 random_obstacle 은 0 (사용자 publish_point 가 진짜 장애물)
-    # → 회피 경로가 random 장애물에 부딪혀 path_is_free=False 되는 chicken-and-egg 회피.
-    if n_obstacles_str == "auto":
-        n_obstacles = 0
-    else:
-        n_obstacles = int(n_obstacles_str)
 
     timetrials_only = (mode == "timetrial")
     force_gbtrack = (mode == "timetrial")
@@ -109,21 +100,22 @@ def _build(context: LaunchContext, *_args, **_kwargs):
         name="fake_topic_relay",
         output="screen",
     )])
-    random_obs = TimerAction(period=3.0, actions=[Node(
-        package="random_obstacle_publisher",
-        executable="random_obstacle_publisher",
-        name="random_obstacle_publisher",
-        parameters=[{"n_obstacles": n_obstacles, "rate_hz": 20.0}],
-        remappings=[("/obstacles", "/tracking/obstacles")],
-        output="screen",
-    )])
+    # random_obs = TimerAction(period=3.0, actions=[Node(
+    #     package="random_obstacle_publisher",
+    #     executable="random_obstacle_publisher",
+    #     name="random_obstacle_publisher",
+    #     parameters=[{"n_obstacles": n_obstacles, "rate_hz": 20.0}],
+    #     remappings=[("/obstacles", "/tracking/obstacles")],
+    #     output="screen",
+    # )])
 
     # ── overtake 분기 노드 (spliner) ──
     actions = [
         low_level,
         global_repub,
         frenet_server, frenet_odom_repub,
-        fake_relay, random_obs,
+        fake_relay,
+        #random_obs,
     ]
     if mode == "overtake":
         spliner_node = TimerAction(period=4.0, actions=[Node(
@@ -191,7 +183,7 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("racecar_version", default_value="SIM"),
         DeclareLaunchArgument("mode", default_value="timetrial",
                               description="timetrial | overtake"),
-        DeclareLaunchArgument("n_obstacles", default_value="auto",
-                              description="0=강제 비활성, auto=mode 기준, 정수=강제"),
+        # DeclareLaunchArgument("n_obstacles", default_value="auto",
+        #                       description="0=강제 비활성, auto=mode 기준, 정수=강제"),
         OpaqueFunction(function=_build),
     ])
