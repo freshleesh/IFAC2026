@@ -268,8 +268,9 @@ class InitMixin:
         self.cur_avoidance_wpnts = WaypointData('dynamic_avoidance_planner', False)
         self.cur_static_avoidance_wpnts = WaypointData('static_avoidance_planner', False)
         self.cur_start_wpnts = WaypointData('start_planner', False)
-        # smart_static은 static_avoidance_planner 파라미터를 공유하되 closed=True
-        self.cur_smart_static_avoidance_wpnts = WaypointData('static_avoidance_planner', True)
+        # smart_static — closed=True. name 은 spliner output (cur_static_avoidance_wpnts) 과
+        # 충돌하지 않도록 분리 (state_machine_node._check_latest_wpnts 가 name 으로 is_smart_static 판정).
+        self.cur_smart_static_avoidance_wpnts = WaypointData('smart_static_avoidance_planner', True)
         self.smart_track_length = None
         self.smart_wpnt_dist = None
 
@@ -486,8 +487,11 @@ class InitMixin:
             return default
 
     def _resolve_stack_master_path(self, *parts) -> str:
-        """stack_master 경로 해결 — 우리 ws 에 stack_master 미포팅이라
-        ROS1 ws 의 stack_master 디렉터리로 fallback (B-1 / B-6 패턴)."""
-        return os.path.expanduser(
-            os.path.join("~/unicorn_ws/ICRA2026_HJ/stack_master", *parts)
-        )
+        """stack_master 경로 해결 — install share 우선, 미발견 시 ROS1 ws fallback."""
+        try:
+            from ament_index_python.packages import get_package_share_directory
+            return os.path.join(get_package_share_directory("stack_master"), *parts)
+        except Exception:
+            return os.path.expanduser(
+                os.path.join("~/unicorn_ws/ICRA2026_HJ/stack_master", *parts)
+            )

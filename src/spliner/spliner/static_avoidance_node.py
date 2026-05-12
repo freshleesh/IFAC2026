@@ -130,9 +130,6 @@ class ObstacleSpliner(Node):
             self.latency_pub = self.create_publisher(Float32, "/planner/avoidance/latency", 10)
 
 
-        # ROS2: 마지막 유효 회피 경로 payload (Wpnt list) cache. ROS2 메시지 객체 자체 caching 은
-        # C++/Python proxy 충돌로 SIGABRT 위험 → primitive list 만.
-        self._last_valid_payload = []
         # ROS2: callback 으로 채워지는 self.waypoints 가 init 시점엔 없으므로 미리 빈 값 + spin_once 로 채워질 때까지 대기
         self.waypoints = None
         self.get_logger().info(f"[{self.name}] Waiting for /global_waypoints...")
@@ -272,17 +269,10 @@ class ObstacleSpliner(Node):
         if self.measuring:
             end = time.perf_counter()
             self.latency_pub.publish(end - start)
-        # ROS2: do_spline 이 새 OTWpntArray 반환할 때만 publish. last-valid 캐시는 list 만 저장
-        # (C++/Python proxy ROS2 message deepcopy 시 SIGABRT 가능 — primitive 만 복사).
-        if len(wpnts.wpnts) > 0:
-            self._last_valid_payload = list(wpnts.wpnts)  # Wpnt 리스트만 캐시
-        if self._last_valid_payload:
-            out = OTWpntArray()
-            out.header.stamp = self.get_clock().now().to_msg()
-            out.header.frame_id = "map"
-            out.wpnts = list(self._last_valid_payload)  # 새 list reference (publisher 안전)
-            self.evasion_pub.publish(out)
-            self.evasion_static_pub.publish(out)
+        # 원본 ROS1 동작: 매 tick wpnts 그대로 publish. 장애물 사라지면 빈 OTWpntArray
+        # 가 publish 되어 state_machine 이 OVERTAKE 에서 즉시 빠져나옴.
+        self.evasion_pub.publish(wpnts)
+        self.evasion_static_pub.publish(wpnts)
         self.mrks_pub.publish(mrks)
 
     def loop(self):

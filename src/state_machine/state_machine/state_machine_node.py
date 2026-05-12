@@ -407,7 +407,7 @@ class StateMachine(Node, InitMixin, VisualizationMixin, CallbackMixin):
         initialize_traj (wpnts_data 내부 array/list/is_init 갱신)와 _check_on_spline 호출은
         wrapper에 남는다 (side effect / 다른 sub-check 합성).
         """
-        is_smart_static = (wpnts_data.name == 'static_avoidance_planner')
+        is_smart_static = (wpnts_data.name == 'smart_static_avoidance_planner')
 
         is_fresh = is_traj_msg_fresh(
             src_msg=src_wpnts,
@@ -422,6 +422,12 @@ class StateMachine(Node, InitMixin, VisualizationMixin, CallbackMixin):
             # Smart Static에서 stamp 미초기화 케이스만 별도 디버그 로그 (원본 동작 유지)
             if is_smart_static and src_wpnts is not None and len(src_wpnts.wpnts) > 0:
                 self.get_logger().warning("[_check_latest_wpnts] Smart Static waypoints timestamp not initialized")
+            # stale 시 wpnts_data 의 옛 array/list 명시 invalidate — get_splini_wpts:935 safety check 가
+            # fallback (GB raceline) 으로 복귀하도록. is_smart_static (fixed path) 은 영구 유효 의도라 제외.
+            if not is_smart_static:
+                wpnts_data.array = None
+                wpnts_data.list = []
+                wpnts_data.is_init = False
             return False
 
         # Side effect: wpnts_data 내부 array/list/is_init 갱신
