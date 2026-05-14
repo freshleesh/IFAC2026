@@ -40,7 +40,7 @@ from ackermann_msgs.msg import AckermannDriveStamped
 from visualization_msgs.msg import Marker, MarkerArray
 from tf2_ros import TransformBroadcaster
 
-import gymnasium as gym
+import gymnasium as gym  # f110_gym 0.3.0 uses gymnasium API
 import numpy as np
 import cv2
 import threading
@@ -306,14 +306,35 @@ class GymBridge(Node):
         rqz = pose_msg.pose.pose.orientation.z
         rqw = pose_msg.pose.pose.orientation.w
         _, _, rtheta = euler.quat2euler([rqw, rqx, rqy, rqz], axes='sxyz')
-        if self.has_opp:
-            opp_pose = [self.obs['poses_x'][1], self.obs['poses_y']
-                        [1], self.obs['poses_theta'][1]]
-            self.obs, _, self.done, _ = self.env.reset(
-                poses=np.array([[rx, ry, rtheta], opp_pose]))
-        else:
-            self.obs, _, self.done, _ = self.env.reset(
-                poses=np.array([[rx, ry, rtheta]]))
+        self.get_logger().info(
+            f'[gym_bridge] ego_reset_callback → ({rx:.2f}, {ry:.2f}, {rtheta:.2f})'
+        )
+        try:
+            if self.has_opp:
+                opp_pose = [self.obs['poses_x'][1], self.obs['poses_y']
+                            [1], self.obs['poses_theta'][1]]
+                ret = self.env.reset(
+                    poses=np.array([[rx, ry, rtheta], opp_pose]))
+            else:
+                ret = self.env.reset(poses=np.array([[rx, ry, rtheta]]))
+            # gym>=0.26 wrappers may return (obs, info) 2-tuple; f110_gym 0.2.1 returns
+            # (obs, reward, done, info) 4-tuple. Adapt either.
+            if isinstance(ret, tuple) and len(ret) == 4:
+                self.obs, _, self.done, _ = ret
+            elif isinstance(ret, tuple) and len(ret) == 2:
+                self.obs, _ = ret
+                self.done = False
+            else:
+                self.obs = ret
+                self.done = False
+            # Sync local pose tracking so /tf and odom reflect reset immediately
+            self.ego_pose = [rx, ry, rtheta]
+            self.ego_speed = [0.0, 0.0, 0.0]
+            self.ego_requested_speed = 0.0
+            self.ego_steer = 0.0
+            self.get_logger().info(f'[gym_bridge] reset done, obs keys={list(self.obs.keys()) if isinstance(self.obs, dict) else type(self.obs).__name__}')
+        except Exception as e:
+            self.get_logger().error(f'[gym_bridge] env.reset failed: {e}')
 
     def opp_reset_callback(self, pose_msg):
         if self.has_opp:
@@ -456,10 +477,14 @@ class GymBridge(Node):
 
         # Update gym environment's distance transform
         # The gym expects the image with origin at bottom-left (flipped)
-        flipped = np.flipud(self.current_map_img)
-        self.env.unwrapped.update_map_from_array(
-            flipped, self.map_resolution,
-            self.map_origin_x, self.map_origin_y)
+        # f110_gym 0.2.1 (PyPI) lacks update_map_from_array — skip gracefully.
+        # 결과: 동적으로 추가된 장애물은 LiDAR scan 에 안 잡힘 (충돌맵 미갱신).
+        # 데모 동작은 OK — /tracking/obstacles → state_machine → spliner 흐름은 별개.
+        if hasattr(self.env.unwrapped, "update_map_from_array"):
+            flipped = np.flipud(self.current_map_img)
+            self.env.unwrapped.update_map_from_array(
+                flipped, self.map_resolution,
+                self.map_origin_x, self.map_origin_y)
 
         # Publish updated /map
         self._publish_occupancy_grid()
