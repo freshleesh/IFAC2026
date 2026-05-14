@@ -1,0 +1,22 @@
+# Pure-pip dependencies for nonlinear_mpc_acados.
+#
+# Install with:
+#   pip install -r src/nonlinear_mpc_acados/requirements.txt --break-system-packages
+# or in a venv:
+#   python3 -m venv .venv --system-site-packages && source .venv/bin/activate
+#   pip install -r src/nonlinear_mpc_acados/requirements.txt
+#
+# Not included (handled separately):
+#   - rclpy / std_msgs / geometry_msgs / nav_msgs / sensor_msgs /
+#     visualization_msgs / ackermann_msgs / tf_transformations
+#       → apt: ros-jazzy-{desktop,ackermann-msgs,tf-transformations}
+#       → or: rosdep install --from-paths src/nonlinear_mpc_acados --ignore-src -y
+#   - acados_template (acados Python interface)
+#       → cannot ship via PyPI: depends on locally-built libacados.so
+#       → run: src/nonlinear_mpc_acados/scripts/install_acados.sh
+#       → only needed when mpc_backend == 'acados' (ipopt backend works
+#         with just casadi)
+
+casadi>=3.6
+numpy>=1.21
+scipy>=1.7

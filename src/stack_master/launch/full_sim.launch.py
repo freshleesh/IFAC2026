@@ -10,9 +10,12 @@
 LaunchArgs:
   map (f): 맵 이름 — stack_master/maps/<name>/{<name>.{png,yaml}, global_waypoints.json}
   racecar_version (SIM): 차량 설정 이름
-  mode (timetrial | overtake): 운영 모드
+  mode (timetrial | overtake | mpcc): 운영 모드
     - timetrial: GB_TRACK 만, 추월 분기 비활성 (n_obstacles=0). 검증된 기본 모드.
     - overtake : OVERTAKE 분기 + spliner 정적 회피 + 가짜 장애물 (n_obstacles=4).
+    - mpcc     : controller_manager 대신 nonlinear_mpc_acados (MPCC) 사용.
+                 timetrial 인프라 + mpc_node + joy_node + auto-engage helper.
+                 IFAC 데모용. 자체 reference 추종, state_machine은 GB_TRACK 강제.
   n_obstacles (auto): 명시 시 mode 와 무관하게 강제. 0=정적 장애물 발생 안 함.
 
 기동 순서 (TimerAction):
@@ -29,7 +32,7 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchContext, LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction, TimerAction
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription, OpaqueFunction, SetEnvironmentVariable, TimerAction
 from launch.launch_description_sources import AnyLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
@@ -40,15 +43,17 @@ def _build(context: LaunchContext, *_args, **_kwargs):
     racecar_version = LaunchConfiguration("racecar_version").perform(context)
     mode = LaunchConfiguration("mode").perform(context)
 
-    if mode not in ("timetrial", "overtake", "avoid"):
-        raise ValueError(f"mode must be 'timetrial' / 'overtake' / 'avoid', got {mode!r}")
+    if mode not in ("timetrial", "overtake", "avoid", "mpcc"):
+        raise ValueError(f"mode must be 'timetrial' / 'overtake' / 'avoid' / 'mpcc', got {mode!r}")
 
     # 'avoid' = 'overtake' alias — 정적 장애물 회피 의도 명시. 코드 동작 동일.
     if mode == "avoid":
         mode = "overtake"
 
-    timetrials_only = (mode == "timetrial")
-    force_gbtrack = (mode == "timetrial")
+    is_mpcc = (mode == "mpcc")
+    # MPCC mode: state_machine 은 GB_TRACK 강제 (mpc 가 자체 reference 추종).
+    timetrials_only = (mode == "timetrial") or is_mpcc
+    force_gbtrack = (mode == "timetrial") or is_mpcc
     ot_planner = "spliner" if mode == "overtake" else ""
 
     sm_share = get_package_share_directory("stack_master")
@@ -164,15 +169,81 @@ def _build(context: LaunchContext, *_args, **_kwargs):
     )])
     actions.append(sm_node)
 
-    # ── controller_manager ──
-    controller_node = TimerAction(period=6.0, actions=[Node(
-        package="controller",
-        executable="controller_manager",
-        name="control_node",
-        parameters=[controller_yaml, {"~drive_topic": "/vesc/high_level/ackermann_cmd"}],
-        output="screen",
-    )])
-    actions.append(controller_node)
+    if not is_mpcc:
+        # ── controller_manager (timetrial / overtake) ──
+        controller_node = TimerAction(period=6.0, actions=[Node(
+            package="controller",
+            executable="controller_manager",
+            name="control_node",
+            parameters=[controller_yaml, {"~drive_topic": "/vesc/high_level/ackermann_cmd"}],
+            output="screen",
+        )])
+        actions.append(controller_node)
+    else:
+        # ── MPCC 모드: nonlinear_mpc_acados 가 controller 자리 대체 ──
+        mpc_share = get_package_share_directory("nonlinear_mpc_acados")
+        mpc_params = os.path.join(mpc_share, "config", "ddrx_unified_params.yaml")
+        # ACADOS env (libacados.so / Tera renderer / generated solver dlopen).
+        # 사용자가 export 했다면 그 값 우선, 없으면 ~/acados.
+        acados_dir = os.environ.get("ACADOS_SOURCE_DIR") or os.path.expanduser("~/acados")
+        ld_extra = os.path.join(acados_dir, "lib")
+        actions.append(SetEnvironmentVariable("ACADOS_SOURCE_DIR", acados_dir))
+        actions.append(SetEnvironmentVariable(
+            "LD_LIBRARY_PATH",
+            ld_extra + ":" + os.environ.get("LD_LIBRARY_PATH", ""),
+        ))
+
+        mpc_node = TimerAction(period=6.0, actions=[Node(
+            package="nonlinear_mpc_acados",
+            executable="mpc_node",
+            name="mpc_node",
+            parameters=[
+                mpc_params,
+                {
+                    "mpc_backend": "acados",
+                    # simple_mux in_topic 과 매칭: mpc → /vesc/high_level/ackermann_cmd
+                    "cmd_vel_topic_name": "/vesc/high_level/ackermann_cmd",
+                },
+            ],
+            output="screen",
+        )])
+        actions.append(mpc_node)
+
+        # ── mpc_debug_logger: 매 cycle CSV (~/mpc_logs/) + 죽는 순간 자동
+        # event dump (~/mpc_logs/events/event_<reason>_*.csv). 별도 노드라
+        # mpc_node 동작에 영향 없음. ROS1 unicorn 의 동명 logger 포팅.
+        debug_logger = TimerAction(period=6.0, actions=[Node(
+            package="nonlinear_mpc_acados",
+            executable="mpc_debug_logger",
+            name="mpc_debug_logger",
+            output="log",
+        )])
+        actions.append(debug_logger)
+
+        # ── joy (수동/자동 토글). USB joystick 없으면 idle. ──
+        joy_node = Node(
+            package="joy",
+            executable="joy_node",
+            name="joy_node",
+            parameters=[{"deadzone": 0.05, "autorepeat_rate": 20.0}],
+            output="log",
+        )
+        actions.append(joy_node)
+
+        # ── auto-engage helper: mpc 가 solver codegen 끝낼 충분한 시간 (~40s)
+        # 후에 joy RB(buttons[5])=1 한 번 publish → simple_mux 의 autodrive_latched
+        # rising-edge 트리거. 이후엔 joy LB 로 수동 takeover, RB 로 다시 autodrive.
+        auto_engage = TimerAction(period=40.0, actions=[ExecuteProcess(
+            cmd=[
+                "ros2", "topic", "pub", "--once", "/joy",
+                "sensor_msgs/msg/Joy",
+                "{header: {frame_id: 'auto_engage'}, "
+                "axes: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0], "
+                "buttons: [0, 0, 0, 0, 0, 1, 0, 0]}",
+            ],
+            output="log",
+        )])
+        actions.append(auto_engage)
 
     return actions
 

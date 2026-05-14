@@ -566,6 +566,81 @@ Visualization Manager:
         Reliability Policy: Reliable
         Value: /static_obstacles
       Value: true
+    # ── nonlinear_mpc_acados (mode:=mpcc) 자동 시각화 ──
+    # 다른 mode (timetrial / overtake / avoid) 에서는 토픽 발행 안 됨 → 빈 display.
+    # latched(TRANSIENT_LOCAL) 4개는 mpc init 직후 1회 발행이라 RViz durability 매칭 필요.
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: MPC_centerPath
+      Namespaces:
+        "": true
+      Topic:
+        Depth: 1
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /center_path
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: MPC_rightPath
+      Namespaces:
+        "": true
+      Topic:
+        Depth: 1
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /right_path
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: MPC_leftPath
+      Namespaces:
+        "": true
+      Topic:
+        Depth: 1
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /left_path
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: MPC_referencePath
+      Namespaces:
+        "": true
+      Topic:
+        Depth: 1
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /reference_path
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: MPC_trajectory
+      Namespaces:
+        "": true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /mpc_trajectory/markers
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: MPC_boundary
+      Namespaces:
+        "": true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /boundary_marker
+      Value: true
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
