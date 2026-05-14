@@ -47,7 +47,12 @@ class Controller_manager(Node):
 
     """
     def _get_param_or_default(self, name, default=None):
-        """ROS1 의 rospy.get_param 호환 helper (state_machine_init 와 동일 패턴)."""
+        """ROS1 의 rospy.get_param 호환 helper (state_machine_init 와 동일 패턴).
+
+        파라미터 미선언 시에만 fallback (ParameterNotDeclaredException).
+        다른 예외 (잘못된 타입 등) 는 의도적으로 전파 — 디버깅 가시성 우선.
+        """
+        from rclpy.exceptions import ParameterNotDeclaredException, ParameterAlreadyDeclaredException
         candidates = [name]
         if "/" in name:
             candidates.append(name.replace("/", "."))
@@ -58,16 +63,15 @@ class Controller_manager(Node):
                 v = self.get_parameter(n).value
                 if v is not None:
                     return v
-            except Exception:
+            except ParameterNotDeclaredException:
                 continue
         if default is None:
             return None
         try:
             self.declare_parameter(name, default)
-            v = self.get_parameter(name).value
-            return v if v is not None else default
-        except Exception:
-            return default
+        except ParameterAlreadyDeclaredException:
+            pass
+        return self.get_parameter(name).value
 
     def __init__(self):
         self.name = "control_node"
@@ -713,17 +717,10 @@ class Controller_manager(Node):
                 start = time.perf_counter()
             speed, acceleration, jerk, steering_angle = 0, 0, 0, 0
 
-            #Logic to select controller
+            # Logic to select controller — no silent fallback.
+            # 예외 발생 시 노드가 죽도록 의도적으로 try/except 제거 (디버깅 가시성 우선).
             if self.state != "FTGONLY":
-                try:
-                    speed, acceleration, jerk, steering_angle = self.controller_cycle()
-                except Exception as _e:
-                    # ROS2 strict 타입 fail 또는 callback 미수신 — ackermann 발행 보호
-                    if not getattr(self, "_cycle_warned", False):
-                        self.get_logger().warning(f"controller_cycle fail (silent after): {_e}")
-                        self._cycle_warned = True
-                    speed, acceleration, jerk, steering_angle = 0.0, 0.0, 0.0, 0.0
-
+                speed, acceleration, jerk, steering_angle = self.controller_cycle()
             else:
                 speed, steering_angle = self.ftg_cycle()
                 
@@ -791,11 +788,11 @@ class Controller_manager(Node):
 
         
         self.waypoint_safety_counter += 1
-        if self.waypoint_safety_counter >= self.loop_rate/self.state_machine_rate* 10: #we can use the same waypoints for 5 cycles
-            self.get_logger().error(f"[{self.name}] Received no local wpnts. STOPPING!!") 
+        if self.waypoint_safety_counter >= self.loop_rate/self.state_machine_rate * 10:
+            self.get_logger().error(f"[{self.name}] Received no local wpnts. STOPPING!!")
             speed = 0
             steering_angle = 0
-        
+
         return speed, acceleration, jerk, steering_angle
     
 
@@ -936,7 +933,9 @@ class Controller_manager(Node):
         opponent_marker.color.b = 0.0
         opponent_marker.color.a = 1.0
         if self.opponent is not None:
-            pos = self.converter.get_cartesian_3d([self.opponent[0]], [self.opponent[1]])
+            # numpy 2.x: float(ndarray) requires 0-dim. Pass scalars (not lists) so
+            # get_cartesian_3d returns 1-D (3,) array → pos[i] is scalar.
+            pos = self.converter.get_cartesian_3d(self.opponent[0], self.opponent[1])
             opponent_marker.pose.position.x = float(pos[0])
             opponent_marker.pose.position.y = float(pos[1])
             opponent_marker.pose.position.z = float(pos[2])

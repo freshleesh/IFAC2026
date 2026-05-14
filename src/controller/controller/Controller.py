@@ -264,48 +264,47 @@ class Controller:
         self.future_lat_e_norm, self.future_lat_err = self.calc_future_lateral_error_norm()
  
         ### LONGITUDINAL CONTROL ###
-        
+
         #-----------------------------------------Future-------------------------------------------
         self.speed_command = self.calc_speed_command(v, self.future_lat_e_norm)
         #-----------------------------------------Future-------------------------------------------
- 
+
         self.speed_command = self.speed_adjust_heading(self.speed_command)
- 
+
         # POSTPROCESS for acceleration/speed decision
- 
+
         if self.speed_command is not None:
             speed = max(self.speed_command, 0)
             acceleration = 0
             jerk = 0
- 
         else:
             speed = 0
             jerk = 0
-            acceleration = 0                
+            acceleration = 0
             self.logger_warn("[Controller] speed was none")
-            
+
         ### LATERAL CONTROL ###
- 
+
         steering_angle = None
         self.future_idx_nearest_waypoint = self.nearest_waypoint(self.future_position[0, :2], self.waypoint_array_in_map[:, :2])
- 
+
         #-----------------------------------------Future-------------------------------------------
         L1_point, L1_distance = self.calc_future_L1_point(self.future_lat_err)
         #-----------------------------------------Future-------------------------------------------
-        
+
         if L1_point.any() is not None:
- 
+
             #-----------------------------------------Future-------------------------------------------
             steering_angle = self.calc_steering_angle_for_future(L1_point, L1_distance, yaw, self.future_lat_e_norm, v)
             #-----------------------------------------Future-------------------------------------------
- 
+
             self.current_steer_command = steering_angle
- 
+
         else:
             raise Exception("L1_point is None")
- 
+
         speed = self.AEB_for_weird_local_wpnt(speed)
- 
+
         return speed, acceleration, jerk, steering_angle, L1_point, L1_distance, self.idx_nearest_waypoint, self.curvature_waypoints, self.future_position
 
     def AEB_for_weird_local_wpnt(self, speed):
@@ -565,7 +564,7 @@ class Controller:
             self.i_gap = 0
             speed_command = global_speed
         # ===== HJ MODIFIED END =====
- 
+
         speed_command = self.speed_adjust_lat_err(speed_command, lat_e_norm)
 
         ### HJ : acceleration feedforward — independent lookahead & gain for accel/brake
@@ -710,7 +709,10 @@ class Controller:
 
     def get_signed_lateral_error(self):
         """Get signed lateral error (d) from frenet coordinates.
-        Positive d = left of raceline, negative d = right of raceline."""
+        Positive d = left of raceline, negative d = right of raceline.
+        Fallback: 0.0 (assume on raceline). 매 실패 시 warning — 빈도 높으면 frenet
+        converter 또는 future_position 입력 문제 진단 필요.
+        """
         try:
             _, d = self.converter.get_frenet_3d(
                 np.array([self.future_position[0, 0]]),
@@ -719,7 +721,8 @@ class Controller:
             idx = self.nearest_waypoint(self.future_position[0, :2], self.waypoint_array_in_map[:, :2])
             wpnt_d = self.waypoint_array_in_map[idx, 9] if self.waypoint_array_in_map.shape[1] > 9 else 0.0
             return float(d[0] - wpnt_d)
-        except Exception:
+        except Exception as e:
+            self._node.get_logger().warning(f"[Controller.get_signed_lateral_error] fallback to 0.0: {type(e).__name__}: {e}")
             return 0.0
 
     def apply_lateral_correction(self, steering_angle, signed_d, yaw):
@@ -738,6 +741,8 @@ class Controller:
     def _stanley_correction(self, steering_angle, signed_d, yaw):
         """Stanley crosstrack correction at front axle (current position).
         ### HJ : front-axle = current pos + wheelbase along yaw
+
+        front-axle d 계산 실패 시 signed_d 로 fallback. 매 실패 warning.
         """
         v = max(self.speed_now, 0.5)
 
@@ -751,7 +756,8 @@ class Controller:
             idx = self.nearest_waypoint(np.array([fx, fy]), self.waypoint_array_in_map[:, :2])
             wpnt_d = self.waypoint_array_in_map[idx, 9] if self.waypoint_array_in_map.shape[1] > 9 else 0.0
             d_front = float(d_front[0] - wpnt_d)
-        except Exception:
+        except Exception as e:
+            self._node.get_logger().warning(f"[Controller._stanley_correction] fallback d_front=signed_d: {type(e).__name__}: {e}")
             d_front = signed_d
         d_use = d_front
 
@@ -824,12 +830,10 @@ class Controller:
             with open(self.GP_MODEL_PATH, 'rb') as f:
                 self.gp_steer_model = pickle.load(f)
             self._gp_model_mtime = mtime
-            self._gp_load_warned = False
             self._node.get_logger().info(f"[Controller] GP model hot-reloaded: {self.GP_MODEL_PATH}")
         except Exception as e:
-            if not hasattr(self, '_gp_load_warned') or not self._gp_load_warned:
-                self._node.get_logger().warning(f"[Controller] GP reload failed: {e}")
-                self._gp_load_warned = True
+            # 매 시도 시 warning — 모델 파일이 계속 손상되어 있으면 운영자 즉시 인지
+            self._node.get_logger().warning(f"[Controller._load_gp_model] GP reload failed: {type(e).__name__}: {e}")
 
     def _apply_gp_correction(self, steering_angle, yaw):
         """Apply GP steering correction with safety guards."""
@@ -852,7 +856,8 @@ class Controller:
             delta_gp = np.clip(delta_gp, -max_corr, max_corr)
 
             return steering_angle + delta_gp
-        except Exception:
+        except Exception as e:
+            self._node.get_logger().warning(f"[Controller._apply_gp_correction] fallback no correction: {type(e).__name__}: {e}")
             return steering_angle
 
     ### HJ : end GP steering correction ======================================
@@ -1069,7 +1074,8 @@ class Controller:
         try:
             future_s = self.converter.get_approx_s(np.array([future_x]), np.array([future_y]))
             self.future_position_z = float(self.converter.spline_z(future_s[0]))
-        except Exception:
+        except Exception as e:
+            self._node.get_logger().warning(f"[Controller._predict_future_pos] future_z fallback 0.0: {type(e).__name__}: {e}")
             self.future_position_z = 0.0
         ### HJ : end
 
