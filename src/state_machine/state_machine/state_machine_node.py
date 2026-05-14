@@ -580,6 +580,20 @@ class StateMachine(Node, InitMixin, VisualizationMixin, CallbackMixin):
             return False
         # ===== HJ MODIFIED END =====
 
+        # ===== SH FIX (회피경로 잔상 버그 재발): 플래너가 명시적으로 빈 메시지를
+        # publish 했으면 (obstacle 사라짐 신호) cached array/list 를 즉시 invalidate
+        # 하고 unavailable 반환. 이전엔 stamp 기반 timer 가 expire 할 때까지 (~3s)
+        # stale array 가 살아남아 get_splini_wpts 가 옛 회피경로를 그대로 사용,
+        # OVERTAKE 가 hysteresis 로 유지되는 동안 controller 가 옛 경로 추종 → 벽 박음.
+        # is_smart_static (fixed path) 은 영구 유효 의도라 제외.
+        is_smart_static = (wpnts_data.name == 'smart_static_avoidance_planner')
+        if not is_smart_static and len(wpnts.wpnts) == 0:
+            wpnts_data.array = None
+            wpnts_data.list = []
+            wpnts_data.is_init = False
+            return False
+        # ===== SH FIX END =====
+
         # self.get_logger().warning((self.get_clock().now().to_msg() - wpnts_data.stamp).to_sec())
         if (self.get_clock().now().nanoseconds * 1e-9 - (wpnts_data.stamp.sec + wpnts_data.stamp.nanosec * 1e-9)) > wpnts_data.killing_timer_sec:
             wpnts_data.is_init = False
@@ -1124,9 +1138,14 @@ class StateMachine(Node, InitMixin, VisualizationMixin, CallbackMixin):
         
     def get_farthest_target(self, local_wpnts_src):
         """현재 모드의 데이터 source(active_helper)에서 base wpnts 의 closest_target 으로 시작해
-        avoidance / static_avoidance / start 의 더 먼 closest_gap 으로 갱신한다.
+        avoidance / static_avoidance / start 의 더 먼 closest_gap 으로 갱신해 trailing target 결정.
 
         Smart 모드에서 base 는 SMART_STATIC, GB 모드에서는 GB_TRACK. RECOVERY 는 양 모드 공통.
+
+        주의: 이 함수는 **trailing_targets 만 반환** 하고 local_wpnts_src 는 변경하지 않는다.
+        원본 ROS1 은 source 도 같이 바꿔치웠지만 (TRAILING state 인데 OVERTAKE wpnts 추종),
+        state 와 wpnts source 가 불일치하면 차가 멀리 떨어진 회피경로를 무리하게 추종하는
+        버그 발생 — state machine 의 transitions 에서 결정한 source 를 그대로 신뢰.
         """
         helper = self.active_helper
         base_state = StateType.SMART_STATIC if self.smart_static_active else StateType.GB_TRACK
@@ -1142,8 +1161,7 @@ class StateMachine(Node, InitMixin, VisualizationMixin, CallbackMixin):
         closest_target = base_wpnts.closest_target
         closest_gap = base_wpnts.closest_gap
 
-        # 더 먼 (큰 gap) closest_target 으로 순차 갱신
-        # 주의: GB_TRACK base 일 때만 첫 비교가 `<=` (>= 가 아니라). 원본 동작 보존.
+        # 더 먼 (큰 gap) closest_target 으로 순차 갱신 — wpnts_src 는 건드리지 않음.
         first_op_le = (local_wpnts_src == base_state)
 
         avoidance = helper.cur_avoidance_wpnts
@@ -1152,43 +1170,29 @@ class StateMachine(Node, InitMixin, VisualizationMixin, CallbackMixin):
                (not first_op_le and closest_gap < avoidance.closest_gap):
                 closest_target = avoidance.closest_target
                 closest_gap = avoidance.closest_gap
-                local_wpnts_src = StateType.OVERTAKE
 
         static_avoidance = helper.cur_static_avoidance_wpnts
         if static_avoidance.closest_target is not None and closest_gap < static_avoidance.closest_gap:
             closest_target = static_avoidance.closest_target
             closest_gap = static_avoidance.closest_gap
-            local_wpnts_src = StateType.OVERTAKE
 
         start = helper.cur_start_wpnts
         if start.closest_target is not None and closest_gap < start.closest_gap:
             closest_target = start.closest_target
             closest_gap = start.closest_gap
-            local_wpnts_src = StateType.START
 
         return [closest_target], local_wpnts_src
 
     
     def check_ot_cloest_target(self):
-        # ===== HJ MODIFIED: Use appropriate Frenet coordinate system based on mode =====
-        if self.smart_static_active:
-            # Smart mode: use smart_helper's Fixed Frenet based calculations
-            smart_helper = self.smart_helper
-            if smart_helper.cur_gb_wpnts.closest_target is not None and smart_helper.ot_closest_target is not None and self.local_wpnts_src == StateType.SMART_STATIC:
-                if smart_helper.ot_closest_gap > smart_helper.cur_gb_wpnts.closest_gap:
-                    self.local_wpnts_src = StateType.OVERTAKE
-            elif smart_helper.cur_recovery_wpnts.closest_target is not None and smart_helper.ot_closest_target is not None and self.local_wpnts_src == StateType.RECOVERY:
-                if smart_helper.ot_closest_gap > smart_helper.cur_recovery_wpnts.closest_gap:
-                    self.local_wpnts_src = StateType.OVERTAKE
-        else:
-            # GB mode: use self's GB Frenet based calculations
-            if self.gb_closest_target is not None and self.ot_closest_target is not None and self.local_wpnts_src == StateType.GB_TRACK:
-                if self.ot_closest_gap > self.gb_closest_gap:
-                    self.local_wpnts_src = StateType.OVERTAKE
-            elif self.cur_recovery_wpnts.closest_target is not None and self.ot_closest_target is not None and self.local_wpnts_src == StateType.RECOVERY:
-                if self.ot_closest_gap > self.cur_recovery_wpnts.closest_gap:
-                    self.local_wpnts_src = StateType.OVERTAKE
-        # ===== HJ MODIFIED END =====       
+        """과거 ROS1: TRAILING state 인데도 OT path 의 free gap 이 더 크면 wpnts_src 를
+        OVERTAKE 로 바꿔치움. 이게 state ↔ wpnts_src 불일치를 만들어,
+        spliner 회피경로 (장애물 부근에서 시작) 를 차 현재 위치와 무관하게 추종하게 해
+        TRAILING 진입 순간 차가 멀리 점을 잡고 벽으로 핸들 꺾는 버그의 직접 원인.
+        get_farthest_target 과 동일 원칙으로 source 변경 비활성 — state machine 의
+        transitions 가 결정한 wpnts_src 만 신뢰.
+        """
+        return  # no-op
 
     #############
     # MAIN LOOP HELPERS

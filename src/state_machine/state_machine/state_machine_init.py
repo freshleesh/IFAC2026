@@ -31,6 +31,7 @@ from f110_msgs.msg import (
     WpntArray,
 )
 from nav_msgs.msg import Odometry
+from sensor_msgs.msg import LaserScan
 from std_msgs.msg import Bool, Float32, Float32MultiArray, String
 from visualization_msgs.msg import Marker, MarkerArray
 
@@ -58,6 +59,9 @@ class InitMixin:
         self.rate_hz = self._get_param_or_default("state_machine/rate")
         self.n_loc_wpnts = self._get_param_or_default("state_machine/n_loc_wpnts")
         self.measuring = self._get_param_or_default("/measure", default=False)
+        # sim 모드 — 시뮬은 perception 우회로 장애물이 직접 들어오므로 라이다 visibility
+        # 필터 활성. real HW 에선 perception 자체가 visible obstacle 만 publish 하므로 비활성.
+        self.sim = self._get_param_or_default("sim", default=False)
 
         # Racecar / sectors
         self.racecar_version = self._get_param_or_default("/racecar_version") or "SIM"
@@ -306,6 +310,11 @@ class InitMixin:
         self.obstacles_perception = []
         self.obstacles_prediction_id = None
         self.obstacles_prediction = []
+        # sim 라이다 visibility 필터용 — /scan 캐시
+        self._latest_scan_ranges = None
+        self._latest_scan_angle_min = None
+        self._latest_scan_angle_inc = None
+        self._latest_scan_range_max = None
         self.ego_prediction = []
         self.obstacle_was_here = True
         self.side_by_side_threshold = 0.6
@@ -406,6 +415,9 @@ class InitMixin:
         self.create_subscription(ObstacleArray, "/tracking/obstacles", self.obstacle_perception_cb, 10)
         self.create_subscription(PredictionArray, "/opponent_prediction/obstacles_pred", self.obstacle_prediction_cb, 10)
         self.create_subscription(PredictionArray, "/mpc_controller/ego_prediction", self.ego_prediction_cb, 10)
+        # sim 라이다 visibility 필터용 — sim 모드에서만 sub (real HW 에선 perception 이 처리)
+        if self.sim:
+            self.create_subscription(LaserScan, "/scan", self.scan_cb, 10)
 
         # Planner-specific (ot_planner 에 따라)
         if self.ot_planner in ("spliner", "predictive_spliner"):
@@ -456,10 +468,10 @@ class InitMixin:
     def _get_param_or_default(self, name, default=None):
         """ROS1 의 rospy.get_param 호환 helper.
 
-        ROS2 의 parameter 이름에 "/" 포함 시 launch 가 nested 로 변환할 수도 있어,
-        "/" 를 "." 로 바꾸어도 한 번 더 시도. 그래도 못 찾으면 default 반환.
-        default 가 None 아니면 절대 None 반환 안 함.
+        파라미터 미선언 (ParameterNotDeclaredException) 에만 fallback.
+        그 외 예외 (type cast fail 등) 는 의도적으로 전파 — 디버깅 가시성 우선.
         """
+        from rclpy.exceptions import ParameterNotDeclaredException, ParameterAlreadyDeclaredException
         candidates = [name]
         # ROS2 launch 가 "state_machine/x" 를 "state_machine.x" 로 변환할 수도
         if "/" in name:
@@ -472,26 +484,44 @@ class InitMixin:
                 v = self.get_parameter(n).value
                 if v is not None:
                     return v
-            except Exception:
+            except ParameterNotDeclaredException:
                 continue
 
         if default is None:
             return None
 
-        # default 가 있으면 declare 시도 후 반환 (어느 경우든 default 보장)
         try:
             self.declare_parameter(name, default)
-            v = self.get_parameter(name).value
-            return v if v is not None else default
-        except Exception:
-            return default
+        except ParameterAlreadyDeclaredException:
+            pass
+        return self.get_parameter(name).value
 
     def _resolve_stack_master_path(self, *parts) -> str:
-        """stack_master 경로 해결 — install share 우선, 미발견 시 ROS1 ws fallback."""
+        """stack_master 경로 해결 — 우선순위:
+        1) ament share/stack_master/ (이번 ws 에 stack_master 포팅됨)
+        2) $IFAC_MAPS_DIR (parts[0] == 'maps' 일 때만)
+        3) ~/ros2_ws/src/IFAC2026_SH/maps/ (parts[0] == 'maps' 일 때만)
+        4) legacy ~/unicorn_ws/ICRA2026_HJ/stack_master/
+        """
         try:
             from ament_index_python.packages import get_package_share_directory
-            return os.path.join(get_package_share_directory("stack_master"), *parts)
+            share = get_package_share_directory("stack_master")
+            ament_path = os.path.join(share, *parts)
+            if os.path.exists(ament_path):
+                return ament_path
         except Exception:
-            return os.path.expanduser(
-                os.path.join("~/unicorn_ws/ICRA2026_HJ/stack_master", *parts)
+            pass
+        if parts and parts[0] == "maps":
+            env_dir = os.environ.get("IFAC_MAPS_DIR")
+            if env_dir:
+                p = os.path.join(os.path.expanduser(env_dir), *parts[1:])
+                if os.path.exists(p):
+                    return p
+            mac_default = os.path.expanduser(
+                os.path.join("~/ros2_ws/src/IFAC2026_SH/maps", *parts[1:])
             )
+            if os.path.exists(mac_default):
+                return mac_default
+        return os.path.expanduser(
+            os.path.join("~/unicorn_ws/ICRA2026_HJ/stack_master", *parts)
+        )

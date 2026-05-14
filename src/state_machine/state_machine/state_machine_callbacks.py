@@ -152,11 +152,69 @@ class CallbackMixin:
         self.graph_based_wpts = arr.reshape(data.layout.dim[0].size, data.layout.dim[1].size)
         self.graph_based_action = data.layout.dim[0].label
 
+    def scan_cb(self, data):
+        """sim 라이다 visibility 필터용 — /scan 캐시. sim 모드에서만 sub됨."""
+        self._latest_scan_ranges = data.ranges
+        self._latest_scan_angle_min = data.angle_min
+        self._latest_scan_angle_inc = data.angle_increment
+        self._latest_scan_range_max = data.range_max
+
+    def _obstacle_visible_to_lidar(self, obs) -> bool:
+        """sim 모드: 장애물이 차의 라이다 시야에 있는지 (벽 너머가 아닌지) 검사.
+
+        obstacle 의 cartesian (x_m, y_m) 을 차 기준으로 변환 → 해당 각도의 라이다 ray
+        끝점 거리와 비교. 장애물이 ray 끝점보다 가까우면 (or 비슷하면) → 차에서 보임.
+        벽 너머에 있으면 ray 가 wall 까지만 닿아서 (장애물 거리 > ray 거리) → reject.
+
+        scan 못 받았거나 current_position 없으면 통과 (안전 default — 필터 비활성과 같음).
+        """
+        import math
+        if (self._latest_scan_ranges is None or
+                not getattr(self, "current_position", None) or
+                len(self.current_position) < 3):
+            return True
+
+        car_x, car_y, car_yaw = self.current_position[0], self.current_position[1], self.current_position[2]
+        dx = obs.x_m - car_x
+        dy = obs.y_m - car_y
+        dist = math.sqrt(dx * dx + dy * dy)
+
+        # 라이다 사거리 밖 → reject
+        if self._latest_scan_range_max and dist > self._latest_scan_range_max:
+            return False
+
+        angle_world = math.atan2(dy, dx)
+        angle_rel = angle_world - car_yaw
+        # normalize to [-pi, pi]
+        while angle_rel > math.pi:
+            angle_rel -= 2 * math.pi
+        while angle_rel < -math.pi:
+            angle_rel += 2 * math.pi
+
+        idx = int(round((angle_rel - self._latest_scan_angle_min) / self._latest_scan_angle_inc))
+        n = len(self._latest_scan_ranges)
+        if idx < 0 or idx >= n:
+            # FOV 밖 → reject (라이다가 못 봄)
+            return False
+
+        # 주변 3개 ray 중 최대 거리 — angle 정확도 / noise 마진
+        lo = max(0, idx - 1)
+        hi = min(n, idx + 2)
+        ranges_around = [r for r in self._latest_scan_ranges[lo:hi] if r > 0.0 and not math.isinf(r)]
+        if not ranges_around:
+            return False
+        scan_dist = max(ranges_around)
+
+        # 장애물이 ray 끝(=벽)까지보다 가깝거나 비슷하면 → 시야 안. margin 0.3m.
+        return dist <= scan_dist + 0.3
+
     def obstacle_perception_cb(self, data):
         """장애물 감지 메시지 처리. 정적 sector 장애물에 대한 stricter filtering 포함.
 
         정적 sector 안의 정적 장애물은 너무 일찍 TRAILING 이 걸리지 않도록 작은 horizon
         (HORIZON_FOR_TTL) 만 사용. ENABLE_STATIC_SECTOR_FILTERING 으로 on/off.
+
+        sim 모드: 라이다 visibility 추가 검사 — 클릭으로 들어온 장애물이 벽 너머이면 무시.
         """
         if self.timetrials_only:
             return
@@ -166,6 +224,9 @@ class CallbackMixin:
 
         obstacles_in_interest = []
         for obs in data.obstacles:
+            # sim 모드: 라이다 시야 검사 — 벽 너머 클릭으로 들어온 가짜 장애물 무시
+            if self.sim and not self._obstacle_visible_to_lidar(obs):
+                continue
             gap = (obs.s_start - self.cur_s) % self.track_length
             is_static_in_static_sector = obs.in_static_obs_sector and obs.is_static
             if is_static_in_static_sector and ENABLE_STATIC_SECTOR_FILTERING:
