@@ -94,14 +94,27 @@ class FakeOdomPublisher(Node):
         candidate = os.path.join(share, "maps", map_name, "global_waypoints.json")
         if os.path.exists(candidate):
             return candidate
-        # 개발/검증용 fallback: 호스트의 ROS1 ws 에서 직접 찾음
-        fallback = os.path.expanduser(
+        tried = [candidate]
+        env_dir = os.environ.get("IFAC_MAPS_DIR")
+        if env_dir:
+            p = os.path.join(os.path.expanduser(env_dir), map_name, "global_waypoints.json")
+            tried.append(p)
+            if os.path.exists(p):
+                return p
+        mac_default = os.path.expanduser(
+            f"~/ros2_ws/src/IFAC2026_SH/maps/{map_name}/global_waypoints.json"
+        )
+        tried.append(mac_default)
+        if os.path.exists(mac_default):
+            return mac_default
+        ubuntu_legacy = os.path.expanduser(
             f"~/unicorn_ws/ICRA2026_HJ/stack_master/maps/{map_name}/global_waypoints.json"
         )
-        if os.path.exists(fallback):
-            return fallback
+        tried.append(ubuntu_legacy)
+        if os.path.exists(ubuntu_legacy):
+            return ubuntu_legacy
         raise FileNotFoundError(
-            f"global_waypoints.json not found at {candidate} nor {fallback}"
+            "global_waypoints.json not found. Tried:\n  " + "\n  ".join(tried)
         )
 
     def _tick(self) -> None:
