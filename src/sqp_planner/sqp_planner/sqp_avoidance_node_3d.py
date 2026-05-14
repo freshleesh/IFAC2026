@@ -37,7 +37,10 @@ from track_3d_validator import (
 
 class SQPAvoidance3DNode(Node):
     def _get_param_or_default(self, name, default=None):
-        """rospy.get_param 호환 helper."""
+        """rospy.get_param 호환 helper.
+        ParameterNotDeclaredException 만 잡고 나머지는 전파.
+        """
+        from rclpy.exceptions import ParameterNotDeclaredException, ParameterAlreadyDeclaredException
         candidates = [name]
         if "/" in name:
             candidates.append(name.replace("/", "."))
@@ -48,16 +51,15 @@ class SQPAvoidance3DNode(Node):
                 v = self.get_parameter(n).value
                 if v is not None:
                     return v
-            except Exception:
+            except ParameterNotDeclaredException:
                 continue
         if default is None:
             return None
         try:
             self.declare_parameter(name, default)
-            v = self.get_parameter(name).value
-            return v if v is not None else default
-        except Exception:
-            return default
+        except ParameterAlreadyDeclaredException:
+            pass
+        return self.get_parameter(name).value
 
     def __init__(self):
         super().__init__('3d_sqp_avoidance_node', allow_undeclared_parameters=True, automatically_declare_parameters_from_overrides=True)
