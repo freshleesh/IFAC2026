@@ -2783,7 +2783,7 @@ class ObstacleSpliner(Node):
                 try:
                     os.remove(csv_filename)
                     self.get_logger().info(f"[{self.name}] Cleaned up temporary CSV file after error")
-                except:
+                except Exception:
                     pass
 
             return False
@@ -3970,7 +3970,7 @@ class ObstacleSpliner(Node):
         # Cleanup temporary directory
         try:
             shutil.rmtree(temp_dir)
-        except:
+        except Exception:
             pass
 
         self.get_logger().info(

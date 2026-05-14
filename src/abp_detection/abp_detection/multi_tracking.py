@@ -720,7 +720,7 @@ class StaticDynamic:
                     elif(distance_obstacle_car < self.dist_deletion and tracked_obstacle.staticFlag):
                         try:
                             resp = self.converter.get_cartesian(tracked_obstacle.mean[0],tracked_obstacle.mean[1])
-                        except:
+                        except Exception:
                             continue
                         vec_car_to_obs = resp - car_position_copy
                         if (self.check_in_field_of_view(vec_car_to_obs, car_orientation_copy, distance_obstacle_car)):

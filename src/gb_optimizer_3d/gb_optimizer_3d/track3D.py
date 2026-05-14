@@ -161,7 +161,7 @@ class Track3D:
         # banking angle equals camber angle since slope is assumed to be zero
         try:
             phi_rad = raw_data_frame['banking_rad'].to_numpy()[:trim]
-        except:
+        except Exception:
             phi_rad = np.zeros_like(x_m)
         if ignore_banking:
             phi_rad[:] = 0

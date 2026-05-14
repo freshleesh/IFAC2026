@@ -16,7 +16,7 @@ def save(model, overwrite_existing=True, verbose=False):
 
   try:
     model = model.to_dict()
-  except:
+  except Exception:
     model = model
 
   # Write data to the file
