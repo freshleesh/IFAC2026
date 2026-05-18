@@ -31,10 +31,12 @@ Global trajectory republisher (ROS2 Jazzy port).
 """
 from __future__ import annotations
 
+import copy
 import os
 
 import rclpy
 from rclpy.node import Node
+from rcl_interfaces.msg import SetParametersResult
 
 from std_msgs.msg import String, Float32
 from visualization_msgs.msg import MarkerArray, Marker
@@ -57,10 +59,12 @@ class GlobalRepublisher(Node):
         self.declare_parameter("map_path", "")
         self.declare_parameter("map", "gazebo_wall_2")
         self.declare_parameter("publish_rate_hz", 0.5)
+        self.declare_parameter("speed_scale", 1.0)
 
         map_path = self.get_parameter("map_path").value
         map_name = self.get_parameter("map").value
         publish_rate_hz = self.get_parameter("publish_rate_hz").value
+        self._speed_scale: float = self.get_parameter("speed_scale").value
 
         # JSON 로드 (한 번만)
         json_path = self._resolve_path(map_path, map_name)
@@ -70,6 +74,10 @@ class GlobalRepublisher(Node):
         except FileNotFoundError as e:
             self.get_logger().error(f"[GlobalRepublisher] {e}")
             raise
+
+        # 원본 waypoints 보관 — speed_scale 변경 시 이중 스케일링 방지
+        self._raw_wpnts_iqp = copy.deepcopy(self._data.global_traj_wpnts_iqp)
+        self._raw_wpnts_sp  = copy.deepcopy(self._data.global_traj_wpnts_sp)
 
         # track_length parameter set — state_machine 이 startup 에서 읽음
         # (원본은 self.glb_wpnts_cb 에서 set 했지만, 우리는 JSON 로드 직후 한 번만 set)
@@ -148,27 +156,39 @@ class GlobalRepublisher(Node):
             MarkerArray, "/global_waypoints/vel_markers_tuned", 10
         )
 
+        self.add_on_set_parameters_callback(self._on_param_change)
+
         # tick
         self.create_timer(1.0 / publish_rate_hz, self._tick)
+
+    # ---------- 파라미터 콜백 ----------
+
+    def _on_param_change(self, params):
+        for p in params:
+            if p.name == "speed_scale":
+                self._speed_scale = float(p.value)
+                self.get_logger().info(f"[GlobalRepublisher] speed_scale → {self._speed_scale:.3f}")
+        return SetParametersResult(successful=True)
+
+    def _scaled_wpnts(self, raw: WpntArray) -> WpntArray:
+        """raw WpntArray의 vx_mps에 speed_scale을 곱한 복사본을 반환."""
+        if self._speed_scale == 0.5:
+            return raw
+        msg = copy.deepcopy(raw)
+        for wp in msg.wpnts:
+            wp.vx_mps *= self._speed_scale
+        return msg
 
     # ---------- 경로 해결 ----------
 
     def _resolve_path(self, map_path: str, map_name: str) -> str:
         if map_path:
             return map_path
-        env_dir = os.environ.get("IFAC_MAPS_DIR")
-        if env_dir:
-            p = os.path.join(os.path.expanduser(env_dir), map_name, "global_waypoints.json")
-            if os.path.exists(p):
-                return p
-        mac_default = os.path.expanduser(
-            f"~/ros2_ws/src/IFAC2026_SH/maps/{map_name}/global_waypoints.json"
-        )
-        if os.path.exists(mac_default):
-            return mac_default
-        return os.path.expanduser(
+        # fallback: ROS1 ws 의 stack_master/maps/<map>/global_waypoints.json (검증 편의)
+        fallback = os.path.expanduser(
             f"~/unicorn_ws/ICRA2026_HJ/stack_master/maps/{map_name}/global_waypoints.json"
         )
+        return fallback
 
     # ---------- 외부 발행 캡처 콜백 (모두 self._data 의 필드 갱신) ----------
 
@@ -210,15 +230,18 @@ class GlobalRepublisher(Node):
 
     def _tick(self) -> None:
         d = self._data
-        if d.global_traj_wpnts_iqp.wpnts and d.global_traj_markers_iqp.markers:
-            self._glb_wpnts_pub.publish(d.global_traj_wpnts_iqp)
-            self._glb_markers_pub.publish(d.global_traj_markers_iqp)
-        if d.global_traj_wpnts_sp.wpnts and d.global_traj_markers_sp.markers:
-            self._sp_wpnts_pub.publish(d.global_traj_wpnts_sp)
-            self._sp_markers_pub.publish(d.global_traj_markers_sp)
-        if d.centerline_waypoints.wpnts and d.centerline_markers.markers:
+        if self._raw_wpnts_iqp.wpnts:
+            self._glb_wpnts_pub.publish(self._scaled_wpnts(self._raw_wpnts_iqp))
+            if d.global_traj_markers_iqp.markers:
+                self._glb_markers_pub.publish(d.global_traj_markers_iqp)
+        if self._raw_wpnts_sp.wpnts:
+            self._sp_wpnts_pub.publish(self._scaled_wpnts(self._raw_wpnts_sp))
+            if d.global_traj_markers_sp.markers:
+                self._sp_markers_pub.publish(d.global_traj_markers_sp)
+        if d.centerline_waypoints.wpnts:
             self._centerline_wpnts_pub.publish(d.centerline_waypoints)
-            self._centerline_markers_pub.publish(d.centerline_markers)
+            if d.centerline_markers.markers:
+                self._centerline_markers_pub.publish(d.centerline_markers)
         if d.trackbounds_markers.markers:
             self._trackbounds_pub.publish(d.trackbounds_markers)
         if d.map_info_str.data:
