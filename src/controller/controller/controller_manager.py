@@ -6,6 +6,7 @@ import time
 
 import rclpy
 from rclpy.node import Node
+from rcl_interfaces.msg import SetParametersResult
 from rclpy.wait_for_message import wait_for_message
 import os
 import copy
@@ -47,12 +48,7 @@ class Controller_manager(Node):
 
     """
     def _get_param_or_default(self, name, default=None):
-        """ROS1 의 rospy.get_param 호환 helper (state_machine_init 와 동일 패턴).
-
-        파라미터 미선언 시에만 fallback (ParameterNotDeclaredException).
-        다른 예외 (잘못된 타입 등) 는 의도적으로 전파 — 디버깅 가시성 우선.
-        """
-        from rclpy.exceptions import ParameterNotDeclaredException, ParameterAlreadyDeclaredException
+        """ROS1 의 rospy.get_param 호환 helper (state_machine_init 와 동일 패턴)."""
         candidates = [name]
         if "/" in name:
             candidates.append(name.replace("/", "."))
@@ -63,15 +59,16 @@ class Controller_manager(Node):
                 v = self.get_parameter(n).value
                 if v is not None:
                     return v
-            except ParameterNotDeclaredException:
+            except Exception:
                 continue
         if default is None:
             return None
         try:
             self.declare_parameter(name, default)
-        except ParameterAlreadyDeclaredException:
-            pass
-        return self.get_parameter(name).value
+            v = self.get_parameter(name).value
+            return v if v is not None else default
+        except Exception:
+            return default
 
     def __init__(self):
         self.name = "control_node"
@@ -302,6 +299,7 @@ class Controller_manager(Node):
         # ===== HJ MODIFIED END =====
         # TODO C-5 패턴: /dyn_controller 미포팅 — l1 param 변경은 ros2 param set 으로 (native callback)
         # self.create_subscription(Config, "/dyn_controller/parameter_updates", self.l1_params_cb, 10)
+        self.add_on_set_parameters_callback(self._on_param_change)
         self.create_subscription(LaserScan, "/scan", self.scan_cb, 10)
         self.create_subscription(Odometry, "/vesc/odom", self.vesc_odom_cb, 10)
         self.create_subscription(Bool, "/save_start_traj", self.save_start_traj_cb, 10)
@@ -334,10 +332,45 @@ class Controller_manager(Node):
     def scan_cb(self, data: LaserScan):
         self.scan = data
           
+    def _on_param_change(self, params):
+        """ROS2 parameter change callback — mirrors l1_params_cb for L1_controller/* namespace."""
+        _map = {
+            'L1_controller/m_l1':                   'm_l1',
+            'L1_controller/q_l1':                   'q_l1',
+            'L1_controller/t_clip_min':              't_clip_min',
+            'L1_controller/t_clip_max':              't_clip_max',
+            'L1_controller/curvature_factor':        'curvature_factor',
+            'L1_controller/start_curvature_factor':  'start_curvature_factor',
+            'L1_controller/KP':                      'KP',
+            'L1_controller/KI':                      'KI',
+            'L1_controller/KD':                      'KD',
+            'L1_controller/AEB_thres':               'AEB_thres',
+            'L1_controller/future_constant':         'future_constant',
+            'L1_controller/speed_lookahead':         'speed_lookahead',
+            'L1_controller/speed_lookahead_for_steer': 'speed_lookahead_for_steer',
+            'L1_controller/heading_error_thres':     'heading_error_thres',
+            'L1_controller/steer_gain_for_speed':    'steer_gain_for_speed',
+            'L1_controller/acc_scaler_for_steer':    'acc_scaler_for_steer',
+            'L1_controller/dec_scaler_for_steer':    'dec_scaler_for_steer',
+            'L1_controller/start_scale_speed':       'start_scale_speed',
+            'L1_controller/end_scale_speed':         'end_scale_speed',
+            'L1_controller/downscale_factor':        'downscale_factor',
+            'L1_controller/lat_err_coeff':           'lat_err_coeff',
+            'L1_controller/speed_factor_for_lat_err':    'speed_factor_for_lat_err',
+            'L1_controller/speed_factor_for_curvature':  'speed_factor_for_curvature',
+            'L1_controller/speed_diff_thres':        'speed_diff_thres',
+            'L1_controller/start_speed':             'start_speed',
+        }
+        for p in params:
+            if p.name in _map:
+                setattr(self.controller, _map[p.name], p.value)
+                self.get_logger().info(f'[DynParam] {p.name} → {p.value}')
+        return SetParametersResult(successful=True)
+
     def l1_params_cb(self, params:Any):
         """
         Here the l1 parameters are updated if changed with rqt (dyn reconfigure)
-        Values from .yaml file are set in l1_params_server.py      
+        Values from .yaml file are set in l1_params_server.py
         """
         self.t_clip_min = self._get_param_or_default('dyn_controller/t_clip_min')
         self.t_clip_max = self._get_param_or_default('dyn_controller/t_clip_max')
@@ -717,10 +750,17 @@ class Controller_manager(Node):
                 start = time.perf_counter()
             speed, acceleration, jerk, steering_angle = 0, 0, 0, 0
 
-            # Logic to select controller — no silent fallback.
-            # 예외 발생 시 노드가 죽도록 의도적으로 try/except 제거 (디버깅 가시성 우선).
+            #Logic to select controller
             if self.state != "FTGONLY":
-                speed, acceleration, jerk, steering_angle = self.controller_cycle()
+                try:
+                    speed, acceleration, jerk, steering_angle = self.controller_cycle()
+                except Exception as _e:
+                    # ROS2 strict 타입 fail 또는 callback 미수신 — ackermann 발행 보호
+                    if not getattr(self, "_cycle_warned", False):
+                        self.get_logger().warning(f"controller_cycle fail (silent after): {_e}")
+                        self._cycle_warned = True
+                    speed, acceleration, jerk, steering_angle = 0.0, 0.0, 0.0, 0.0
+
             else:
                 speed, steering_angle = self.ftg_cycle()
                 
@@ -788,11 +828,11 @@ class Controller_manager(Node):
 
         
         self.waypoint_safety_counter += 1
-        if self.waypoint_safety_counter >= self.loop_rate/self.state_machine_rate * 10:
-            self.get_logger().error(f"[{self.name}] Received no local wpnts. STOPPING!!")
+        if self.waypoint_safety_counter >= self.loop_rate/self.state_machine_rate* 10: #we can use the same waypoints for 5 cycles
+            self.get_logger().error(f"[{self.name}] Received no local wpnts. STOPPING!!") 
             speed = 0
             steering_angle = 0
-
+        
         return speed, acceleration, jerk, steering_angle
     
 
@@ -933,9 +973,7 @@ class Controller_manager(Node):
         opponent_marker.color.b = 0.0
         opponent_marker.color.a = 1.0
         if self.opponent is not None:
-            # numpy 2.x: float(ndarray) requires 0-dim. Pass scalars (not lists) so
-            # get_cartesian_3d returns 1-D (3,) array → pos[i] is scalar.
-            pos = self.converter.get_cartesian_3d(self.opponent[0], self.opponent[1])
+            pos = self.converter.get_cartesian_3d([self.opponent[0]], [self.opponent[1]])
             opponent_marker.pose.position.x = float(pos[0])
             opponent_marker.pose.position.y = float(pos[1])
             opponent_marker.pose.position.z = float(pos[2])
