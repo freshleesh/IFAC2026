@@ -338,7 +338,8 @@ def opt_min_curv(reftrack: np.ndarray,
         plt.plot(curv_orig_lin)
         plt.plot(curv_sol_lin)
         plt.legend(("original linearization", "solution based linearization"))
-        plt.show()
+        plt.show(block=False)
+        plt.pause(0.001)
 
     # calculate maximum curvature error
     curv_error_max = np.amax(np.abs(curv_sol_lin - curv_orig_lin))

@@ -47,6 +47,14 @@ def generate_launch_description():
                 "'",
             ]),
         ),
+        SetEnvironmentVariable(
+            'DYLD_LIBRARY_PATH',
+            PythonExpression([
+                "'", LaunchConfiguration('acados_dir'), "' + '/lib:' + '",
+                EnvironmentVariable('DYLD_LIBRARY_PATH', default_value=''),
+                "'",
+            ]),
+        ),
 
         Node(
             package='nonlinear_mpc_acados',

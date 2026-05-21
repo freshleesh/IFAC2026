@@ -49,10 +49,12 @@ class CenterlineExtractor(Node):
             self.get_logger().error('map_name parameter is required!')
             return
 
-        # Resolve source map directory from __file__ (realpath resolves symlinks)
-        # __file__: .../creating_autonomous_car/planner/planner/centerline_extractor.py
-        pkg_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
-        self.map_dir = os.path.join(pkg_root, 'stack_master', 'maps', self.map_name)
+        # Resolve workspace src from __file__ (realpath resolves symlinks).
+        # __file__: /Users/mini/ros2_ws/src/IFAC2026_SH/src/global_planner/global_planner/centerline_extractor.py
+        # → up 5 dirnames = /Users/mini/ros2_ws/src
+        ws_src = os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.dirname(os.path.dirname(os.path.realpath(__file__))))))
+        self.map_dir = os.path.join(ws_src, 'fast_livo2', 'map', self.map_name)
         self.get_logger().info(f'[CenterlineExtractor] map_dir: {self.map_dir}')
 
         # Publishers (TRANSIENT_LOCAL for latched behavior)
@@ -91,8 +93,9 @@ class CenterlineExtractor(Node):
 
         plt.axis('equal')
         plt.tight_layout()
-        self.get_logger().info(f'[Debug] {step_name} 플롯을 띄웠습니다. 진행하려면 창을 닫아주세요.')
-        plt.show()
+        self.get_logger().info(f'[Debug] {step_name} 플롯을 띄웠습니다 (non-blocking).')
+        plt.show(block=False)
+        plt.pause(0.001)
 
     def extract(self) -> bool:
         """Main extraction pipeline."""
@@ -119,24 +122,24 @@ class CenterlineExtractor(Node):
         # Flip Y (image top-left origin → ROS bottom-left origin)
         # Same as UNICORN: cv2.flip(cv2.imread(img_path, 0), 0)
         img = cv2.flip(img, 0)
-        self._show_debug_plot('Step 1: Loaded & Flipped Original Map', img)
+        #self._show_debug_plot('Step 1: Loaded & Flipped Original Map', img)
 
         # 2. Binarize
         threshold = int(occupied_thresh * 255)
         bw = np.where(img > threshold, 255, 0).astype(np.uint8)
-        self._show_debug_plot('Step 2: Binarized Map', bw)
+        #self._show_debug_plot('Step 2: Binarized Map', bw)
 
         # 3. Morphological opening (noise removal)
         kernel = np.ones((9, 9), np.uint8)
         opening = cv2.morphologyEx(bw, cv2.MORPH_OPEN, kernel, iterations=1)
-        self._show_debug_plot('Step 3: Morphological Opening (Noise Removal)', opening)
+        #self._show_debug_plot('Step 3: Morphological Opening (Noise Removal)', opening)
 
         # 4. Skeletonize
         skeleton = skeletonize(opening, method='lee')
         skeleton_img = (skeleton * 255).astype(np.uint8)
 
         self.get_logger().info(f'[CenterlineExtractor] Skeleton extracted')
-        self._show_debug_plot('Step 4: Skeletonized Map', skeleton_img)
+        #self._show_debug_plot('Step 4: Skeletonized Map', skeleton_img)
 
         # 5. Extract centerline (shortest closed contour)
         try:
@@ -147,7 +150,7 @@ class CenterlineExtractor(Node):
 
         # 6. Smooth centerline
         centerline_smooth = self._smooth_centerline(centerline_cells)
-        self._show_debug_plot('Step 5 & 6: Extracted & Smoothed Centerline', skeleton_img, points=centerline_smooth)
+        #self._show_debug_plot('Step 5 & 6: Extracted & Smoothed Centerline', skeleton_img, points=centerline_smooth)
 
         # 7. Convert cells → meters
         centerline_meter = np.zeros_like(centerline_smooth, dtype=np.float64)
@@ -602,7 +605,8 @@ class CenterlineExtractor(Node):
         plt.suptitle(f'Map: {self.map_name} | Points: {len(centerline_meter)} | '
                      f'Direction: {"CW" if self.reverse else "CCW"}')
         plt.tight_layout()
-        plt.show()
+        plt.show(block=False)
+        plt.pause(0.001)
 
     def _republish(self):
         """Re-publish markers periodically for late subscribers."""

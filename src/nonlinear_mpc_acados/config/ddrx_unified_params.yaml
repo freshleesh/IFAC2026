@@ -17,7 +17,7 @@ mpc_node:
     # Track loader
     track_name: f                  # → share/tracks/trackf/track f_*.csv
     track_dir: ""                  # empty = use installed share/tracks/
-    vel_scale: 0.95                # multiply ref_v from CSV col 3
+    vel_scale: 0.95                # multiply ref_v from CSV col ß3
     inflation_factor: 1.2
     extend_part: 2                 # loop overlap (extend_part=2 → +50%)
 
@@ -67,13 +67,15 @@ mpc_node:
     q_d_delta_live: 25.0
     # 회피 거리 공식: projection ≥ R_safe + R_car. R_car 는 차 반지름,
     # R_safe 는 장애물 자체 반지름 + 안전 margin. 둘 분리해서 튜닝.
-    #   F1TENTH 차폭 = 0.30m (racecar_f110.ini), 차 반지름 = 0.15m → R_car_live.
-    #   장애물 반지름 ≈ 0.15m + margin 0.2m → R_safe_live = 0.35.
-    R_safe_live: 0.35
+    # 회피 범위 좁힘: 0.35 → 0.25 (장애물 반지름 0.15 + 차 외곽 margin 0.10).
+    # 차 외곽 ↔ 장애물 외곽 빈 공간 ≈ 0.10m. 더 가까이 통과 가능.
+    R_safe_live: 0.25
     M_slack_live: 20000.0
     a_lat_safe_live: 6.0
-    # D_detour_live: 회피 시 lateral offset [m]. 0.15 (좁음) → 0.3 (넉넉).
-    D_detour_live: 0.3
+    # D_detour_live: 회피 시 lateral offset [m]. 0.3 → 0.2 → 0.1.
+    # R_safe (hard constraint, 0.25m) 가 충돌 회피 보장하므로 D_detour 는
+    # soft target 만이라 작아도 안전. 회피 후 raceline 복귀 시 over-shoot ↓.
+    D_detour_live: 0.1
     # D_apex_live: raceline 모드에선 raceline 자체가 apex 통과 → 0 권장.
     # centerline 모드 사용 시 0.35 로 키워 코너 컷팅 강제.
     D_apex_live: 0.0

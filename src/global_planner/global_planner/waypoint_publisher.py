@@ -43,10 +43,12 @@ class WaypointPublisher(Node):
             self.get_logger().error('[WaypointPublisher] map_name parameter is required!')
             return
 
-        # Resolve source map directory from __file__ (realpath resolves symlinks)
-        # __file__: .../creating_autonomous_car/planner/planner/waypoint_publisher.py
-        pkg_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
-        self.map_dir = os.path.join(pkg_root, 'stack_master', 'maps', self.map_name)
+        # Resolve workspace src from __file__ (realpath resolves symlinks).
+        # __file__: /Users/mini/ros2_ws/src/IFAC2026_SH/src/global_planner/global_planner/waypoint_publisher.py
+        # → up 5 dirnames = /Users/mini/ros2_ws/src
+        ws_src = os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.dirname(os.path.dirname(os.path.realpath(__file__))))))
+        self.map_dir = os.path.join(ws_src, 'fast_livo2', 'map', self.map_name)
         self.get_logger().info(f'[WaypointPublisher] map_dir: {self.map_dir}')
 
         # Load track boundaries for d_right/d_left computation

@@ -46,7 +46,7 @@ if _TUM_LIB_PATH not in sys.path:
 # Config paths — share dir works for both symlink and non-symlink installs
 # because data_files are always copied to share/ during colcon build.
 # ─────────────────────────────────────────────────────────────────────────────
-_SHARE_DIR   = get_package_share_directory('planner')
+_SHARE_DIR   = get_package_share_directory('global_planner')
 _CONFIG_DIR  = os.path.join(_SHARE_DIR, 'config')
 _INI_PATH    = os.path.join(_CONFIG_DIR, 'racecar.ini')
 _VEH_DYN_DIR = os.path.join(_CONFIG_DIR, 'inputs', 'veh_dyn_info')
@@ -84,9 +84,9 @@ class TrajectoryOptimizer(Node):
             self.get_logger().error('map_name parameter is required!')
             return
 
-        # _PLANNER_ROOT = .../creating_autonomous_car/planner  → go up 1 to reach creating_autonomous_car/
-        pkg_root = os.path.normpath(os.path.join(_PLANNER_ROOT, '..'))
-        self.map_dir = os.path.join(pkg_root, 'stack_master', 'maps', self.map_name)
+        # _PLANNER_ROOT = .../IFAC2026_SH/src/global_planner → up 3 = /Users/mini/ros2_ws/src
+        ws_src = os.path.normpath(os.path.join(_PLANNER_ROOT, '..', '..', '..'))
+        self.map_dir = os.path.join(ws_src, 'fast_livo2', 'map', self.map_name)
         self.get_logger().info(f'map_dir: {self.map_dir}')
 
         self.pars = self._load_pars()

@@ -4,8 +4,11 @@
   gym_bridge (sim) → /car_state/odom + /scan + /car_state/pose
     → frenet_odom_republisher → /car_state/odom_frenet
     → state_machine (FSM) → /local_waypoints + /behavior_strategy
-    → controller_manager (L1) → /vesc/high_level/ackermann_cmd
+    → simple_pp (pure pursuit, vx_mps 그대로) → /vesc/high_level/ackermann_cmd
     → simple_mux → /vesc/ackermann_cmd → gym_bridge (driving)
+    (mac 실차의 low_level_mac 과 토픽 이름이 다름:
+       sim   mux in = /vesc/high_level/ackermann_cmd        / out = /vesc/ackermann_cmd
+       mac   mux in = /vesc/high_level/.../input/nav_1       / out = /ackermann_cmd)
 
 LaunchArgs:
   map (f): 맵 이름 — stack_master/maps/<name>/{<name>.{png,yaml}, global_waypoints.json}
@@ -24,7 +27,8 @@ LaunchArgs:
   t=3:  fake_topic_relay + random_obstacle_publisher
   t=4:  spliner (overtake 모드일 때만)
   t=5:  state_machine
-  t=6:  controller_manager
+  t=6:  mpcc 모드면 mpc_node + mpc_debug_logger
+  t=7:  simple_pp (timetrial/overtake) — mpcc 모드면 생략
 """
 from __future__ import annotations
 
@@ -57,6 +61,7 @@ def _build(context: LaunchContext, *_args, **_kwargs):
     ot_planner = "spliner" if mode == "overtake" else ""
 
     sm_share = get_package_share_directory("stack_master")
+    fast_livo_map_root = os.path.expanduser("~/ros2_ws/src/fast_livo2/map")
     controller_yaml = os.path.join(
         get_package_share_directory("controller"), "config", "sim_controller_params.yaml"
     )
@@ -74,7 +79,7 @@ def _build(context: LaunchContext, *_args, **_kwargs):
         name="global_republisher",
         parameters=[{
             "map": map_name,
-            "map_path": os.path.join(sm_share, "maps", map_name, "global_waypoints.json"),
+            "map_path": os.path.join(fast_livo_map_root, map_name, "global_waypoints.json"),
         }],
         output="screen",
     )
@@ -139,28 +144,28 @@ def _build(context: LaunchContext, *_args, **_kwargs):
         parameters=[{
             "racecar_version": racecar_version,
             "map": map_name,    # ROS2: state_machine init 의 ot_sectors.yaml fallback 용
-            "state_machine/rate": 50.0,
-            "state_machine/n_loc_wpnts": 80,
-            "state_machine/ot_planner": ot_planner,
-            "state_machine/timetrials_only": timetrials_only,
-            "state_machine/gb_ego_width_m": 0.3,
+            "state_machine.rate": 50.0,
+            "state_machine.n_loc_wpnts": 80,
+            "state_machine.ot_planner": ot_planner,
+            "state_machine.timetrials_only": timetrials_only,
+            "state_machine.gb_ego_width_m": 0.3,
             # OVERTAKE ↔ GB_TRACK 진동 방지 — sim hysteresis 강화
-            "state_machine/gb_horizon_m": 5.0,         # 1.0 → 5.0 (enemy_in_front 더 길게 True)
-            "state_machine/lateral_width_gb_m": 0.3,
-            "state_machine/interest_horizon_m": 20.0,
-            "state_machine/use_force_trailing": False,
-            "state_machine/splini_ttl": 5.0,            # 2.0 → 5.0 (회피 wpnts freshness)
-            "state_machine/pred_splini_ttl": 0.2,
-            "state_machine/overtaking_horizon_m": 6.9,
-            "state_machine/lateral_width_ot_m": 0.3,
-            "state_machine/splini_hyst_timer_sec": 3.0,  # 0.75 → 3.0
-            "state_machine/emergency_break_horizon": 1.1,
-            "state_machine/ftg_speed_mps": 1.0,
-            "state_machine/ftg_timer_sec": 3.0,
-            "state_machine/ftg_active": False,
-            "state_machine/force_GBTRACK": force_gbtrack,
-            "state_machine/overtaking_ttl_sec": 10.0,    # 3.0 → 10.0 (OVERTAKE 종료 지연)
-            "state_machine/volt_threshold": 10.0,
+            "state_machine.gb_horizon_m": 5.0,         # 1.0 → 5.0 (enemy_in_front 더 길게 True)
+            "state_machine.lateral_width_gb_m": 0.3,
+            "state_machine.interest_horizon_m": 20.0,
+            "state_machine.use_force_trailing": False,
+            "state_machine.splini_ttl": 5.0,            # 2.0 → 5.0 (회피 wpnts freshness)
+            "state_machine.pred_splini_ttl": 0.2,
+            "state_machine.overtaking_horizon_m": 6.9,
+            "state_machine.lateral_width_ot_m": 0.3,
+            "state_machine.splini_hyst_timer_sec": 3.0,  # 0.75 → 3.0
+            "state_machine.emergency_break_horizon": 1.1,
+            "state_machine.ftg_speed_mps": 1.0,
+            "state_machine.ftg_timer_sec": 3.0,
+            "state_machine.ftg_active": False,
+            "state_machine.force_GBTRACK": force_gbtrack,
+            "state_machine.overtaking_ttl_sec": 10.0,    # 3.0 → 10.0 (OVERTAKE 종료 지연)
+            "state_machine.volt_threshold": 10.0,
             "/global_republisher/track_length": 25.0,
             "measure": False,
             "sim": True,
@@ -170,12 +175,23 @@ def _build(context: LaunchContext, *_args, **_kwargs):
     actions.append(sm_node)
 
     if not is_mpcc:
-        # ── controller_manager (timetrial / overtake) ──
-        controller_node = TimerAction(period=6.0, actions=[Node(
+        # ── simple_pp (minimal pure-pursuit, vx_mps 그대로) ────────────
+        # 기존 controller_manager (L1 + lat_err/accel_lim 후처리) 가 vx_mps 를
+        # 깎는 문제 디버깅용 교체. middle_level_mac 과 동일 노드/파라미터.
+        controller_node = TimerAction(period=7.0, actions=[Node(
             package="controller",
-            executable="controller_manager",
-            name="control_node",
-            parameters=[controller_yaml, {"~drive_topic": "/vesc/high_level/ackermann_cmd"}],
+            executable="simple_pp",
+            name="simple_pp",
+            parameters=[{
+                "lookahead_distance": 1.2,
+                "wheelbase": 0.33,
+                "max_steering_rad": 0.4,
+                "max_speed_mps": 8.0,
+                "speed_scale": 1.0,
+                "control_rate_hz": 50.0,
+                # sim 의 simple_mux in_topic 과 매칭 (mac 과 다름)
+                "drive_topic": "/vesc/high_level/ackermann_cmd",
+            }],
             output="screen",
         )])
         actions.append(controller_node)
@@ -191,6 +207,10 @@ def _build(context: LaunchContext, *_args, **_kwargs):
         actions.append(SetEnvironmentVariable(
             "LD_LIBRARY_PATH",
             ld_extra + ":" + os.environ.get("LD_LIBRARY_PATH", ""),
+        ))
+        actions.append(SetEnvironmentVariable(
+            "DYLD_LIBRARY_PATH",
+            ld_extra + ":" + os.environ.get("DYLD_LIBRARY_PATH", ""),
         ))
 
         mpc_node = TimerAction(period=6.0, actions=[Node(

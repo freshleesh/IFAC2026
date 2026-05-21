@@ -181,7 +181,8 @@ class FBGAVelocityPlanner:
     def _load_friction_sectors(self):
         """Build sector_idx → gg.bin map using rosparam snapshot names first."""
         map_name = self._get_param_or_default('/map', '')
-        maps_dir = os.path.join(self.race_stack, 'stack_master', 'maps')
+        ws_src = os.path.dirname(os.path.dirname(self.race_stack))
+        maps_dir = os.path.join(ws_src, 'fast_livo2', 'map')
         sectors = _read_friction_sectors_from_yaml(maps_dir, map_name)
 
         try:

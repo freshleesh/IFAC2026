@@ -108,7 +108,8 @@ class SimpleMuxNode(Node):
         if use_human:
             drive = AckermannDriveStamped()
             drive.header.stamp = self.get_clock().now().to_msg()
-            drive.drive.steering_angle = msg.axes[3] * self.max_steer if len(msg.axes) > 3 else 0.0
+            # axes[3] is sign-flipped to match ROS REP-103 (positive = LEFT turn)
+            drive.drive.steering_angle = -msg.axes[3] * self.max_steer if len(msg.axes) > 3 else 0.0
             drive.drive.speed          = msg.axes[1] * self.max_speed  if len(msg.axes) > 1 else 0.0
             self.human_drive   = drive
             self.current_host  = 'humandrive'

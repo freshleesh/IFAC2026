@@ -1098,6 +1098,8 @@ class StateMachine(Node, InitMixin, VisualizationMixin, CallbackMixin):
     # publish_not_ready_marker / _speed_to_color) 는 VisualizationMixin 으로 이동.
 
     def update_waypoints(self):
+        if self.gb_wpnts is None:
+            return
         if not self.cur_gb_wpnts.is_init:
             self.cur_gb_wpnts.initialize_traj(self.gb_wpnts)
         else:

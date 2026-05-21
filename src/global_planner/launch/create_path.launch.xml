@@ -11,7 +11,7 @@
   <arg name="safety_width_lattice" default="0.8" description="Lattice safety clearance [m]"/>
 
   <!-- Centerline Extractor Node -->
-  <node pkg="planner" exec="centerline_extractor" name="centerline_extractor" output="screen"
+  <node pkg="global_planner" exec="centerline_extractor" name="centerline_extractor" output="screen"
         if="$(var extract_centerline)">
     <param name="map_name" value="$(var map)"/>
     <param name="reverse" value="$(var reverse)"/>
@@ -19,14 +19,14 @@
   </node>
 
   <!-- Trajectory Optimizer Node (IQP + SP) -->
-  <node pkg="planner" exec="trajectory_optimizer" name="trajectory_optimizer" output="screen"
+  <node pkg="global_planner" exec="trajectory_optimizer" name="trajectory_optimizer" output="screen"
         if="$(var optimize)">
     <param name="map_name" value="$(var map)"/>
     <param name="input_csv" value="$(var output_csv)"/>
   </node>
 
   <!-- Lattice Optimizer Node (global min-time via Dijkstra) -->
-  <node pkg="planner" exec="lattice_optimizer" name="lattice_optimizer" output="screen"
+  <node pkg="global_planner" exec="lattice_optimizer" name="lattice_optimizer" output="screen"
         if="$(var lattice)">
     <param name="map_name" value="$(var map)"/>
     <param name="num_lat_samples" value="$(var lat_samples)"/>

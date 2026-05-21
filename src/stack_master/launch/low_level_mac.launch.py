@@ -9,8 +9,8 @@ vesc_all.launch.xml 의 vesc 4 노드를 한 번에 띄움. macOS 실차 bringup
   - vesc_driver_node                 (시리얼 통신)
   - vesc_ackermann/ackermann_to_vesc_node  (ackermann → 모터/서보)
   - vesc_ackermann/vesc_to_odom_node       (VESC state → odom + TF)
-  - vesc_driver_mac/teleop_joy             (joystick → ackermann)
   - joy_mac/joy_node                       (macOS GameController → /joy)
+    (humandrive/autodrive 변환은 simple_mux 에서 담당)
 
 사용:
   # 기본 (camera + livox + rviz + vesc + joy 전부)
@@ -87,21 +87,41 @@ def generate_launch_description():
         parameters=[vesc_config],
     )
 
-    # ── Teleop (joystick → ackermann_cmd) ──
-    teleop_joy_node = Node(
-        package='vesc_driver_mac',
-        executable='teleop_joy',
-        name='teleop_joy_node',
-        output='screen',
-    )
-
     # ── joy_mac/joy_node (macOS GameController → /joy) ──
+    # NOTE: 기존 vesc_driver_mac/teleop_joy 는 제거 — simple_mux 안의
+    # humandrive (LB+stick) 경로와 동일 기능을 갖고 동일 토픽 /ackermann_cmd
+    # 으로 publish 해서 충돌했음. simple_mux 가 표준 mux 역할 담당.
     joy_node = Node(
         package='joy_mac',
         executable='joy_node',
         name='joy_node',
         output='screen',
         condition=IfCondition(use_joy),
+    )
+
+    # ── simple_mux: joy(LB=humandrive, RB=autodrive) mux → /ackermann_cmd ──
+    # low_level 만으로도 joy 직접 조작이 되어야 하므로 여기에 둠. middle_level
+    # 에서 자동주행 chain 만 추가하면 됨. autodrive input(/vesc/.../nav_1) 가
+    # 없을 때(=low_level 단독)는 LB humandrive 만 동작.
+    sm_share = get_package_share_directory('stack_master')
+    vehicle_config = os.path.join(sm_share, 'config', 'vehicle_config.yaml')
+    # joy_max_speed [m/s]. ackermann_to_vesc 에서 ×3423 → ERPM.
+    # vesc_driver speed_max(46500 ERPM) 까지 풀로 쓰려면 ≤ 13.58.
+    simple_mux = Node(
+        package='stack_master',
+        executable='simple_mux_node.py',
+        name='simple_mux',
+        parameters=[
+            vehicle_config,
+            {
+                'in_topic':      '/vesc/high_level/ackermann_cmd_mux/input/nav_1',
+                'out_topic':     '/ackermann_cmd',
+                'joy_max_speed': 13.58,
+                'use_estop':     False,
+                'sim':           False,
+            },
+        ],
+        output='screen',
     )
 
     return LaunchDescription([
@@ -127,6 +147,6 @@ def generate_launch_description():
         vesc_driver_node,
         ackermann_to_vesc,
         vesc_to_odom,
-        teleop_joy_node,
         joy_node,
+        simple_mux,
     ])

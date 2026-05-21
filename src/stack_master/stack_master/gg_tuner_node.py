@@ -39,7 +39,9 @@ class GGTunerNode:
 
         self.data_path = os.path.join(
             race_stack_root, 'planner', '3d_gb_optimizer', 'global_line', 'data')
-        self.maps_dir = os.path.join(race_stack_root, 'stack_master', 'maps')
+        # Canonical map storage: fast_livo2/map/ (sibling of IFAC2026_SH under ws_src)
+        ws_src = os.path.dirname(os.path.dirname(race_stack_root))
+        self.maps_dir = os.path.join(ws_src, 'fast_livo2', 'map')
 
         self.fast_ggv_dir = os.path.join(
             race_stack_root, 'planner', '3d_gb_optimizer', 'fast_ggv_gen')

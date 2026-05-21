@@ -25,6 +25,7 @@ setup(
     entry_points={
         "console_scripts": [
             "controller_manager = controller.controller_manager:main",
+            "simple_pp = controller.simple_pp:main",
             "gap_follow_node = controller.gapfollow:main",
             "wall_follow_node = controller.wallfollow:main",
         ],

@@ -182,10 +182,10 @@ class Controller:
         self.ff_brake_lookahead = self._node._get_param_or_default('L1_controller/ff_brake_lookahead', 0.0)
 
         ### HJ : friction-ellipse accel limiter params
-        self.accel_limiter_enabled = self._node._get_param_or_default('L1_controller/accel_limiter_enabled', True)
+        self.accel_limiter_enabled = self._node._get_param_or_default('L1_controller/accel_limiter_enabled', False)
         self.accel_lim_ax_max = self._node._get_param_or_default('L1_controller/accel_lim_ax_max', 5.0)
         self.accel_lim_ay_max = self._node._get_param_or_default('L1_controller/accel_lim_ay_max', 4.5)
-        self.accel_lim_horizon = self._node._get_param_or_default('L1_controller/accel_lim_horizon', 0.3)
+        self.accel_lim_horizon = self._node._get_param_or_default('L1_controller/accel_lim_horizon', 2.0)
         self.accel_lim_lookahead = self._node._get_param_or_default('L1_controller/accel_lim_lookahead', 0.3)
         ### HJ : end
 

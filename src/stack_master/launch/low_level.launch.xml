@@ -43,7 +43,7 @@
   <group if="$(var sim)">
     <arg name="map"                     description="Map name (required when sim=true)"/>
 
-    <let name="maps_dir" value="$(find-pkg-share stack_master)/maps"/>
+    <let name="maps_dir" value="$(env HOME)/ros2_ws/src/fast_livo2/map"/>
     <let name="map_path" value="$(var maps_dir)/$(var map)/$(var map)"/>
     <include file="$(find-pkg-share f1tenth_gym_ros)/launch/gym_bridge_launch.py">
       <arg name="map_yaml_path"  value="$(var map_path).yaml"/>

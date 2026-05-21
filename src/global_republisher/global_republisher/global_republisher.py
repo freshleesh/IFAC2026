@@ -172,7 +172,7 @@ class GlobalRepublisher(Node):
 
     def _scaled_wpnts(self, raw: WpntArray) -> WpntArray:
         """raw WpntArray의 vx_mps에 speed_scale을 곱한 복사본을 반환."""
-        if self._speed_scale == 0.5:
+        if self._speed_scale == 1.0:
             return raw
         msg = copy.deepcopy(raw)
         for wp in msg.wpnts:

@@ -53,10 +53,12 @@ class DynamicObstaclePublisher(Node):
         self.max_amplitude_limit = 0.5  # Max lateral offset in meters
         self.prev_d_perturbation = 0.0
 
-        # ===== Map directory (source path via realpath) =====
-        # __file__: .../creating_autonomous_car/simulator/obstacle_publisher/obstacle_publisher/dynamic_obstacle_publisher.py
-        pkg_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__)))))
-        self.map_dir = os.path.join(pkg_root, 'stack_master', 'maps', self.map_name)
+        # ===== Map directory (canonical: fast_livo2/map/<name>) =====
+        # __file__: /Users/mini/ros2_ws/src/IFAC2026_SH/src/obstacle_publisher/obstacle_publisher/dynamic_obstacle_publisher.py
+        # → up 5 dirnames = /Users/mini/ros2_ws/src
+        ws_src = os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.dirname(os.path.dirname(os.path.realpath(__file__))))))
+        self.map_dir = os.path.join(ws_src, 'fast_livo2', 'map', self.map_name)
 
         # ===== Obstacle state =====
         self.current_s = self.starting_s

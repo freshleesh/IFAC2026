@@ -18,8 +18,10 @@ setup(
          glob("config/SIM/*.yaml") + glob("config/SIM/*.ini") + glob("config/SIM/*.rviz")),
         (os.path.join("share", package_name, "config", "SIM", "veh_dyn_info"),
          glob("config/SIM/veh_dyn_info/*.csv")),
-        (os.path.join("share", package_name, "maps", "midterm"), glob("maps/midterm/*")),
-        (os.path.join("share", package_name, "maps", "f"), glob("maps/f/*")),
+        *[
+            (os.path.join("share", package_name, "maps", os.path.basename(d)), glob(os.path.join(d, "*")))
+            for d in glob("maps/*") if os.path.isdir(d)
+        ],
     ],
     install_requires=["setuptools"],
     zip_safe=True,
