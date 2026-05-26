@@ -4,7 +4,7 @@ control_node:
     /measure: false
     /sim: true
     /vesc/wheelbase: 0.33
-    L1_controller/AEB_thres: 1.5
+    L1_controller/AEB_thres: 3.0
     L1_controller/KD: 0.05
     L1_controller/KD_for_speed: 0.2
     L1_controller/KI: 0.0
