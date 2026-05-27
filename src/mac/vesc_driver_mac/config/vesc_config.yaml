@@ -1,0 +1,36 @@
+# === VESC Driver ===
+vesc_driver_node:
+  ros__parameters:
+    port: "/dev/tty.usbmodem3041"
+    brake_max: 200000.0
+    brake_min: -20000.0
+    current_max: 100.0
+    current_min: 0.0
+    duty_cycle_max: 0.0
+    duty_cycle_min: 0.0
+    position_max: 0.0
+    position_min: 0.0
+    servo_max: 0.85
+    servo_min: 0.15
+    # ERPM = m/s × speed_to_erpm_gain (3423.0)  →  아래 ackermann_to_vesc 참고
+    speed_max: 23250.0   # ≈  6.79 m/s ( 24.5 km/h)
+    speed_min: -23250.0  # ≈ -6.79 m/s (-24.5 km/h)
+
+# === Ackermann to VESC ===
+ackermann_to_vesc_node:
+  ros__parameters:
+    speed_to_erpm_gain: 3423.0
+    speed_to_erpm_offset: 0.0
+    steering_angle_to_servo_gain: 0.5135
+    steering_angle_to_servo_offset: 0.445
+vesc_to_odom_node:
+  ros__parameters:
+    odom_frame: "odom"
+    base_frame: "base_link"
+    speed_to_erpm_gain: 3423.0
+    speed_to_erpm_offset: 0.0
+    use_servo_cmd_to_calc_angular_velocity: true
+    steering_angle_to_servo_gain: 0.5135
+    steering_angle_to_servo_offset: 0.445
+    wheelbase: 0.2
+    publish_tf: true

@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="config" default="$(find-pkg-share vesc_driver_mac)/config/vesc_config.yaml" />
+
+  <!-- VESC Driver: serial communication with VESC hardware -->
+  <node pkg="vesc_driver" exec="vesc_driver_node" name="vesc_driver_node" output="screen">
+    <param from="$(var config)" />
+  </node>
+
+  <!-- Ackermann to VESC: converts ackermann_cmd → motor speed + servo -->
+  <node pkg="vesc_ackermann" exec="ackermann_to_vesc_node" name="ackermann_to_vesc_node" output="screen">
+    <param from="$(var config)" />
+  </node>
+
+  <!-- VESC to Odom: converts VESC state → odometry + TF -->
+  <node pkg="vesc_ackermann" exec="vesc_to_odom_node" name="vesc_to_odom_node" output="screen">
+    <param from="$(var config)" />
+  </node>
+
+  <!-- Teleop: joystick → ackermann command -->
+  <node pkg="vesc_driver_mac" exec="teleop_joy" name="teleop_joy_node" output="screen" />
+</launch>

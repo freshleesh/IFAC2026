@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="lua_file" default="mapping_3d.lua" />
+  <arg name="config_dir" default="$(find-pkg-share cartographer_easystart)/config" />
+  <arg name="resolution" default="0.05" />
+  <arg name="publish_period_sec" default="1.0" />
+
+  <!-- Cartographer 3D SLAM node -->
+  <node pkg="cartographer_ros" exec="cartographer_node" name="cartographer_node" output="screen"
+        args="-configuration_directory $(var config_dir) -configuration_basename $(var lua_file)">
+    <param name="use_sim_time" value="false" />
+    <remap from="/imu" to="/gx5/imu/data" />
+  </node>
+
+  <!-- Occupancy Grid publisher -->
+  <node pkg="cartographer_ros" exec="cartographer_occupancy_grid_node" name="cartographer_occupancy_grid_node" output="screen"
+        args="-resolution $(var resolution) -publish_period_sec $(var publish_period_sec)">
+    <param name="use_sim_time" value="false" />
+  </node>
+</launch>

@@ -1,0 +1,26 @@
+/**:
+  ros__parameters:
+    prior_map:
+      pcd_path: "/Users/mini/ros2_ws/src/IFAC2026_SH/src/slam/fast_livo2/map/my_seat/cloudGlobal.pcd"
+      voxel_size: 0.3
+      world_frame: "camera_init"
+    input:
+      lidar_topic: "/livox/lidar"
+      num_accumulate_frames: 10
+      max_accumulate_seconds: 2.0
+      source_voxel_size: 0.2
+    kiss_matcher:
+      resolution: 0.3
+    accept:
+      min_final_inliers: 30      # indoor 작은 맵 (10k voxel) 기준 — 30 정도면 신뢰 가능 매칭
+      min_inlier_ratio: 0.5      # 0.3 → 0.5 (false positive 컷)
+      max_translation_norm: 30.0
+      max_retries: 5
+    output:
+      initial_pose_topic: "/initialpose"
+      pose_covariance_diag: [0.25, 0.25, 0.25, 0.0685, 0.0685, 0.0685]
+      publish_debug_clouds: true
+      shutdown_on_success: false
+    control:
+      auto_start: true             # true: 노드 시작 시 한 번 자동. false: ~/trigger 대기.
+      trigger_timeout_seconds: 20.0  # 서비스 호출 동기 wait timeout

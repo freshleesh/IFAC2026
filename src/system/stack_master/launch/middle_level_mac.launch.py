@@ -83,7 +83,7 @@ def generate_launch_description() -> LaunchDescription:
     # (New global_planner pipeline — centerline_extractor / trajectory_optimizer —
     # still hardcodes stack_master/maps/<name>/; create that as a symlink to this
     # directory when you start using it.)
-    src_maps_root = "/Users/mini/ros2_ws/src/fast_livo2/map"
+    src_maps_root = "/Users/mini/ros2_ws/src/IFAC2026_SH/src/slam/fast_livo2/map"
 
     # ── 1. low_level_mac (vesc + livox + camera + joy + DYLD_LIBRARY_PATH) ──
     low_level = IncludeLaunchDescription(

@@ -1,0 +1,29 @@
+[submodule "src/calibration/camera_lidar_calibration"]
+	path = src/calibration/camera_lidar_calibration
+	url = git@github.com:freshleesh/camera_lidar_calibration.git
+[submodule "src/slam/fast_livo2"]
+	path = src/slam/fast_livo2
+	url = git@github.com:freshleesh/fast_livo2.git
+[submodule "src/detection/point_seg"]
+	path = src/detection/point_seg
+	url = git@github.com:freshleesh/point_seg.git
+[submodule "src/sensor/livox_ros_driver2"]
+	path = src/sensor/livox_ros_driver2
+	url = git@github.com:freshleesh/livox_ros_driver2.git
+	branch = master
+[submodule "src/sensor/Livox-SDK2"]
+	path = src/sensor/Livox-SDK2
+	url = git@github.com:freshleesh/Livox-SDK2.git
+	branch = pr-93-macos
+[submodule "src/sensor/opencv_cam"]
+	path = src/sensor/opencv_cam
+	url = git@github.com:freshleesh/opencv_cam.git
+	branch = master
+[submodule "src/sensor/rpg_vikit"]
+	path = src/sensor/rpg_vikit
+	url = git@github.com:freshleesh/rpg_vikit.git
+	branch = main
+[submodule "src/sensor/ros2_shared"]
+	path = src/sensor/ros2_shared
+	url = https://github.com/ptrmu/ros2_shared.git
+	branch = master
