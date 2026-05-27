@@ -2,8 +2,10 @@
 """Stanley path-tracking controller.
 
 Subscribes:
-  /local_waypoints   (f110_msgs/WpntArray)  — state_machine output
-  /car_state/odom    (nav_msgs/Odometry)    — rear-axle pose + speed
+  /local_waypoints              (f110_msgs/WpntArray)   — state_machine output
+  /car_state/odom               (nav_msgs/Odometry)     — rear-axle pose + speed
+  /stanley_tuner/param_profile  (Float64MultiArray)     — per-waypoint [s,k,k_ff,ld]
+                                                           (optional; falls back to params)
 
 Publishes:
   drive_topic               (AckermannDriveStamped)
@@ -22,12 +24,13 @@ Algorithm:
        cross = cos(psi_path)*(y_fa - wy) - sin(psi_path)*(x_fa - wx)
        e_fa  = -cross
   5. Steering:
-       delta = psi_e + atan2(k * e_fa, v + k_s)
+       delta = psi_e + atan2(k * e_fa, v + k_s) + k_ff * kappa * L
        delta = clip(delta, -max_steer, max_steer)
 
-  k_s (softening): raises denominator at low speed and adds
-  a floor so gain decreases naturally with velocity — suppresses
-  high-speed oscillation without separate PID tuning.
+  k_s (softening): raises denominator at low speed — suppresses high-speed oscillation.
+
+  param_profile: Float64MultiArray — flat [s0,k0,kff0,ld0, s1,k1,kff1,ld1, ...]
+    Published by stanley_tuner. If not received, node params (k, k_ff, lookahead_d) are used.
 """
 from __future__ import annotations
 
@@ -39,7 +42,7 @@ from rclpy.node import Node
 
 from ackermann_msgs.msg import AckermannDriveStamped
 from nav_msgs.msg import Odometry
-from std_msgs.msg import Float64
+from std_msgs.msg import Float64, Float64MultiArray
 from f110_msgs.msg import WpntArray
 from visualization_msgs.msg import Marker
 
@@ -64,35 +67,43 @@ class Stanley(Node):
         self.declare_parameter("k_ff",             0.01)
         self.declare_parameter("lookahead_min",    0.02)
         self.declare_parameter("lookahead_k",      0.07)
+        self.declare_parameter("lookahead_d",      0.0)
         self.declare_parameter("max_steering_rad", 0.4)
         self.declare_parameter("max_speed_mps",    8.0)
         self.declare_parameter("speed_scale",      1.0)
         self.declare_parameter("control_rate_hz",  50.0)
         self.declare_parameter("drive_topic",      "/vesc/high_level/ackermann_cmd")
 
-        self.wb             = float(self.get_parameter("wheelbase").value)
-        self.k              = float(self.get_parameter("k").value)
-        self.k_s            = float(self.get_parameter("k_s").value)
-        self.k_ff           = float(self.get_parameter("k_ff").value)
-        self.lookahead_min  = float(self.get_parameter("lookahead_min").value)
-        self.lookahead_k    = float(self.get_parameter("lookahead_k").value)
-        self.max_steer      = float(self.get_parameter("max_steering_rad").value)
-        self.v_max          = float(self.get_parameter("max_speed_mps").value)
-        self.speed_scale    = float(self.get_parameter("speed_scale").value)
-        rate                = float(self.get_parameter("control_rate_hz").value)
-        drive_topic         = str(self.get_parameter("drive_topic").value)
+        self.wb            = float(self.get_parameter("wheelbase").value)
+        self.k             = float(self.get_parameter("k").value)
+        self.k_s           = float(self.get_parameter("k_s").value)
+        self.k_ff          = float(self.get_parameter("k_ff").value)
+        self.lookahead_min = float(self.get_parameter("lookahead_min").value)
+        self.lookahead_k   = float(self.get_parameter("lookahead_k").value)
+        self.lookahead_d   = float(self.get_parameter("lookahead_d").value)
+        self.max_steer     = float(self.get_parameter("max_steering_rad").value)
+        self.v_max         = float(self.get_parameter("max_speed_mps").value)
+        self.speed_scale   = float(self.get_parameter("speed_scale").value)
+        rate               = float(self.get_parameter("control_rate_hz").value)
+        drive_topic        = str(self.get_parameter("drive_topic").value)
 
+        # (N, 5): [x, y, vx, psi, s_m]
         self._wpnts: np.ndarray | None = None
         self._state: tuple[float, float, float, float] | None = None
 
-        self.create_subscription(WpntArray, "/local_waypoints", self._wpnts_cb, 10)
-        self.create_subscription(Odometry,  "/car_state/odom",  self._odom_cb,  10)
+        # param profile from tuner: (M, 4) = [s, k, k_ff, lookahead_d]
+        self._param_profile: np.ndarray | None = None
+        self._profile_warned = False
 
-        self.drive_pub   = self.create_publisher(AckermannDriveStamped, drive_topic,               10)
-        self.marker_pub  = self.create_publisher(Marker,                "/stanley/cte_target",     10)
-        self.cte_pub     = self.create_publisher(Float64,               "/stanley/cte",            10)
-        self.heading_pub = self.create_publisher(Float64,               "/stanley/heading_error",  10)
-        self.steer_pub   = self.create_publisher(Float64,               "/stanley/steer",          10)
+        self.create_subscription(WpntArray,         "/local_waypoints",              self._wpnts_cb,   10)
+        self.create_subscription(Odometry,          "/car_state/odom",               self._odom_cb,    10)
+        self.create_subscription(Float64MultiArray, "/stanley_tuner/param_profile",  self._profile_cb, 10)
+
+        self.drive_pub   = self.create_publisher(AckermannDriveStamped, drive_topic,              10)
+        self.marker_pub  = self.create_publisher(Marker,                "/stanley/cte_target",    10)
+        self.cte_pub     = self.create_publisher(Float64,               "/stanley/cte",           10)
+        self.heading_pub = self.create_publisher(Float64,               "/stanley/heading_error", 10)
+        self.steer_pub   = self.create_publisher(Float64,               "/stanley/steer",         10)
 
         self.create_timer(1.0 / rate, self._tick)
         self.add_on_set_parameters_callback(self._on_param)
@@ -107,15 +118,16 @@ class Stanley(Node):
     def _on_param(self, params):
         from rcl_interfaces.msg import SetParametersResult
         for p in params:
-            if   p.name == "k":                self.k              = float(p.value)
-            elif p.name == "k_s":              self.k_s            = float(p.value)
-            elif p.name == "k_ff":             self.k_ff           = float(p.value)
-            elif p.name == "lookahead_min":    self.lookahead_min  = float(p.value)
-            elif p.name == "lookahead_k":      self.lookahead_k    = float(p.value)
-            elif p.name == "max_steering_rad": self.max_steer      = float(p.value)
-            elif p.name == "max_speed_mps":    self.v_max          = float(p.value)
-            elif p.name == "speed_scale":      self.speed_scale    = float(p.value)
-            elif p.name == "wheelbase":        self.wb             = float(p.value)
+            if   p.name == "k":                self.k             = float(p.value)
+            elif p.name == "k_s":              self.k_s           = float(p.value)
+            elif p.name == "k_ff":             self.k_ff          = float(p.value)
+            elif p.name == "lookahead_min":    self.lookahead_min = float(p.value)
+            elif p.name == "lookahead_k":      self.lookahead_k   = float(p.value)
+            elif p.name == "lookahead_d":      self.lookahead_d   = float(p.value)
+            elif p.name == "max_steering_rad": self.max_steer     = float(p.value)
+            elif p.name == "max_speed_mps":    self.v_max         = float(p.value)
+            elif p.name == "speed_scale":      self.speed_scale   = float(p.value)
+            elif p.name == "wheelbase":        self.wb            = float(p.value)
         return SetParametersResult(successful=True)
 
     # ------------------------------------------------------------------ #
@@ -123,7 +135,7 @@ class Stanley(Node):
         if not msg.wpnts:
             return
         self._wpnts = np.array(
-            [[w.x_m, w.y_m, w.vx_mps, w.psi_rad] for w in msg.wpnts],
+            [[w.x_m, w.y_m, w.vx_mps, w.psi_rad, w.s_m] for w in msg.wpnts],
             dtype=float,
         )
 
@@ -133,13 +145,23 @@ class Stanley(Node):
         v = msg.twist.twist.linear.x
         self._state = (p.x, p.y, _yaw_from_quat(q.x, q.y, q.z, q.w), v)
 
+    def _profile_cb(self, msg: Float64MultiArray) -> None:
+        data = np.array(msg.data, dtype=float)
+        if len(data) == 0 or len(data) % 4 != 0:
+            self.get_logger().error(
+                f"[stanley] param_profile size {len(data)} is not a multiple of 4 — ignored"
+            )
+            return
+        self._param_profile = data.reshape(-1, 4)   # (M, 4): [s, k, k_ff, ld]
+        self._profile_warned = False                 # 재수신 시 경고 리셋
+
     # ------------------------------------------------------------------ #
     def _tick(self) -> None:
         if self._wpnts is None or self._state is None:
             return
 
         x, y, yaw, speed = self._state
-        wp = self._wpnts
+        wp = self._wpnts  # (N, 5): [x, y, vx, psi, s_m]
 
         # 1. Front axle position
         x_fa = x + self.wb * math.cos(yaw)
@@ -150,9 +172,15 @@ class Stanley(Node):
         dy = wp[:, 1] - y_fa
         idx_near = int(np.argmin(dx * dx + dy * dy))
 
-        # 3. Speed-adaptive lookahead:  d = lookahead_min + lookahead_k · |v|
-        #    At 3 m/s → 0.5+0.9=1.4m,  at 8 m/s → 0.5+2.4=2.9m
-        lookahead = self.lookahead_min + self.lookahead_k * abs(speed)
+        # 3. Per-waypoint params from tuner profile (or node-param fallback)
+        k, k_ff, lookahead_d = self._lookup_params(wp[idx_near, 4])
+
+        # 4. Lookahead distance
+        if lookahead_d > 0.0:
+            lookahead = lookahead_d
+        else:
+            lookahead = self.lookahead_min + self.lookahead_k * abs(speed)
+
         N   = len(wp)
         idx = idx_near
         acc = 0.0
@@ -166,33 +194,32 @@ class Stanley(Node):
         idx_look = idx
 
         wx, wy = wp[idx_look, 0], wp[idx_look, 1]
-        v_ref  = wp[idx_near, 2]         # speed from nearest (safety)
+        v_ref  = wp[idx_near, 2]
 
-        # 4. Path heading from geometry (independent of stored psi_rad convention)
-        nxt_look  = (idx_look + 1) % N
-        psi_path  = math.atan2(wp[nxt_look, 1] - wy, wp[nxt_look, 0] - wx)
+        # 5. Path heading from geometry
+        nxt_look = (idx_look + 1) % N
+        psi_path = math.atan2(wp[nxt_look, 1] - wy, wp[nxt_look, 0] - wx)
 
-        # 5. Heading error
+        # 6. Heading error
         psi_e = _normalize_angle(psi_path - yaw)
 
-        # 5. Cross-track error at front axle w.r.t. lookahead tangent
+        # 7. Cross-track error at front axle
         cross = math.cos(psi_path) * (y_fa - wy) - math.sin(psi_path) * (x_fa - wx)
         e_fa  = -cross
 
-        # 6. Path curvature κ = dψ/ds — heading change per arc length (geometry-based)
+        # 8. Path curvature κ = dψ/ds
         nxt2  = (nxt_look + 1) % N
         ds    = math.hypot(wp[nxt_look, 0] - wx, wp[nxt_look, 1] - wy)
         psi2  = math.atan2(wp[nxt2, 1] - wp[nxt_look, 1], wp[nxt2, 0] - wp[nxt_look, 0])
         kappa = _normalize_angle(psi2 - psi_path) / ds if ds > 1e-3 else 0.0
 
-        # 7. Stanley + curvature feedforward
-        #    δ = ψ_e + atan2(k·e_fa, |v|+k_s) + k_ff·κ·L
+        # 9. Stanley law:  δ = ψ_e + atan2(k·e, |v|+k_s) + k_ff·κ·L
         steer = (psi_e
-                 + math.atan2(self.k * e_fa, abs(speed) + self.k_s)
-                 + self.k_ff * kappa * self.wb)
+                 + math.atan2(k * e_fa, abs(speed) + self.k_s)
+                 + k_ff * kappa * self.wb)
         steer = max(-self.max_steer, min(self.max_steer, steer))
 
-        # 8. Speed
+        # 10. Speed
         ref_speed = float(np.clip(v_ref * self.speed_scale, 0.0, self.v_max))
 
         cmd = AckermannDriveStamped()
@@ -206,6 +233,30 @@ class Stanley(Node):
         self.heading_pub.publish(Float64(data=psi_e))
         self.steer_pub.publish(Float64(data=steer))
         self._publish_marker(wx, wy)
+
+    # ------------------------------------------------------------------ #
+    def _lookup_params(self, s_m: float) -> tuple[float, float, float]:
+        """param_profile에서 s_m에 해당하는 (k, k_ff, lookahead_d) 반환.
+
+        profile 없으면 노드 파라미터 기본값 사용 + 최초 1회 경고.
+        """
+        if self._param_profile is not None:
+            ps    = self._param_profile[:, 0]
+            idx_p = int(np.searchsorted(ps, s_m))
+            idx_p = min(idx_p, len(ps) - 1)
+            return (
+                float(self._param_profile[idx_p, 1]),
+                float(self._param_profile[idx_p, 2]),
+                float(self._param_profile[idx_p, 3]),
+            )
+
+        if not self._profile_warned:
+            self.get_logger().warn(
+                "[stanley] /stanley_tuner/param_profile not received — "
+                "using default params (k, k_ff, lookahead_d from node params)"
+            )
+            self._profile_warned = True
+        return self.k, self.k_ff, self.lookahead_d
 
     # ------------------------------------------------------------------ #
     def _publish_marker(self, x: float, y: float) -> None:

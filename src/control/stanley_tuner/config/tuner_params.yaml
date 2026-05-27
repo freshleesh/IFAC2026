@@ -1,0 +1,75 @@
+# ============================================================
+# Stanley Tuner 파라미터 설정
+# ============================================================
+# 사용법:
+#   Practice:  ros2 launch stack_master stanley_tuning.launch.py map:=midterm tuner_mode:=practice
+#   Race:      ros2 run stanley_tuner param_mapper_node --ros-args -p map:=midterm
+# ============================================================
+
+stanley_tuner:
+  ros__parameters:
+
+    # ── 기본 설정 ─────────────────────────────────────────
+    map:        ""           # 맵 이름 (필수, launch 인자로 덮어쓰기)
+    tuner_mode: "rule_based" # rule_based | bayes
+
+    # ── 섹터 감지 ─────────────────────────────────────────
+    kappa_threshold: 0.15    # 코너 판정 곡률 임계값 [rad/m]
+                             #   < 0.15          → straight
+                             #   0.15 ~ 0.35     → shallow_corner
+                             #   0.35 ~ 0.65     → medium_corner
+                             #   > 0.65          → deep_corner
+    min_sector_len:  1.0     # 이보다 짧은 섹터는 인접 섹터에 병합 [m]
+
+    # ── 실행 설정 ─────────────────────────────────────────
+    rate_hz:         50.0    # 제어 루프 주기 [Hz]
+    save_interval_s: 30.0    # stanley_params.yaml 자동 저장 주기 [s]
+    min_laps:        2       # 파라미터 업데이트에 필요한 최소 랩 수
+
+    # ── 목적 함수 가중치 ───────────────────────────────────
+    # objective = mean(|CTE|) + λ1·std(steer) + λ2·mean(|heading_err|)
+    lambda1: 0.2             # steer oscillation 가중치
+    lambda2: 0.4             # heading error 가중치
+
+    # ── Safety Watchdog ────────────────────────────────────
+    # |CTE| > cte_safety_m 이 cte_danger_frames 연속 초과 시
+    # 해당 섹터를 default 파라미터로 즉시 리셋
+    cte_safety_m:     0.35   # 위험 CTE 임계값 [m]
+    cte_danger_frames: 15    # 연속 프레임 수 (50Hz 기준: 15 = 0.3s)
+
+    # ── Rule-based 튜너 하이퍼파라미터 ────────────────────
+    # k 조정 배율
+    k_alpha: 0.01            # k 증가 배율 (CTE 높을 때)     → 낮출수록 보수적
+    k_beta:  0.05          # k 감소 배율 (진동 있을 때)    → 높일수록 진동 억제 강함
+
+    # k_ff 조정 배율
+    kff_alpha: 0.0001          # k_ff 증가/감소 배율 (코너 heading 오차 기반)
+
+    # 트리거 임계값
+    cte_high: 0.08           # [m]   이 이상이면 k 증가 (Rule 1)
+    cte_low:  0.03           # [m]   이 이하 + 진동 없으면 k 소폭 감소 (Rule 2)
+    osc_high: 0.04           # [rad] steer_std 이 이상이면 진동으로 판정 → k 감소 우선 (Rule 3)
+    hdg_high: 0.08           # [rad] heading_mean 이 이상이면 k_ff 증가 (Rule 4)
+
+    # lookahead_d 계산 (Rule 5)
+    # lookahead = base_lookahead / (1 + kappa_scale * |kappa_max|)
+    base_lookahead: 0.5      # [s]  기준 시간 (속도에 무관한 거리 기준)
+    kappa_scale:    1.8      # 곡률 영향 스케일 → 클수록 코너에서 lookahead 짧아짐
+
+    # 파라미터 클램프 범위 — rule_tuner 와 Bayes 양쪽에 동일하게 적용
+    # ⚠ k_min < 0.5 이면 경로 추종력이 너무 약해 벽 충돌 위험
+    # ⚠ ld_min < 0.3 이면 lookahead 가 사실상 0 이 되어 심한 진동/충돌 위험
+    k_min:   0.5
+    k_max:   3.0
+    kff_min: 0.0
+    kff_max: 0.01
+    ld_min:  0.1              # lookahead_d 최솟값 [m] — 0.3 이하로 낮추지 말 것
+    ld_max:  1.0              # lookahead_d 최댓값 [m]
+
+
+# ── 경기 모드 (param_mapper_node) ─────────────────────────
+stanley_param_mapper:
+  ros__parameters:
+    map:              ""     # 맵 이름 (필수)
+    kappa_threshold:  0.15   # 섹터 자동 감지 임계값 (YAML 있으면 무시됨)
+    publish_rate_hz:  10.0   # param_profile 발행 주기 [Hz]

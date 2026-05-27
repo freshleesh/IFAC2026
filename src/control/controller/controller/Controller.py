@@ -525,7 +525,10 @@ class Controller:
         idx_la_position = np.clip(idx_la_position + offset, 0, len(self.waypoint_array_in_map) -1)
         global_speed = self.waypoint_array_in_map[idx_la_position, 3]
         cur_speed = self.speed_now
- 
+        self._node.get_logger().info(
+            f"[SPEED_DBG] state={self.state!r} global_speed={global_speed:.3f} cur_speed={cur_speed:.3f} idx={idx_la_position}"
+        )
+
         if cur_speed < 0:
             cur_speed = 0
  

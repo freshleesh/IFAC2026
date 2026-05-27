@@ -60,8 +60,9 @@ def _build(context: LaunchContext, *_args, **_kwargs):
     force_gbtrack = (mode == "timetrial") or is_mpcc
     ot_planner = "spliner" if mode == "overtake" else ""
 
-    sm_share = get_package_share_directory("stack_master")
-    fast_livo_map_root = os.path.expanduser("~/ros2_ws/src/fast_livo2/map")
+    _sm_install = get_package_share_directory("stack_master")
+    _ws = os.path.normpath(os.path.join(_sm_install, '..', '..', '..', '..'))
+    sm_share = os.path.join(_ws, 'src', 'system', 'stack_master')
     controller_yaml = os.path.join(
         get_package_share_directory("controller"), "config", "sim_controller_params.yaml"
     )
@@ -79,7 +80,7 @@ def _build(context: LaunchContext, *_args, **_kwargs):
         name="global_republisher",
         parameters=[{
             "map": map_name,
-            "map_path": os.path.join(fast_livo_map_root, map_name, "global_waypoints.json"),
+            "map_path": os.path.join(get_package_share_directory("stack_master"), 'maps', map_name, "global_waypoints.json"),
         }],
         output="screen",
     )
@@ -178,20 +179,14 @@ def _build(context: LaunchContext, *_args, **_kwargs):
         # ── simple_pp (minimal pure-pursuit, vx_mps 그대로) ────────────
         # 기존 controller_manager (L1 + lat_err/accel_lim 후처리) 가 vx_mps 를
         # 깎는 문제 디버깅용 교체. middle_level_mac 과 동일 노드/파라미터.
+        stanley_yaml = os.path.join(
+            get_package_share_directory("controller"), "config", "stanley_params.yaml"
+        )
         controller_node = TimerAction(period=7.0, actions=[Node(
             package="controller",
-            executable="simple_pp",
-            name="simple_pp",
-            parameters=[{
-                "lookahead_distance": 1.2,
-                "wheelbase": 0.33,
-                "max_steering_rad": 0.4,
-                "max_speed_mps": 8.0,
-                "speed_scale": 1.0,
-                "control_rate_hz": 50.0,
-                # sim 의 simple_mux in_topic 과 매칭 (mac 과 다름)
-                "drive_topic": "/vesc/high_level/ackermann_cmd",
-            }],
+            executable="stanley",
+            name="stanley",
+            parameters=[stanley_yaml],
             output="screen",
         )])
         actions.append(controller_node)
