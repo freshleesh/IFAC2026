@@ -84,9 +84,10 @@ class TrajectoryOptimizer(Node):
             self.get_logger().error('map_name parameter is required!')
             return
 
-        # _PLANNER_ROOT = .../IFAC2026_SH/src/global_planner → up 3 = /Users/mini/ros2_ws/src
-        ws_src = os.path.normpath(os.path.join(_PLANNER_ROOT, '..', '..', '..'))
-        self.map_dir = os.path.join(ws_src, 'fast_livo2', 'map', self.map_name)
+        _ws = os.path.normpath(os.path.join(next(
+            p for p in os.environ.get('AMENT_PREFIX_PATH', '').split(':')
+            if os.path.basename(p) == 'global_planner'), '..', '..'))
+        self.map_dir = os.path.join(_ws, 'src', 'stack_master', 'maps', self.map_name)
         self.get_logger().info(f'map_dir: {self.map_dir}')
 
         self.pars = self._load_pars()

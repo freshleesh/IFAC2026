@@ -48,10 +48,10 @@ bridge:
     # opponent parameters
     num_agent: 1
 
-    # ego starting pose on map
-    sx: 0.5
-    sy: 1.25
-    stheta: -0.7
+    # ego starting pose on map — global_waypoints id=0 (on raceline)
+    sx: 4.42
+    sy: 0.29
+    stheta: 0.77
 
     # opp starting pose on map
     sx1: 2.0

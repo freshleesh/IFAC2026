@@ -184,11 +184,10 @@ class GlobalRepublisher(Node):
     def _resolve_path(self, map_path: str, map_name: str) -> str:
         if map_path:
             return map_path
-        # fallback: ROS1 ws 의 stack_master/maps/<map>/global_waypoints.json (검증 편의)
-        fallback = os.path.expanduser(
-            f"~/unicorn_ws/ICRA2026_HJ/stack_master/maps/{map_name}/global_waypoints.json"
-        )
-        return fallback
+        ws = os.path.normpath(os.path.join(next(
+            p for p in os.environ.get('AMENT_PREFIX_PATH', '').split(':')
+            if os.path.basename(p) == 'global_republisher'), '..', '..'))
+        return os.path.join(ws, 'src', 'stack_master', 'maps', map_name, 'global_waypoints.json')
 
     # ---------- 외부 발행 캡처 콜백 (모두 self._data 의 필드 갱신) ----------
 

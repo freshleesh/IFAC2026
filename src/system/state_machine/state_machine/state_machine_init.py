@@ -498,11 +498,16 @@ class InitMixin:
 
     def _resolve_stack_master_path(self, *parts) -> str:
         """stack_master 경로 해결 — 우선순위:
-        1) ament share/stack_master/ (이번 ws 에 stack_master 포팅됨)
-        2) $IFAC_MAPS_DIR (parts[0] == 'maps' 일 때만)
-        3) ~/ros2_ws/src/IFAC2026_SH/maps/ (parts[0] == 'maps' 일 때만)
-        4) legacy ~/unicorn_ws/ICRA2026_HJ/stack_master/
+        1) src/stack_master/ (이번 ws, generated 파일 포함)
+        2) ament share/stack_master/ (install)
+        3) src fallback (파일 없어도 이 ws 경로 반환)
         """
+        ws = os.path.normpath(os.path.join(next(
+            p for p in os.environ.get('AMENT_PREFIX_PATH', '').split(':')
+            if os.path.basename(p) == 'state_machine'), '..', '..'))
+        src_path = os.path.join(ws, 'src', 'stack_master', *parts)
+        if os.path.exists(src_path):
+            return src_path
         try:
             from ament_index_python.packages import get_package_share_directory
             share = get_package_share_directory("stack_master")
@@ -511,17 +516,4 @@ class InitMixin:
                 return ament_path
         except Exception:
             pass
-        if parts and parts[0] == "maps":
-            env_dir = os.environ.get("IFAC_MAPS_DIR")
-            if env_dir:
-                p = os.path.join(os.path.expanduser(env_dir), *parts[1:])
-                if os.path.exists(p):
-                    return p
-            mac_default = os.path.expanduser(
-                os.path.join("~/ros2_ws/src/IFAC2026_SH/maps", *parts[1:])
-            )
-            if os.path.exists(mac_default):
-                return mac_default
-        return os.path.expanduser(
-            os.path.join("~/unicorn_ws/ICRA2026_HJ/stack_master", *parts)
-        )
+        return src_path
