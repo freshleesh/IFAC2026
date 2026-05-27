@@ -97,13 +97,19 @@ def generate_launch_description() -> LaunchDescription:
         condition=IfCondition(use_low_level),
     )
 
-    # ── 2. fast_livo localization (my_seat prior map via yaml) ─────────
+    # ── 2. fast_livo localization (prior_map_dir 은 `map` 인자로 override) ─
     # /aft_mapped_to_init → /car_state/odom remap 으로 frenet/state_machine 체인 진입.
+    from launch.substitutions import PathJoinSubstitution
+    livo_prior_map_dir = PathJoinSubstitution([src_maps_root, map_name])
     livo_node = Node(
         package="fast_livo",
         executable="fastlivo_mapping",
         name="laserMapping",
-        parameters=[livo_main, livo_cam],
+        parameters=[
+            livo_main,
+            livo_cam,
+            {"relocalization.prior_map_dir": livo_prior_map_dir},
+        ],
         remappings=[("/aft_mapped_to_init", "/car_state/odom")],
         output="screen",
     )
@@ -113,6 +119,26 @@ def generate_launch_description() -> LaunchDescription:
         executable="rviz2",
         name="rviz2_livo",
         arguments=["-d", livo_rviz_cfg],
+        output="screen",
+    )
+
+    # ── 2b. global init (KISS-Matcher) ─────────────────────────────────
+    # auto_start=false: trigger 대기. zsh alias `pose` 로 호출하면
+    # ~/livox/lidar 누적 → KISS-Matcher → /initialpose 발행 → fast_livo 초기화.
+    gi_share = get_package_share_directory("fast_livo_global_init")
+    gi_yaml = os.path.join(gi_share, "config", "global_init.yaml")
+    gi_pcd_path = PathJoinSubstitution([src_maps_root, map_name, "cloudGlobal.pcd"])
+    global_init_node = Node(
+        package="fast_livo_global_init",
+        executable="global_init_node",
+        name="fast_livo_global_init",
+        parameters=[
+            gi_yaml,
+            {
+                "prior_map.pcd_path": gi_pcd_path,
+                "control.auto_start": False,
+            },
+        ],
         output="screen",
     )
 
@@ -230,6 +256,7 @@ def generate_launch_description() -> LaunchDescription:
         map_arg, low_level_arg, rviz_low_arg, rviz_livo_arg, joy_arg,
         low_level,
         livo_node, livo_rviz,
+        global_init_node,
         static_tf_map,
         global_repub,
         frenet_odom_repub,
