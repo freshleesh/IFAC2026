@@ -200,6 +200,6 @@ mpc_node:
     q_psi_scale_live: 0.5000   # EXP B-mode: 2.70→0.5 heading 자유 (centerline 헤딩 추종 X)
     q_v_scale_live: 0.6766
     q_dd_scale_live: 1.0       # not in BO
-    q_p_scale_live: 4.7412
+    q_p_scale_live: 4.7412   # committed (STUCK=0 18.87). q_p=6.0이면 best 18.52(PP근접)지만 STUCK=5(공격적). 속도/안정 tradeoff knob.
     q_drate_scale_live: 2.6314
     q_dv_scale_live: 0.3225
