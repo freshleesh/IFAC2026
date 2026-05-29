@@ -160,7 +160,8 @@ def build_track_from_wpnts(wpnts, vel_scale: float = 1.0,
                            inflation_factor: float = 1.2,
                            extend_part: int = 2,
                            default_v: float = 5.0,
-                           corridor_half_width: float = 0.0) -> TrackData:
+                           corridor_half_width: float = 0.0,
+                           a_lat_max: float = 6.0) -> TrackData:
     """Same TrackData as `load_track`, but built from a list of `f110_msgs/Wpnt`.
 
     Designed for race-stack `/centerline_waypoints` ingestion: wpnt fields
@@ -190,7 +191,6 @@ def build_track_from_wpnts(wpnts, vel_scale: float = 1.0,
     # corridor_half_width > 0: fixed-width MPC corridor (centerline ± half).
     #   mpc lateral search space cap, 좌우 대칭. 코너에서 raw d_left/d_right
     #   가 망가지지 않게 함. inflation 은 우회됨 (사용자 설정값이 곧 cap).
-    a_lat_max = 6.0
     use_fixed_corridor = corridor_half_width > 1e-3
     for i, w in enumerate(wpnts):
         x, y = w.x_m, w.y_m
@@ -201,17 +201,31 @@ def build_track_from_wpnts(wpnts, vel_scale: float = 1.0,
         if use_fixed_corridor:
             d_r = d_l = corridor_half_width
         else:
-            d_r, d_l = float(w.d_right), float(w.d_left)
+            # Corridor bounds the car CENTER, but d_left/d_right are distances
+            # to the track walls. Subtract a safety margin (car half-width
+            # ~0.16 + buffer) on each side so the car body doesn't clip the
+            # wall — without it the raceline (which hugs the inside edge at
+            # apexes) leaves zero room and the car wedges (STUCK storm).
+            _WALL_MARGIN = 0.25
+            d_r = max(0.05, float(w.d_right) - _WALL_MARGIN)
+            d_l = max(0.05, float(w.d_left) - _WALL_MARGIN)
         # right normal = (+sin(psi), -cos(psi)); left normal = (-sin(psi), +cos(psi))
         right_lane[i] = (x + d_r * s,  y - d_r * c)
         left_lane[i]  = (x - d_l * s,  y + d_l * c)
+        # Speed reference: cap to BOTH our top speed (default_v = v_max) AND the
+        # κ-aware lateral-grip limit √(a_lat_max/|κ|). The IQP raceline ships
+        # vx_mps optimized for a higher-grip/faster car (7-13 m/s here); used
+        # raw (previous behaviour) it never slowed for apexes at our v=5 → the
+        # car entered geometric apexes too hot → wedge (STUCK storm in raceline
+        # mode). Taking the min slows it at high-curvature points per OUR limits
+        # while still following the raceline GEOMETRY. Because the raceline is
+        # min-curvature, its |κ| at corners is lower than the centerline's, so
+        # the κ-cap permits MORE corner speed than centerline → faster lap.
+        kappa = abs(float(w.kappa_radpm))
+        v_kappa = np.sqrt(a_lat_max / kappa) if kappa > 1e-3 else default_v
         v_msg = float(w.vx_mps) * vel_scale
-        if v_msg > 1e-3:
-            ref_v[i] = v_msg
-        else:
-            kappa = abs(float(w.kappa_radpm))
-            v_kappa = np.sqrt(a_lat_max / kappa) if kappa > 1e-3 else default_v
-            ref_v[i] = float(np.clip(v_kappa, 1.0, default_v))
+        v_src = v_msg if v_msg > 1e-3 else default_v
+        ref_v[i] = float(np.clip(min(v_src, v_kappa, default_v), 1.0, default_v))
 
     # Fixed-width corridor already represents the mpc cap → skip inflation
     # (otherwise the boundary would be pulled inside the user-set width).

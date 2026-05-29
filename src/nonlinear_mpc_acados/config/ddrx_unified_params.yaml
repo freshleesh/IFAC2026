@@ -39,7 +39,7 @@ mpc_node:
     cold_start_vx_floor: 2.0
     startup_speed: 1.5
     dT: 0.04                       # 0.025→0.04 (25Hz control rate). multi-dt 와 결합 — 첫 step.
-    N_horizon: 50                  # autoreg v=5: lookahead 10.0 m
+    N_horizon: 50                  # raceline: apex 감속 lookahead 필요 (N25는 브레이크 늦어 wedge)
     # time_steps_mode: 'uniform' (모든 step dt=dT) 또는 'pyramidal' (multi-dt: 가까이 sharp + 멀리 long planning).
     # pyramidal: dt = [dT]*20 + [dT*1.5]*30 + [dT*2.5]*30
     #   = [0.04]*20 + [0.06]*30 + [0.10]*30 → 0.8 + 1.8 + 3.0 = 5.6s horizon
@@ -57,7 +57,7 @@ mpc_node:
     #   raceline   → /global_waypoints (IQP 사전 최적화된 racing line.
     #                코너에서 자연스럽게 apex 통과, vx_mps 점별 가속/감속.
     #                D_apex 는 0 권장 — raceline 자체가 이미 apex 통과)
-    track_source: centerline   # MPCC 본연: centerline = corridor reference. 차는 q_cte/q_lag 낮춰서 추종 X, progress 최대화로 라인 자유 결정.
+    track_source: centerline   # known-good (raceline 구조적 wedge — 레퍼런스/corridor 기하 디버깅 다음세션)
 
     # auto_tune=true 이면 max_speed 한 변수만 사용자가 설정하고, 나머지
     # q_lag / q_cte / max_speed_p / alpha_steer / corridor / D_apex /
@@ -124,7 +124,7 @@ mpc_node:
     # historical states) + regularization. lap-by-lap value function 학습으로
     # tire-model mismatch (gym ST vs MPCC Pacejka) 를 자동 보상.
     # use_lmpc=false (default) — LMPC term cost weight = 0, 기존 동작 동일.
-    use_lmpc: false            # 2026-05-29 #10 검증: 현재 LMPC가 퇴화시킴(lap 28.7→34.5→35.7→41.6s). stuck-ridden lap이 SS에 accepted(n_resets=0이 stuck-reverse 못잡음)→SS 오염 + base가 clean lap 못만듦. LMPC 코드 유지, clean base(BO후)+필터강화 후 재가동(폐기 아님, 시기상조).
+    use_lmpc: false            # 2026-05-30: raceline 효과 격리 위해 일시 off (LMPC는 +1.5%/variance, 천장 18.8s=BO와 동일 — racing-line이 진짜 레버. raceline 측정 후 결합 예정). LMPC 버그 수정은 코드에 유지됨.
     lmpc_w: 0.1                # softmin term 가중 (acados W_e 의 lmpc residual entry 1.0 × lmpc_w)
     lmpc_alpha: 1.0            # distance penalty in g_i = Q_i + α·d_i²
     lmpc_beta: 0.01            # 0.05→0.01 (reviewer #★4: softmin 더 부드럽게, QP_Failure 회피) (reviewer 권장: Q step-count 라 β 작게)
@@ -134,7 +134,7 @@ mpc_node:
     lmpc_slice_window: 50      # ± window in step index near current s
     lmpc_enable_after_real_laps: 1   # synthetic seed 만으론 활성화 X (reviewer #4-C)
     lmpc_load_path: ""         # npz path to load SS at startup (empty = no load)
-    lmpc_save_path: ""         # npz path to save SS at shutdown (empty = no save)
+    lmpc_save_path: ""   # npz path to save SS at shutdown
     lmpc_seed_from_raceline: true    # cold-start: IQP raceline → synthetic seed lap
     # Failed lap filter (reviewer #4-A — bad lap 이 SS 오염 막음)
     lmpc_max_resets: 3
@@ -148,7 +148,7 @@ mpc_node:
     # 마진(0.15) + lateral detour offset(0.3) 합보다 커야. 0.4 → 0.7m.
     # raceline 자체가 안정 reference 이므로 corridor 넓혀도 oscillation 적음.
     # 너무 키우면(>0.9) 코너에서 corridor 가 트랙 벽 밖으로 빠질 수도.
-    mpc_corridor_half_width: 0.75  # 0.95→0.75 (2026-05-26). width 2.0m 트랙: boundary half=1.0, R_car=0.15 → corridor 0.75 = 마진 0.10m 확보. 벽 가까이 경로 → 박힘 줄임.
+    mpc_corridor_half_width: 0.75  # centerline known-good
 
     # Vehicle dynamics — only `l_wb` consumed in kinematic mode (current default)
     vehicle.l_wb: 0.307
@@ -174,7 +174,7 @@ mpc_node:
     # (~0.9g) 초과라 곡률 speed-cap 무력화 → 타이트 코너 과속 진입 → 박힘 (2026-05-29
     # 진단: 남은 stall 13/13 over-speed entry). 물리적 그립으로 복원: 8 > 6 (코드 주석의
     # 의도값, a_lat_max=8 hard 아래 headroom). ref_v cap = √(a_lat/κ) 가 코너서 실제 작동.
-    a_lat_safe_live: 6.0   # q_v=3/a_lat=4 과보정(차 기어감, near-stop 64%) → a_lat 은 6 으로 환원, q_v 만 isolate 조정.
+    a_lat_safe_live: 6.0   # known-good
     # D_detour_live: 회피 시 lateral offset [m]. 0.3 → 0.2 → 0.1.
     # R_safe (hard constraint, 0.25m) 가 충돌 회피 보장하므로 D_detour 는
     # soft target 만이라 작아도 안전. 회피 후 raceline 복귀 시 over-shoot ↓.

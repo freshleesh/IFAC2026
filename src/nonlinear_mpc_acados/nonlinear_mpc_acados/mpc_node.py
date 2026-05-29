@@ -413,9 +413,16 @@ class MPCNode(Node):
             'lap_at_step':  0,
             'current_step': 0,
         }
-        if self._auto_step_state['enabled']:
+        # /mpc/lap_count subscription drives BOTH auto_step max_speed ramp AND
+        # LMPC lap-end buffering (_on_lap_count_step → _lmpc_on_lap_end).
+        # BUG (2026-05-29): this was gated on auto_step only, so with auto_step
+        # off (BO/normal default) LMPC never received a lap-end event → the
+        # safe set never accumulated real laps → LMPC was silently a no-op
+        # (laps stayed flat at ~19s, 0 buffered). Subscribe if EITHER needs it.
+        if self._auto_step_state['enabled'] or bool(self.get_parameter('use_lmpc').value):
             self.create_subscription(Int32, '/mpc/lap_count',
                                      self._on_lap_count_step, 10)
+        if self._auto_step_state['enabled']:
             # 시작 시 mpc.v_max 를 start_speed 로 (auto_tune 동시 트리거).
             # 단 mpc 초기화 후에야 self.mpc 존재 → wpnt callback 안의 후처리
             # 가 더 안전하므로 여기선 state 만 저장. 실제 적용은 _initialize_mpc
@@ -676,14 +683,23 @@ class MPCNode(Node):
             self.mpc.lmpc_w_live = 0.0
             return
 
-        # Query SS — z_t = current state8 (we use current state as horizon-end proxy
-        # for now; proper: use mpc's predicted x_N from previous solve)
+        # Query SS at the PREDICTED HORIZON-END state (from the previous solve),
+        # NOT the current state. The terminal LMPC cost attracts x_N (horizon
+        # end) toward ss_states[:,0]; if we query at the current state the
+        # attractor sits ~at the car → it pulls x_N BACKWARD → no progress (the
+        # observed +5% lap-time drift). Querying at the horizon-end places the
+        # attractor ~one-horizon ahead so the cost pulls x_N FORWARD onto the
+        # fast line. Falls back to the current state8 until the first solve.
+        q_state = getattr(self, '_lmpc_query_state', None)
+        if q_state is None or q_state.shape[0] < state8.shape[0]:
+            q_state = state8
+        q_s = float(q_state[6]) if q_state.shape[0] > 6 else s_now
         try:
             track_L = float(self._track.element_arc_lengths_orig[-1]) if (
                 self._track.element_arc_lengths_orig is not None
                 and len(self._track.element_arc_lengths_orig) > 0
             ) else 80.0
-            res = self._lmpc_ss.query(state8, v_bucket, s_curr=s_now, track_length=track_L)
+            res = self._lmpc_ss.query(q_state, v_bucket, s_curr=q_s, track_length=track_L)
         except Exception as e:
             self.get_logger().warn(f"[LMPC] query failed: {e}", throttle_duration_sec=2.0)
             self.mpc.lmpc_w_live = 0.0
@@ -773,6 +789,13 @@ class MPCNode(Node):
         except Exception as e:
             self.get_logger().warn(f"[LMPC] lap_end failed: {e}")
         st = self._auto_step_state
+        # auto_step v_max ramp runs ONLY when explicitly enabled. The
+        # /mpc/lap_count subscription may now exist solely for LMPC lap-end
+        # buffering above; without this guard the v_max ramp would fire even
+        # with auto_step disabled (observed: v ramped 5→6 during a fixed-v=5
+        # LMPC test, splitting laps across buckets).
+        if not st['enabled']:
+            return
         if lap == st['last_lap']:
             return
         # lap 0→1 첫 진입은 무시 (시작 상태 유지)
@@ -1439,6 +1462,15 @@ class MPCNode(Node):
             self.get_logger().error(f"mpc.solve raised: {e}\n{traceback.format_exc()}")
             return
         solve_dt = time.monotonic() - t0
+
+        # Stash the predicted horizon-end state for the NEXT cycle's LMPC safe-
+        # set query (so the terminal attractor sits ~one horizon ahead → pulls
+        # x_N forward). traj[-1] is the 8-state horizon end (dynamic).
+        if getattr(self, '_lmpc_use', False) and traj is not None and traj.shape[0] > 1:
+            try:
+                self._lmpc_query_state = np.asarray(traj[-1], dtype=float).copy()
+            except Exception:
+                self._lmpc_query_state = None
 
         # Output: AckermannDrive
         cmd = AckermannDriveStamped()
