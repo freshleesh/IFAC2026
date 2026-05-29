@@ -227,6 +227,36 @@ def build_track_from_wpnts(wpnts, vel_scale: float = 1.0,
         v_src = v_msg if v_msg > 1e-3 else default_v
         ref_v[i] = float(np.clip(min(v_src, v_kappa, default_v), 1.0, default_v))
 
+    # ── Forward-backward velocity profile (TUM calc_vel_profile style) ──
+    # The pointwise κ-cap above sets the APEX speed but does NOT tell the car to
+    # brake BEFORE the apex. At v=5 with a real braking limit the car then
+    # entered apexes too hot (late braking) → wedge in raceline mode. Propagate
+    # the speed limits along the loop: a backward pass enforces "slow enough to
+    # brake into the next point", a forward pass enforces "don't exceed what
+    # acceleration out of the previous point allows". Result: a feasible profile
+    # that decelerates AHEAD of corners. Loop-closed (the track is a circuit).
+    # Applied only in the raceline/raw-corridor path (use_fixed_corridor=False);
+    # the fixed-corridor centerline baseline is left exactly as before.
+    if n >= 4 and not use_fixed_corridor:
+        a_long = float(a_lat_max)   # longitudinal accel/brake limit (g-g proxy)
+        ds = np.empty(n, dtype=float)
+        for i in range(n):
+            j = (i + 1) % n
+            ds[i] = float(np.hypot(center_lane[j, 0] - center_lane[i, 0],
+                                   center_lane[j, 1] - center_lane[i, 1]))
+        for _ in range(2):   # 2 wrap sweeps to converge across the start seam
+            for i in range(n - 1, -1, -1):          # backward: braking
+                j = (i + 1) % n
+                v_brake = float(np.sqrt(ref_v[j] ** 2 + 2.0 * a_long * ds[i]))
+                if v_brake < ref_v[i]:
+                    ref_v[i] = v_brake
+            for i in range(n):                       # forward: acceleration
+                k = (i - 1) % n
+                v_acc = float(np.sqrt(ref_v[k] ** 2 + 2.0 * a_long * ds[k]))
+                if v_acc < ref_v[i]:
+                    ref_v[i] = v_acc
+        ref_v = np.clip(ref_v, 1.0, default_v)
+
     # Fixed-width corridor already represents the mpc cap → skip inflation
     # (otherwise the boundary would be pulled inside the user-set width).
     eff_inflation = 0.0 if use_fixed_corridor else inflation_factor
