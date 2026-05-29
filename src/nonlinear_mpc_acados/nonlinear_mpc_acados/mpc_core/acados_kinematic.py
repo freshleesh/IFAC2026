@@ -30,6 +30,12 @@ from acados_template import AcadosOcp, AcadosOcpSolver, AcadosModel
 class MPC:
     """acados backend mirroring the IPOPT EVO-MPCC interface."""
 
+    # Forced-reverse (STUCK release) is terminated as soon as the car has
+    # backed away this far from the wedge point, instead of always running the
+    # full ~0.5 s countdown. Bounds the backward travel so the car does not
+    # keep creeping rearward after it has already separated from the wall.
+    STUCK_REVERSE_DIST = 0.20   # [m]
+
     def __init__(self, cost_type, system_model, logger=None):
         self._log = logger if logger is not None else NullLogger("[MPC-acados]")
         self.arch = "acados_evompcc"
@@ -1165,10 +1171,15 @@ class MPC:
         # = more chance to wander between near-equal optima). 100 is
         # sufficient when cost surface is well-conditioned.
         ocp.solver_options.qp_solver_iter_max = 100
-        # LM for dynamic linear tire = 1.0. Balanced: strong enough for
-        # IPM stability with slip derivatives, loose enough that cost
-        # weights can actually steer the solution (not over-damped).
-        ocp.solver_options.levenberg_marquardt = 1.0 if self.use_dynamic else 0.2
+        # LM for dynamic linear tire. Balanced: strong enough for IPM
+        # stability with slip derivatives, loose enough that cost weights can
+        # actually steer the solution (not over-damped). Overridable via the
+        # `lm_dynamic` ROS param (set onto self before setup_MPC) so it can be
+        # swept / BO-tuned without code edits.
+        _lm_dyn = float(getattr(self, 'lm_dynamic', 1.0))
+        ocp.solver_options.levenberg_marquardt = _lm_dyn if self.use_dynamic else 0.2
+        self._log.info("[MPC-acados] levenberg_marquardt = %.3f (use_dynamic=%s)"
+                       % (ocp.solver_options.levenberg_marquardt, self.use_dynamic))
 
         # Codegen + build
         ocp.code_export_directory = '/tmp/acados_codegen_evompcc'
@@ -1782,6 +1793,10 @@ class MPC:
         teleport = v_est > 20.0
         if teleport:
             self._has_moved = False
+            # respawn/teleport mid-release: abort the reverse so the car does
+            # not creep backward right after being moved to a fresh pose.
+            self._stuck_release_remaining = 0
+            self._stuck_origin = None
         elif v_est > 0.5:
             self._has_moved = True
         if (v_est < 0.1 and disp < 0.02 and v_cmd_prev > 0.0
@@ -1791,8 +1806,23 @@ class MPC:
         else:
             self._stuck_count = 0
         if self._stuck_count > 10:                  # ~0.25 s detect
-            self._stuck_release_remaining = 20      # ~0.5 s forced release
+            self._stuck_release_remaining = 20      # ~0.5 s forced release (ceiling)
             self._stuck_count = 0
+            # Remember where we wedged so the reverse can stop as soon as the
+            # car has backed away STUCK_REVERSE_DIST (early-exit below).
+            self._stuck_origin = (float(initial_state[0]), float(initial_state[1]))
+        # Early-exit the forced reverse: once the car has separated from the
+        # wedge point by STUCK_REVERSE_DIST, end the release immediately rather
+        # than running the full 20-cycle countdown. Without this the car kept
+        # creeping backward after it had already freed itself ("박힌 뒤 다시
+        # 나오고 그 뒤에 살짝 더 뒤로 갔다가 출발"). The countdown stays as a
+        # ceiling for the rare case the car is still jammed at that distance.
+        if self._stuck_release_remaining > 0 and getattr(self, '_stuck_origin', None):
+            ox, oy = self._stuck_origin
+            back_dist = math.hypot(initial_state[0] - ox, initial_state[1] - oy)
+            if back_dist > self.STUCK_REVERSE_DIST:
+                self._stuck_release_remaining = 0
+                self._stuck_origin = None
         is_stuck = self._stuck_release_remaining > 0
         if is_stuck:
             self._stuck_release_remaining -= 1

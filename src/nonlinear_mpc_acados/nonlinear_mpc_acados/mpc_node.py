@@ -226,6 +226,11 @@ class MPCNode(Node):
         # dyn_tire_model: 'linear' (안전·빠름) / 'tanh' (saturation) / 'pacejka' (정확·불안정 가능)
         self.declare_parameter('use_dynamic', False)
         self.declare_parameter('dyn_tire_model', 'linear')
+        # acados Levenberg-Marquardt regularization for the dynamic model.
+        # Higher = better-conditioned QP (fewer ACADOS_MINSTEP / QP_Failure)
+        # and more consistent cycle-to-cycle predictions, but over-damped if
+        # too large. Exposed as a param so it can be swept / BO-tuned.
+        self.declare_parameter('lm_dynamic', 1.0)
         # Phase D — GP residual learning (L4acados ResidualLearningMPC wrap).
         # use_gp_residual=true & gp_ckpt_path 존재 → setup_MPC 후 GP 적용.
         self.declare_parameter('use_gp_residual', False)
@@ -904,6 +909,8 @@ class MPCNode(Node):
         # ── Dynamic Pacejka 모드 토글 — setup_MPC() 전에 적용해야 codegen 반영 ──
         self.mpc.use_dynamic = bool(self.get_parameter('use_dynamic').value)
         self.mpc.dyn_tire_model = str(self.get_parameter('dyn_tire_model').value)
+        # LM regularization (read before setup_MPC so codegen picks it up).
+        self.mpc.lm_dynamic = float(self.get_parameter('lm_dynamic').value)
         self.mpc.dyn_use_pacejka = (self.mpc.dyn_tire_model == 'pacejka')
         # Phase D closed-form CasADi GP residual flag — set BEFORE setup_MPC()
         # so the dynamics codegen picks it up. Independent of use_gp_residual.
@@ -1544,6 +1551,32 @@ class MPCNode(Node):
             ps.pose.orientation = Quaternion(x=0.0, y=0.0, z=siny, w=cosy)
             path.poses.append(ps)
         self.mpc_traj_pub.publish(path)
+
+        # ── Prediction-consistency metric (SQP_RTI shake) ──
+        # Compare this cycle's predicted (x,y) path against the PREVIOUS
+        # cycle's prediction advanced by one node (one dt has elapsed). A
+        # consistent solver reproduces nearly the same geometry shifted by one
+        # step; the residual RMS quantifies the cycle-to-cycle "예측선 흔들림".
+        # Logged at ~1 Hz so a run's shake level can be read straight from the
+        # sim log (grep "pred-consistency"). Skipped during stuck-release
+        # (reverse) cycles where traj is an override, not a real prediction.
+        try:
+            cur_xy = traj[:, 0:2]
+            prev_xy = getattr(self, '_prev_pred_xy', None)
+            in_release = bool(getattr(self.mpc, '_stuck_release_active', False))
+            if prev_xy is not None and not in_release:
+                m = min(cur_xy.shape[0] - 1, prev_xy.shape[0] - 1)
+                if m > 1:
+                    d = np.linalg.norm(cur_xy[:m] - prev_xy[1:m + 1], axis=1)
+                    rms = float(np.sqrt(np.mean(d * d)))
+                    e = getattr(self, '_pred_shake_ema', None)
+                    self._pred_shake_ema = rms if e is None else 0.9 * e + 0.1 * rms
+                    self.get_logger().info(
+                        "[pred-consistency] rms=%.4f ema=%.4f" % (rms, self._pred_shake_ema),
+                        throttle_duration_sec=1.0)
+            self._prev_pred_xy = cur_xy.copy()
+        except Exception:
+            pass
 
         # MarkerArray twin — sphere markers in centerline-style. Magenta.
         markers = MarkerArray()

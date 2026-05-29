@@ -81,6 +81,9 @@ mpc_node:
     #           코너 진입 시 tire saturation 모델링.
     use_dynamic: true
     dyn_tire_model: tanh
+    # acados LM regularization for dynamic model (QP conditioning / prediction
+    # consistency). 1.0 = previous default. Higher → fewer QP_Failure/MINSTEP.
+    lm_dynamic: 1.0
 
     # Phase D — GP residual learning (offline-trained sparse GP).
     # use_gp_residual=true → setup_MPC 후 ResidualLearningMPC 로 wrap.
