@@ -1348,6 +1348,48 @@ class MPCNode(Node):
             f"[stuck-recover] /initialpose → ({rx:.2f},{ry:.2f},{yaw:.2f}) "
             f"after {self._stuck_release_total} stuck cycles")
 
+    # Recovery-steer sign during reverse. +1 / -1, validated empirically.
+    # 후진 중 steer→yaw 가 전진과 반대 → 이 부호로 검증/뒤집기.
+    _RECOVERY_STEER_SIGN = -1.0
+
+    def _recovery_steer(self, x0):
+        """후진(STUCK release) 중 centerline 으로 되돌아가도록 조향각 계산.
+
+        car (x,y,psi) 를 centerline 에 투영해 signed lateral error e_c 와
+        heading error 를 구하고, 이에 비례하는 조향각을 ±max_steer 로 clamp.
+        벽에서 멀어지는 방향으로 후진하게 만들어 재끼임 CASCADE 를 차단.
+        """
+        if self._track is None or x0 is None or len(x0) < 3:
+            return 0.0
+        try:
+            x = float(x0[0]); y = float(x0[1]); psi = float(x0[2])
+            s_now, _ = find_current_arc_length(self._track, np.array([x, y]))
+            cx = float(self._track.center_lut_x(s_now))
+            cy = float(self._track.center_lut_y(s_now))
+            dx = float(self._track.center_lut_dx(s_now))
+            dy = float(self._track.center_lut_dy(s_now))
+            tnorm = math.hypot(dx, dy)
+            if tnorm < 1e-9:
+                return 0.0
+            dx /= tnorm; dy /= tnorm
+            # signed lateral error: (car - center) · left-normal(-dy, dx)
+            # e_c > 0 → 차가 centerline 의 왼쪽 → 오른쪽으로 복귀해야 함.
+            e_c = (x - cx) * (-dy) + (y - cy) * dx
+            # heading error vs centerline tangent (전진 기준), wrap to [-pi,pi]
+            psi_t = math.atan2(dy, dx)
+            e_psi = math.atan2(math.sin(psi - psi_t), math.cos(psi - psi_t))
+            max_steer = float(getattr(self.mpc, 'theta_max', 0.3) or 0.3)
+            # lateral + heading 항을 합쳐 복귀 조향 산출.
+            k_lat = 0.6; k_psi = 0.5
+            raw = -(k_lat * e_c + k_psi * e_psi)
+            steer = self._RECOVERY_STEER_SIGN * raw
+            return float(max(-max_steer, min(max_steer, steer)))
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().warn(
+                f"[stuck-recover] recovery steer calc failed: {e}",
+                throttle_duration_sec=2.0)
+            return 0.0
+
     def _control_loop_cb(self):
         if not self._mpc_ready:
             return  # waiting on track loader (TODO)
@@ -1366,15 +1408,20 @@ class MPCNode(Node):
         except Exception as _e:
             self.get_logger().warn(f"[LMPC] cycle update skipped: {_e}",
                                     throttle_duration_sec=2.0)
-        # ── Cold-start vx floor (MPPI init_vel) ──
-        # 저속에서 dynamic Pacejka 가 ill-conditioned → solver 에 넘기는 x0 의
-        # vx 를 floor 해서 항상 well-conditioned 영역에서 풂 (저속 chatter 제거).
-        # 실측 vx (raw_vx) 는 아래 출력 speed floor 판단용으로 보존.
+        # ── Cold-start vx floor (MPPI init_vel) — STARTUP ONLY ──
+        # 정지 출발 시 dynamic Pacejka 가 ill-conditioned → solver x0 의 vx 를 floor.
+        # ★ 2026-05-29 BUG FIX: 기존엔 startup 게이트 없이 매 cycle raw_vx<floor 면
+        # 적용 → 코너 감속/wedge 정지(v=0)에서도 solver 에 vx=2.0 거짓 전달 →
+        # solver 가 멈춘 걸 못 봐 탈출 못 함(s≈19 영구 wedge) + floor on/off 토글로
+        # 입력 비일관(chatter). → `_has_moved`(차가 한 번이라도 실제로 움직였나, mpc
+        # 의 stuck-detector latch)로 게이트: 출발 전(true standstill)만 floor, 그 후엔
+        # solver 가 진짜 속도를 봄. (검증 대기 — API 복구 후 build+sim.)
         vx_floor = float(self.get_parameter('cold_start_vx_floor').value) \
             if self.has_parameter('cold_start_vx_floor') else 0.0
         raw_vx = float(x0[3]) if (is_dyn and len(x0) > 3) else None
         x0_solve = x0
-        if is_dyn and vx_floor > 0.0 and raw_vx is not None and raw_vx < vx_floor:
+        if (is_dyn and vx_floor > 0.0 and raw_vx is not None and raw_vx < vx_floor
+                and not getattr(self.mpc, '_has_moved', False)):
             x0_solve = x0.copy()
             x0_solve[3] = vx_floor
         t0 = time.monotonic()
@@ -1411,7 +1458,12 @@ class MPCNode(Node):
             if getattr(self.mpc, '_stuck_release_active', False):
                 self._stuck_release_total += 1
                 cmd.drive.speed = -0.5
-                cmd.drive.steering_angle = 0.0
+                # ── Recovery steer toward centerline (was steering=0) ──
+                # 이전: reverse 중 steer=0 → 같은 나쁜 heading 으로 직선 후진 →
+                # 같은 각도로 벽 재접근 → 재끼임 CASCADE.
+                # Fix: 후진 중 centerline 방향으로 조향해 벽에서 멀어지게 함.
+                # ★ 후진 시 steer→yaw 관계가 전진과 반대 → 부호 검증 필요.
+                cmd.drive.steering_angle = self._recovery_steer(x0)
                 # 즉시 reset (5s cooldown 만 유지). 실차 (enable_sim_reset=false)
                 # 에선 publish 해도 무의미 → skip + warn 만.
                 if (time.monotonic() - self._last_reset_t) > 5.0:
@@ -1425,8 +1477,35 @@ class MPCNode(Node):
                     self._stuck_release_total = 0
             else:
                 self._stuck_release_total = 0
-                v_ff = min(v_cap, v_now + 0.5)   # +0.5/cycle = 12.5 m/s² FF (was +1.0 = 25 m/s²)
-                cmd.drive.speed = max(0.0, min(v_cap, max(float(traj[-1, 3]), v_ff)))
+                # 2026-05-29 structural-bug fix: the target vx sent to the gym
+                # PID must reflect the solver's NEAR-TERM plan, not traj[-1, 3]
+                # (horizon-END vx). At a corner the solver brakes now and
+                # re-accelerates after the apex, so traj[-1, 3] stays high
+                # (~post-corner speed) while the immediate plan (a_x<0,
+                # near-step vx) is braking. Commanding the horizon-end vx
+                # ignored the brake entirely → the car plowed into the apex at
+                # full speed and wedged (s≈19 on rand_a). Use the MINIMUM over
+                # the near horizon so a planned brake is honored promptly while
+                # still covering the actuator/PID lag (~0.16 s). A tiny forward
+                # assist applies ONLY from near-standstill so the car can launch
+                # from v=0 — it never overrides braking once the car is moving.
+                # Look at the planned vx over steps 1..n_near (exclude index 0,
+                # which is just the current state). Taking the MIN honors a
+                # planned brake immediately; on a straight where the plan
+                # accelerates, every near step ≥ v_now so the command still
+                # rises (no stall).
+                # near-horizon MIN honors a planned brake promptly (covers ~0.16s
+                # actuator lag) while still rising on straights (min of an
+                # increasing plan = traj[1] ≈ current+step → gradual accel). The
+                # earlier traj[-1] (horizon-end) ignored the brake → plowed into
+                # apex → wedge. (Note: a prior "min kills accel" theory was a
+                # red herring — the slowness was a leftover max_speed=3 config.)
+                n_near = min(5, traj.shape[0])           # steps 1..4 ≈ 0.16 s
+                v_plan = float(np.min(traj[1:n_near, 3])) if n_near > 1 \
+                    else float(traj[-1, 3])
+                if v_now < 0.5:                          # launch-from-rest assist
+                    v_plan = max(v_plan, min(v_cap, v_now + 0.5))
+                cmd.drive.speed = max(0.0, min(v_cap, v_plan))
         else:
             cmd.drive.speed = float(con_first[0])
         cmd.drive.steering_angle = float(con_first[1])

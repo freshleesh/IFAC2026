@@ -193,32 +193,80 @@ def _build(context: LaunchContext, *_args, **_kwargs):
             ld_extra + ":" + os.environ.get("LD_LIBRARY_PATH", ""),
         ))
 
-        mpc_node = TimerAction(period=6.0, actions=[Node(
-            package="nonlinear_mpc_acados",
-            executable="mpc_node",
-            name="mpc_node",
-            parameters=[
-                mpc_params,
-                {
-                    "mpc_backend": "acados",
-                    # simple_mux in_topic 과 매칭: mpc → /vesc/high_level/ackermann_cmd
-                    "cmd_vel_topic_name": "/vesc/high_level/ackermann_cmd",
-                },
-            ],
-            output="screen",
-        )])
-        actions.append(mpc_node)
+        # mpc_disable=true 면 mpc_node 비활성 → mux 가 pp_fallback 사용 (PP baseline 측정용).
+        mpc_disable_str = LaunchConfiguration("mpc_disable").perform(context).lower()
+        if mpc_disable_str not in ("true", "1", "yes"):
+            mpc_node = TimerAction(period=6.0, actions=[Node(
+                package="nonlinear_mpc_acados",
+                executable="mpc_node",
+                name="mpc_node",
+                parameters=[
+                    mpc_params,
+                    {
+                        "mpc_backend": "acados",
+                        # simple_mux in_topic 과 매칭: mpc → /vesc/high_level/ackermann_cmd
+                        "cmd_vel_topic_name": "/vesc/high_level/ackermann_cmd",
+                        # CSV fallback 이 올바른 track 을 로드하도록 — map 이름이
+                        # nonlinear_mpc_acados/share/tracks/track<name>/ 와 매칭.
+                        "track_name": map_name,
+                        # teleport-rescue toggle (검증 시 false 로 raw wedging 노출)
+                        "enable_sim_reset": (
+                            LaunchConfiguration("enable_sim_reset").perform(context).lower()
+                            in ("true", "1", "yes")
+                        ),
+                    },
+                ],
+                output="screen",
+            )])
+            actions.append(mpc_node)
 
-        # ── mpc_debug_logger: 매 cycle CSV (~/mpc_logs/) + 죽는 순간 자동
-        # event dump (~/mpc_logs/events/event_<reason>_*.csv). 별도 노드라
-        # mpc_node 동작에 영향 없음. ROS1 unicorn 의 동명 logger 포팅.
-        debug_logger = TimerAction(period=6.0, actions=[Node(
+            # ── mpc_debug_logger: 매 cycle CSV (~/mpc_logs/) + 죽는 순간 자동
+            # event dump (~/mpc_logs/events/event_<reason>_*.csv).
+            debug_logger = TimerAction(period=6.0, actions=[Node(
+                package="nonlinear_mpc_acados",
+                executable="mpc_debug_logger",
+                name="mpc_debug_logger",
+                output="log",
+            )])
+            actions.append(debug_logger)
+
+        # FTG reactive fallback — kept as secondary safety net (현재 mux 가 안 씀,
+        # 필요 시 fallback_topic 을 /vesc/ftg_fallback 으로 되돌리면 활성).
+        ftg_fallback = Node(
             package="nonlinear_mpc_acados",
-            executable="mpc_debug_logger",
-            name="mpc_debug_logger",
+            executable="ftg_fallback_node",
+            name="ftg_fallback",
+            parameters=[{
+                "scan_topic": "/scan",
+                "cmd_topic":  "/vesc/ftg_fallback",
+                "rate_hz":    20.0,
+                "max_speed":  2.5,
+            }],
             output="log",
-        )])
-        actions.append(debug_logger)
+        )
+        actions.append(ftg_fallback)
+
+        # PP fallback — MPCC 죽으면 mux 가 자동으로 switch. PP baseline 측정 시
+        # wpnts_topic=/global_waypoints (raceline) + max_speed=BO 의 v.
+        pp_wpnts_topic = LaunchConfiguration("pp_wpnts_topic").perform(context)
+        pp_max_speed   = float(LaunchConfiguration("pp_max_speed").perform(context))
+        pp_fallback = Node(
+            package="nonlinear_mpc_acados",
+            executable="pp_fallback_node",
+            name="pp_fallback",
+            parameters=[{
+                "wpnts_topic": pp_wpnts_topic,
+                "odom_topic":  "/car_state/odom",
+                "cmd_topic":   "/vesc/pp_fallback",
+                "rate_hz":     20.0,
+                "max_speed":   pp_max_speed,
+                "lookahead":   1.5,
+                "wheelbase":   0.307,
+                "s_max":       0.4,
+            }],
+            output="log",
+        )
+        actions.append(pp_fallback)
 
         # ── joy (수동/자동 토글). USB joystick 없으면 idle. ──
         joy_node = Node(
@@ -233,7 +281,9 @@ def _build(context: LaunchContext, *_args, **_kwargs):
         # ── auto-engage helper: mpc 가 solver codegen 끝낼 충분한 시간 (~40s)
         # 후에 joy RB(buttons[5])=1 한 번 publish → simple_mux 의 autodrive_latched
         # rising-edge 트리거. 이후엔 joy LB 로 수동 takeover, RB 로 다시 autodrive.
-        auto_engage = TimerAction(period=40.0, actions=[ExecuteProcess(
+        # mpc_disable=true (PP baseline 측정) 시도 발행 — 짧은 timer (5s, codegen 없음).
+        engage_period = 5.0 if mpc_disable_str in ("true", "1", "yes") else 40.0
+        auto_engage = TimerAction(period=engage_period, actions=[ExecuteProcess(
             cmd=[
                 "ros2", "topic", "pub", "--once", "/joy",
                 "sensor_msgs/msg/Joy",
@@ -254,7 +304,13 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("racecar_version", default_value="SIM"),
         DeclareLaunchArgument("mode", default_value="timetrial",
                               description="timetrial | overtake"),
-        # DeclareLaunchArgument("n_obstacles", default_value="auto",
-        #                       description="0=강제 비활성, auto=mode 기준, 정수=강제"),
+        DeclareLaunchArgument("mpc_disable", default_value="false",
+                              description="true → mpc_node 안 띄움. mux 가 pp_fallback 사용 (PP baseline 측정용)"),
+        DeclareLaunchArgument("pp_wpnts_topic", default_value="/centerline_waypoints",
+                              description="PP fallback reference. PP baseline 측정 시 /global_waypoints 로"),
+        DeclareLaunchArgument("pp_max_speed", default_value="2.5",
+                              description="PP fallback max speed. baseline 측정 시 yaml max_speed 와 맞춤"),
+        DeclareLaunchArgument("enable_sim_reset", default_value="true",
+                              description="true → STUCK 시 /initialpose teleport-rescue. false → 실차/검증 (teleport off)"),
         OpaqueFunction(function=_build),
     ])

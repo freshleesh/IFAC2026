@@ -25,8 +25,8 @@ mpc_node:
     vehicle_L: 0.307               # F1TENTH (unicorn FIESTA1) wheelbase
     # Conservative IFAC-demo baseline. event_stuck CSV 에서 차가 outside
     # over-shoot 후 reverse stuck → 박히기 전에 막아야. 6 → 4 (코너 과속 ↓).
-    max_speed: 6.0
-    max_speed_p: 6.0
+    max_speed: 5.0
+    max_speed_p: 5.0
     # 풀-스티어 (±0.4) 가 over-shoot 의 직접 원인. 0.4 → 0.3 으로 cap.
     # 헤어핀 통과 가능한 최소값: arctan(L / R_min) 기준 L=0.307, R_min≈0.7
     # → 0.4 rad. 그러나 mpc 가 미리 조향하므로 0.3 으로도 충분.
@@ -39,7 +39,7 @@ mpc_node:
     cold_start_vx_floor: 2.0
     startup_speed: 1.5
     dT: 0.04                       # 0.025→0.04 (25Hz control rate). multi-dt 와 결합 — 첫 step.
-    N_horizon: 60                  # autoreg v=6: lookahead 14.399999999999999 m
+    N_horizon: 50                  # autoreg v=5: lookahead 10.0 m
     # time_steps_mode: 'uniform' (모든 step dt=dT) 또는 'pyramidal' (multi-dt: 가까이 sharp + 멀리 long planning).
     # pyramidal: dt = [dT]*20 + [dT*1.5]*30 + [dT*2.5]*30
     #   = [0.04]*20 + [0.06]*30 + [0.10]*30 → 0.8 + 1.8 + 3.0 = 5.6s horizon
@@ -110,7 +110,7 @@ mpc_node:
     # K1 (2026-05-29): autoreg_speed_bo.sh 가 stage 별로 max_speed 직접 set →
     # 한 launch 안의 auto_step ramp 와 모순 (v=7 stage 에 end=6 이면 cap 충돌).
     # autoreg sweep 중에는 disable. 단일 launch v ramp 필요 시 다시 true.
-    auto_step_enable: true
+    auto_step_enable: false  # autoreg BO 가 stage 별 max_speed 직접 set → auto_step ramp 와 충돌 (K1). BO sweep 중 off.
     auto_step_start: 5.0
     auto_step_end: 6.0
     auto_step_size: 0.5
@@ -121,7 +121,7 @@ mpc_node:
     # historical states) + regularization. lap-by-lap value function 학습으로
     # tire-model mismatch (gym ST vs MPCC Pacejka) 를 자동 보상.
     # use_lmpc=false (default) — LMPC term cost weight = 0, 기존 동작 동일.
-    use_lmpc: true             # 2026-05-29 사용자 의도: LMPC 유지 (map-aware seed → warmup lap 불필요). K1 LMPC-off 철회.
+    use_lmpc: false            # 2026-05-29 #10 검증: 현재 LMPC가 퇴화시킴(lap 28.7→34.5→35.7→41.6s). stuck-ridden lap이 SS에 accepted(n_resets=0이 stuck-reverse 못잡음)→SS 오염 + base가 clean lap 못만듦. LMPC 코드 유지, clean base(BO후)+필터강화 후 재가동(폐기 아님, 시기상조).
     lmpc_w: 0.1                # softmin term 가중 (acados W_e 의 lmpc residual entry 1.0 × lmpc_w)
     lmpc_alpha: 1.0            # distance penalty in g_i = Q_i + α·d_i²
     lmpc_beta: 0.01            # 0.05→0.01 (reviewer #★4: softmin 더 부드럽게, QP_Failure 회피) (reviewer 권장: Q step-count 라 β 작게)
@@ -192,11 +192,11 @@ mpc_node:
     # (PP 15.66, -8.6%; ideal 13.73, +4.3%; n_resets=2 안정; v_avg=4.99)
     # v=4 Phase A best (q_p=4.28 dominant) 과 정반대: v=6 에서는 q_cte=4.96 strong + q_p=0.42 약.
     # 빠른 차일수록 "centerline 단단히 추종 + anti-osc 강하게" 가 안전.
-    q_cte_scale_live: 0.4600
-    q_lag_scale_live: 1.7284
-    q_psi_scale_live: 0.9226
-    q_v_scale_live: 0.4446 # BO 값 복원. q_v 0.44→1.5→3.0 실험 결과 near-stop 33→51→64% 단조 악화 → q_v 가설 기각(문제는 과속 아니라 wedge/stuck). 진짜 레버는 조향/stuck-detector.
+    q_cte_scale_live: 3.7900
+    q_lag_scale_live: 1.1397
+    q_psi_scale_live: 2.7014
+    q_v_scale_live: 0.6766
     q_dd_scale_live: 1.0       # not in BO
-    q_p_scale_live: 3.2469
-    q_drate_scale_live: 0.6590
-    q_dv_scale_live: 0.6061
+    q_p_scale_live: 4.7412
+    q_drate_scale_live: 2.6314
+    q_dv_scale_live: 0.3225
