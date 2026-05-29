@@ -41,6 +41,7 @@ from visualization_msgs.msg import Marker, MarkerArray
 from tf2_ros import TransformBroadcaster
 
 import gymnasium as gym  # f110_gym 0.3.0 uses gymnasium API
+from f110_gym.envs.base_classes import Integrator  # RK4 (default) → Euler 로 step 4× 가속
 import numpy as np
 import cv2
 import threading
@@ -137,6 +138,8 @@ class GymBridge(Node):
                             num_agents=num_agents,
                             num_beams=scan_beams,
                             scan_fov=scan_fov,
+                            integrator=Integrator.Euler,
+                            timestep=0.02,   # 100Hz → 50Hz physics
                             disable_env_checker=True)
 
         sx = self.get_parameter('sx').value
@@ -192,11 +195,12 @@ class GymBridge(Node):
                 poses=np.array([[sx, sy, stheta]]))
             self.ego_scan = list(self.obs['scans'][0])
 
-        # sim physical step timer
+        # sim physical step timer — 100Hz → 50Hz (CPU 못 따라가던 burst 해소).
+        # env.timestep 도 0.02 로 같이 늘려야 real-time-correct.
         cb_group1= ReentrantCallbackGroup()
-        self.drive_timer = self.create_timer(0.01, self.drive_timer_callback, callback_group=cb_group1)
+        self.drive_timer = self.create_timer(0.02, self.drive_timer_callback, callback_group=cb_group1)
         # topic publishing timer
-        self.timer = self.create_timer(0.01, self.timer_callback, callback_group=cb_group1)
+        self.timer = self.create_timer(0.02, self.timer_callback, callback_group=cb_group1)
 
         # transform broadcaster
         self.br = TransformBroadcaster(self)
@@ -467,7 +471,12 @@ class GymBridge(Node):
             cv2.fillPoly(self.current_map_img, [corners_px], 0)
 
     def _update_gym_map(self):
-        """Render obstacles, update gym DT, and publish /map."""
+        """Render obstacles, update gym DT, and publish /map.
+
+        Throttled: occupancy grid publish is the hot path (600x600 tolist →
+        50-200ms). Limit to ≤1Hz so the sim timer can stay real-time.
+        장애물 변경은 cv2 redraw 만 즉시 반영 (≤5ms), publish 는 1Hz.
+        """
         if self.base_map_img is None:
             return
 
@@ -486,8 +495,14 @@ class GymBridge(Node):
                 flipped, self.map_resolution,
                 self.map_origin_x, self.map_origin_y)
 
-        # Publish updated /map
-        self._publish_occupancy_grid()
+        # Publish updated /map — throttled to 1Hz to avoid sim stall.
+        import time as _t
+        now = _t.monotonic()
+        if not hasattr(self, '_last_map_pub_t'):
+            self._last_map_pub_t = 0.0
+        if now - self._last_map_pub_t >= 1.0:
+            self._publish_occupancy_grid()
+            self._last_map_pub_t = now
 
     def _publish_occupancy_grid(self):
         """Convert current map image to OccupancyGrid and publish."""
@@ -515,9 +530,17 @@ class GymBridge(Node):
         self.map_pub.publish(grid_msg)
 
     def drive_timer_callback(self):
-        # Update map if obstacles changed (DT recalculation)
-        if self.map_needs_update:
-            self._update_gym_map()
+        import time as _t
+        _t0 = _t.perf_counter()
+        # Map update DISABLED in sim timer (2026-05-18).
+        # f110_gym 0.2.1 의 update_map_from_array 가 no-op 이라 dynamic obstacle 은
+        # 어차피 LiDAR 충돌맵에 안 잡힘. /map publish 도 GridFilter 가 시작 시 1번만
+        # 받으면 되므로 매 cycle redraw + publish 가 헛수고 → 100-200ms 스파이크 원인.
+        # 시작 시 base map 한 번 publish 된 것만 사용. 이후 update 차단.
+        # if self.map_needs_update:
+        #     self._update_gym_map()
+        self.map_needs_update = False  # 영구 비활성
+        _t1 = _t.perf_counter()
 
         # Always step the simulation to generate new scan noise
         if not self.has_opp:
@@ -526,8 +549,20 @@ class GymBridge(Node):
         elif self.has_opp and self.opp_drive_published:
             self.obs, _, self.done, _ = self.env.step(np.array(
                 [[self.ego_steer, self.ego_requested_speed], [self.opp_steer, self.opp_requested_speed]]))
+        _t2 = _t.perf_counter()
         self.ts = self.get_clock().now().to_msg()
         self._update_sim_state()
+        _t3 = _t.perf_counter()
+
+        # Throttled profile log (every ~50 cycles ≈ 1s at 50Hz)
+        if not hasattr(self, '_prof_cnt'): self._prof_cnt = 0
+        self._prof_cnt += 1
+        if self._prof_cnt % 50 == 0:
+            ms_map  = (_t1 - _t0) * 1000.0
+            ms_step = (_t2 - _t1) * 1000.0
+            ms_upd  = (_t3 - _t2) * 1000.0
+            self.get_logger().info(
+                f"[prof] map={ms_map:.2f}ms  env.step={ms_step:.2f}ms  update_state={ms_upd:.2f}ms  total={(ms_map+ms_step+ms_upd):.2f}ms")
 
     def timer_callback(self):
         # pub scans
@@ -577,6 +612,26 @@ class GymBridge(Node):
         self.ego_speed[0] = self.obs['linear_vels_x'][0]
         self.ego_speed[1] = self.obs['linear_vels_y'][0]
         self.ego_speed[2] = self.obs['ang_vels_z'][0]
+
+        # === Real lateral velocity recovery (contamination-safe) ===
+        # f110_gym's obs hardcodes linear_vels_y = 0 (base_classes.py:621), but the
+        # 7-state Single-Track DYNAMIC model carries the true motion: state[3] is the
+        # TOTAL speed v at the CoM and state[6] is the slip angle β (velocity vector
+        # angle relative to chassis heading; see dynamic_models.py global eqns
+        # xdot=v*cos(β+ψ), ydot=v*sin(β+ψ)). Body-frame components are therefore
+        # v_x = v*cos(β), v_y = v*sin(β). We read the internal agent state directly
+        # via env.unwrapped.sim.agents[0] (READ ONLY — f110_gym is untouched) and
+        # overwrite the body-frame velocities so the published ego odom twist carries
+        # the real lateral velocity instead of the obs's hardcoded 0.
+        try:
+            ego_state = self.env.unwrapped.sim.agents[0].state
+            v = float(ego_state[3])      # total speed at CoM
+            beta = float(ego_state[6])   # slip angle β [rad]
+            self.ego_speed[0] = v * np.cos(beta)  # body-frame v_x
+            self.ego_speed[1] = v * np.sin(beta)  # body-frame v_y (was hardcoded 0)
+        except (AttributeError, IndexError, TypeError):
+            # If internal state is ever unreachable, keep obs values (v_y stays 0).
+            pass
 
     def _publish_odom(self, ts):
         ego_odom = Odometry()

@@ -50,10 +50,14 @@ from rclpy.parameter import Parameter
 from rclpy.qos import QoSProfile, QoSDurabilityPolicy, QoSReliabilityPolicy
 
 from .track_loader import TrackData, build_track_from_wpnts, find_current_arc_length, load_track
+# 2026-05-28 #18 LMPC integration
+from .mpc_core.lmpc.lap_database import LapDatabase
+from .mpc_core.lmpc.safe_set import SafeSetLookup
 
-from std_msgs.msg import Bool, ColorRGBA, Float32MultiArray, Float64, Header
+from std_msgs.msg import Bool, ColorRGBA, Float32MultiArray, Float64, Header, Int32
 from geometry_msgs.msg import (
-    Point, PointStamped, PoseArray, PoseStamped, Quaternion, Vector3,
+    Point, PointStamped, PoseArray, PoseStamped, PoseWithCovarianceStamped,
+    Quaternion, Vector3,
 )
 from nav_msgs.msg import Odometry, Path
 from visualization_msgs.msg import Marker, MarkerArray
@@ -142,6 +146,7 @@ LIVE_PARAMS = [
     ('q_dd_scale_live', 1.0),
     ('q_p_scale_live', 1.0),
     ('q_drate_scale_live', 1.0),
+    ('q_dv_scale_live',    1.0),   # 2026-05-27 #8 — a_x penalty
 ]
 
 
@@ -178,6 +183,20 @@ class MPCNode(Node):
         self.declare_parameter('mpc_max_steering', 0.4)
         self.declare_parameter('dT', 0.025)
         self.declare_parameter('N_horizon', 18)
+        # ── Cold-start / low-speed conditioning (2026-05-29) ──
+        # MPPI init_vel 기법: 정지·저속에서 dynamic Pacejka 모델은 vx→0 에서
+        # slip atan2 항이 ill-conditioned → cost surface 가 δ 에 거의 flat →
+        # solver 가 ±zigzag (진단: v<2 에서 steer chatter 2.6배). 해결책:
+        #   (a) solver 에 넘기는 x0 의 vx 를 floor (모델이 항상 well-conditioned
+        #       영역에서 풂) → 저속 chatter 제거.
+        #   (b) 실측 vx 가 floor 미만이면 출력 speed 를 startup_speed 로 floor
+        #       → 차가 가속해 floor 를 넘김 (PP warmup ramp 불필요, t=0 부터 MPCC).
+        # floor=0 → 비활성 (기존 동작). 둘 다 같은 root cause (저속 ill-cond) 해결.
+        self.declare_parameter('cold_start_vx_floor', 2.0)
+        self.declare_parameter('startup_speed', 1.5)
+        # multi-dt time_steps mode: 'uniform' (모든 step dt=dT) | 'pyramidal' (가까이 sharp, 멀리 long).
+        # pyramidal 은 horizon 늘어남 — 다음 코너까지 보여 racing line 발견 ↑.
+        self.declare_parameter('time_steps_mode', 'uniform')
         self.declare_parameter('integration_mode', 'Euler')
         self.declare_parameter('params_file', 'BO_params_LTM')
         # Track source: 'centerline' (/centerline_waypoints) or 'raceline'
@@ -185,6 +204,83 @@ class MPCNode(Node):
         # 가 racing line 추종 — 코너에서 자연스럽게 apex 통과 (EVO-MPCC /
         # Liniger MPCC 의 표준 패턴).
         self.declare_parameter('track_source', 'centerline')
+        # auto_tune=true → max_speed 만 사용자 설정, 나머지 cost weights /
+        # corridor / EMA 등은 _auto_tune_from_max_speed() 의 heuristic 매핑
+        # 으로 자동 결정. mpc init 시 1회 적용.
+        self.declare_parameter('auto_tune', False)
+        # C: MLP weight scaler (학습된 모델로 q_*_scale_live 결정).
+        # use_ml_scale=true 면 B heuristic 대신 NN 추론 사용.
+        # ml_model_path: TorchScript .pt 경로. 빈 문자열이면 default 위치.
+        self.declare_parameter('use_ml_scale', False)
+        self.declare_parameter('ml_model_path', '')
+        # BO sweep / 수동 override 모드.
+        #   'off'        → MLP/B 그대로 (기본)
+        #   'fixed'      → override_q_*_scale 4개 고정값 적용
+        #   'bucketed'   → κ_abs 기반 3 bucket × 4 scale = 12 param 적용 (BO 학습용)
+        #   'polynomial' → BO 결과로 학습된 poly(v) → bucket 별 scale (실시간 deploy)
+        self.declare_parameter('override_mode', 'off')
+        self.declare_parameter('poly_path', '')   # polynomial JSON 경로 (override_mode='polynomial')
+        # ── Dynamic Pacejka 모드 (8-state, tire slip 모델링) ──
+        # use_dynamic=False (kinematic, 5-state): 빠르지만 high-speed grip 한계 무시
+        # use_dynamic=True  (dynamic, 8-state):   tire slip 정확, 표준 race MPC
+        # dyn_tire_model: 'linear' (안전·빠름) / 'tanh' (saturation) / 'pacejka' (정확·불안정 가능)
+        self.declare_parameter('use_dynamic', False)
+        self.declare_parameter('dyn_tire_model', 'linear')
+        # Phase D — GP residual learning (L4acados ResidualLearningMPC wrap).
+        # use_gp_residual=true & gp_ckpt_path 존재 → setup_MPC 후 GP 적용.
+        self.declare_parameter('use_gp_residual', False)
+        self.declare_parameter('gp_ckpt_path', '')
+        # Phase D (closed-form) — adds the trained GP posterior mean as a pure
+        # CasADi expression to the dynamics ONLY (cost/p_sym untouched).
+        # Independent of use_gp_residual (l4acados). Default OFF.
+        self.declare_parameter('use_gp_casadi', False)
+        # 실차 모드: /sim/initialpose 없음. STUCK recovery 시도해도 무의미 + 위험.
+        # sim=true (default) / real=false.
+        self.declare_parameter('enable_sim_reset', True)
+        # fixed mode (W1) — 단일 4 scale.
+        self.declare_parameter('override_scales', False)  # legacy: true → 'fixed' 와 동일
+        self.declare_parameter('override_q_cte_scale', 1.0)
+        self.declare_parameter('override_q_lag_scale', 1.0)
+        self.declare_parameter('override_q_v_scale', 1.0)
+        self.declare_parameter('override_q_drate_scale', 1.0)
+        # bucketed mode (W2) — bucket boundaries (κ_abs):
+        #   b0: κ ∈ [0,         bucket_kappa_b01)    → 직선/완만
+        #   b1: κ ∈ [b01,       bucket_kappa_b12)    → medium corner
+        #   b2: κ ∈ [b12,       +∞)                  → hairpin
+        self.declare_parameter('bucket_kappa_b01', 0.3)
+        self.declare_parameter('bucket_kappa_b12', 0.6)
+        for b in (0, 1, 2):
+            self.declare_parameter(f'override_q_cte_scale_b{b}',   1.0)
+            self.declare_parameter(f'override_q_lag_scale_b{b}',   1.0)
+            self.declare_parameter(f'override_q_v_scale_b{b}',     1.0)
+            self.declare_parameter(f'override_q_drate_scale_b{b}', 1.0)
+        # 데이터 수집 모드: lap 마다 effective max_speed 자동 증가.
+        # codegen v_max (yaml max_speed) 는 end_speed 로 고정 → ubu cap.
+        # 시작 시 mpc.v_max = start_speed → 매 lap_per_step 마다 step 증가.
+        self.declare_parameter('auto_step_enable', False)
+        self.declare_parameter('auto_step_start', 4.0)
+        self.declare_parameter('auto_step_end', 12.0)
+        self.declare_parameter('auto_step_size', 1.0)
+        self.declare_parameter('auto_step_laps', 5)
+
+        # ── LMPC (Learning MPC) parameters (2026-05-28 #18) ──
+        self.declare_parameter('use_lmpc', False)
+        self.declare_parameter('lmpc_w', 1.0)
+        self.declare_parameter('lmpc_alpha', 1.0)
+        self.declare_parameter('lmpc_beta', 0.05)
+        self.declare_parameter('lmpc_reg_w', 0.001)
+        self.declare_parameter('lmpc_K_points', 10)
+        self.declare_parameter('lmpc_K_laps', 4)
+        self.declare_parameter('lmpc_slice_window', 50)
+        self.declare_parameter('lmpc_enable_after_real_laps', 1)
+        self.declare_parameter('lmpc_load_path', '')
+        self.declare_parameter('lmpc_save_path', '')
+        self.declare_parameter('lmpc_seed_from_raceline', True)
+        self.declare_parameter('lmpc_max_resets', 3)
+        self.declare_parameter('lmpc_max_abs_ec_m', 1.0)
+        self.declare_parameter('lmpc_max_lap_time_ratio', 1.5)
+        self.declare_parameter('lmpc_max_stuck_seconds', 5.0)
+        self.declare_parameter('lmpc_buffer_per_bucket', 10)
         # Vehicle dynamics (only `l_wb` consumed in kinematic mode; full set
         # used by acados dynamic Pacejka mode — kept here so swapping
         # use_dynamic doesn't require config changes.)
@@ -222,6 +318,14 @@ class MPCNode(Node):
         self.solve_time_pub = self.create_publisher(Float64, '/mpc/solve_time', 10)
         self.feasible_pub = self.create_publisher(Bool, '/mpc/is_feasible', 10)
         self.mpc_debug_pub = self.create_publisher(Float32MultiArray, '/mpc_debug', 10)
+        # Agent A round-3 fix: gym 의 in_collision latch (base_classes.py:288) 가
+        # wall contact 시 integration 완전 skip → reverse cmd 도 무시. /sim/initialpose
+        # (gym_bridge_launch.py 의 remap target) publish → ego_reset_callback →
+        # env.reset() 로 latch 해제. 5s cooldown 으로 폭주 방지.
+        self.initialpose_pub = self.create_publisher(
+            PoseWithCovarianceStamped, '/sim/initialpose', 10)
+        self._stuck_release_total = 0
+        self._last_reset_t = 0.0
         # Latched (TRANSIENT_LOCAL) viz publishers — small-sphere MarkerArray
         # in the style of race-stack's /centerline_waypoints/markers (type=2
         # SPHERE, scale 0.05). Different color per topic so RViz tells them
@@ -285,8 +389,83 @@ class MPCNode(Node):
         self._track_fallback_timer = self.create_timer(
             self._track_csv_fallback_sec, self._track_csv_fallback_cb)
 
+        # ── C: ML weight scaler load (use_ml_scale=true 면) ────────────
+        self._load_ml_scaler()
+        # ── D: BO-learned polynomial coefficients (override_mode='polynomial' 시) ──
+        self._load_polynomial()
+
+        # ── 자동 max_speed stepper (auto_step_enable=true 면) ──
+        # 같은 launch 안에서 lap 카운트 기반으로 effective v_max 자동 증가.
+        # codegen ubu cap 은 yaml max_speed (예: 12) 로 고정 — 그게 절대 상한.
+        # mpc.v_max (cost target) 만 step 마다 변경.
+        self._auto_step_state = {
+            'enabled':      bool(self.get_parameter('auto_step_enable').value),
+            'start':        float(self.get_parameter('auto_step_start').value),
+            'end':          float(self.get_parameter('auto_step_end').value),
+            'size':         float(self.get_parameter('auto_step_size').value),
+            'laps':         int(self.get_parameter('auto_step_laps').value),
+            'last_lap':     -1,
+            'lap_at_step':  0,
+            'current_step': 0,
+        }
+        if self._auto_step_state['enabled']:
+            self.create_subscription(Int32, '/mpc/lap_count',
+                                     self._on_lap_count_step, 10)
+            # 시작 시 mpc.v_max 를 start_speed 로 (auto_tune 동시 트리거).
+            # 단 mpc 초기화 후에야 self.mpc 존재 → wpnt callback 안의 후처리
+            # 가 더 안전하므로 여기선 state 만 저장. 실제 적용은 _initialize_mpc
+            # 끝에서 _set_effective_max_speed() 호출 (아래 추가).
+            self.get_logger().info(
+                f"[auto_step] enabled: {self._auto_step_state['start']:.1f} → "
+                f"{self._auto_step_state['end']:.1f} m/s, "
+                f"+{self._auto_step_state['size']:.1f} / "
+                f"{self._auto_step_state['laps']} lap")
+
+        # ── LMPC infrastructure (2026-05-28 #18) ────────────────────
+        self._lmpc_use = bool(self.get_parameter('use_lmpc').value)
+        self._lmpc_db = LapDatabase(
+            buffer_per_bucket=int(self.get_parameter('lmpc_buffer_per_bucket').value),
+            max_resets_accept=int(self.get_parameter('lmpc_max_resets').value),
+            min_lap_steps=50,
+            max_lap_time_ratio=float(self.get_parameter('lmpc_max_lap_time_ratio').value),
+            max_abs_ec_m=float(self.get_parameter('lmpc_max_abs_ec_m').value),
+            max_stuck_seconds=float(self.get_parameter('lmpc_max_stuck_seconds').value),
+        )
+        self._lmpc_ss = SafeSetLookup(
+            self._lmpc_db,
+            K_points=int(self.get_parameter('lmpc_K_points').value),
+            K_laps=int(self.get_parameter('lmpc_K_laps').value),
+            slice_window=int(self.get_parameter('lmpc_slice_window').value),
+        )
+        self._lmpc_enable_after = int(self.get_parameter('lmpc_enable_after_real_laps').value)
+        self._lmpc_load_path = str(self.get_parameter('lmpc_load_path').value).strip()
+        self._lmpc_save_path = str(self.get_parameter('lmpc_save_path').value).strip()
+        self._lmpc_seed_raceline = bool(self.get_parameter('lmpc_seed_from_raceline').value)
+        # cost weights (passed through mpc.lmpc_*_live attrs every cycle)
+        self._lmpc_w_target     = float(self.get_parameter('lmpc_w').value)
+        self._lmpc_alpha        = float(self.get_parameter('lmpc_alpha').value)
+        self._lmpc_beta         = float(self.get_parameter('lmpc_beta').value)
+        self._lmpc_reg_w        = float(self.get_parameter('lmpc_reg_w').value)
+        # Per-lap state/input/timestep accumulator (cleared on lap end)
+        self._lmpc_lap_buf = {
+            'state': [], 'input': [], 'time': [],
+            'lap_start_t': None, 'last_lap': -1,
+            'max_abs_ec': 0.0, 'stuck_seconds_accum': 0.0,
+            'n_resets_in_lap': 0,
+        }
+        self.get_logger().info(
+            f"[LMPC] use_lmpc={self._lmpc_use}  enable_after_real_laps={self._lmpc_enable_after}  "
+            f"seed_raceline={self._lmpc_seed_raceline}  load={self._lmpc_load_path or '(none)'}  "
+            f"save={self._lmpc_save_path or '(none)'}")
+        # Defer raceline seed + npz load until after track loaded (mpc setup) —
+        # called in `_initialize_mpc` end-of-setup hook.
+
         # ── Control loop ────────────────────────────────────────────
-        period = 1.0 / self.CONTROLLER_FREQ
+        # period = yaml dT 와 일치 (MPC 의 첫 step dt 와 같게).
+        # multi-dt 면 dT 는 가까이 step 의 dt (sharp control rate).
+        period = float(self.get_parameter('dT').value)
+        # CONTROLLER_FREQ 는 1/dT 로 동기화 (display 용).
+        self.CONTROLLER_FREQ = 1.0 / period
         self.control_timer = self.create_timer(period, self._control_loop_cb)
 
         self.get_logger().info(
@@ -331,6 +510,7 @@ class MPCNode(Node):
             'mpc_vp_project': float(bo['gamma']),
             'N': int(gp('N_horizon').value),
             'dT': float(gp('dT').value),
+            'time_steps_mode': str(gp('time_steps_mode').value) if self.has_parameter('time_steps_mode') else 'uniform',
             'theta_max': float(gp('mpc_max_steering').value),
             'v_max': float(gp('max_speed').value),
             'p_min': 0.0,
@@ -384,7 +564,286 @@ class MPCNode(Node):
                 f"MPC CSV-fallback init failed: {e}. Control loop will idle.")
             self._mpc_ready = False
 
+    def _set_effective_max_speed(self, v: float) -> None:
+        """Live update of mpc cost target v_max (acados ubu cap unchanged).
+        auto_tune 매핑도 재계산하여 q_lag/q_cte/EMA 등 effective 기반 갱신."""
+        v = float(v)
+        try:
+            self.mpc.v_max = v       # cost target (p_v - v_max) residual
+            self.mpc.p_max = v       # progress upper bound
+        except Exception:
+            pass
+        # auto_tune 매핑 즉시 적용 (q_lag, q_cte, alpha 등)
+        if bool(self.get_parameter('auto_tune').value):
+            self._auto_tune_from_max_speed(v_override=v)
+        self.get_logger().info(f"[auto_step] effective v_max → {v:.2f} m/s")
+
+    # =================================================================
+    # LMPC integration helpers (2026-05-28 #18)
+    # =================================================================
+    def _lmpc_load_or_seed(self) -> None:
+        """After mpc setup, optionally load SS from npz or seed from raceline."""
+        if not hasattr(self, 'mpc') or self.mpc is None:
+            return
+        # 1) npz load (highest priority — pre-trained SS)
+        if self._lmpc_load_path:
+            from os.path import expanduser
+            path = expanduser(self._lmpc_load_path)
+            try:
+                self._lmpc_db.load_all(path)
+                self.get_logger().info(f"[LMPC] loaded SS from {path}: {self._lmpc_db.summary()}")
+            except Exception as e:
+                self.get_logger().warn(f"[LMPC] load failed ({path}): {e}")
+
+        # 2) raceline seed (cold start: 우리는 map 다 알아서 first lap 도 raceline 추종 of SS)
+        if self._lmpc_seed_raceline and self._track is not None:
+            try:
+                v_max_now = float(getattr(self.mpc, 'v_max', 5.0))
+                tr = self._track
+                # Raw centerline (N_orig × 2) — non-extended, non-inflated original lane
+                cl = tr.raw_center_lane if tr.raw_center_lane is not None else tr.center_lane
+                xy = np.asarray(cl, dtype=float)
+                # s grid (raw original arc length)
+                s_arr = np.asarray(tr.element_arc_lengths_orig, dtype=float)[:len(xy)]
+                # ψ from center_point_angles, fallback to finite-diff
+                if tr.center_point_angles is not None and len(tr.center_point_angles) >= len(xy):
+                    psi = np.asarray(tr.center_point_angles, dtype=float)[:len(xy)]
+                else:
+                    dx = np.diff(xy[:, 0], append=xy[0, 0])
+                    dy = np.diff(xy[:, 1], append=xy[0, 1])
+                    psi = np.arctan2(dy, dx)
+                # ref_v from CasADi LUT — sample at each s. fallback uniform 0.8*v_max.
+                try:
+                    v_arr = np.array([float(tr.lut_ref_v(s)) for s in s_arr])
+                except Exception:
+                    v_arr = np.full(len(xy), v_max_now * 0.8)
+                ok = self._lmpc_db.seed_from_raceline(v_max_now, xy, psi, v_arr, s_arr)
+                if ok:
+                    self.get_logger().info(
+                        f"[LMPC] raceline-seeded synthetic lap @ v={v_max_now:.1f}: "
+                        f"{self._lmpc_db.summary()}")
+                else:
+                    self.get_logger().warn("[LMPC] raceline seed rejected (filter)")
+            except Exception as e:
+                import traceback
+                self.get_logger().warn(f"[LMPC] raceline seed failed: {e}\n{traceback.format_exc()}")
+
+    def _lmpc_update_per_cycle(self, x0: np.ndarray, s_now: float, is_dyn: bool) -> None:
+        """Every control cycle: (a) accumulate state into lap buffer, (b) SS query → set mpc attrs."""
+        if not self._lmpc_use:
+            # LMPC OFF — ensure weights are 0 (in case toggled at runtime)
+            self.mpc.lmpc_w_live = 0.0
+            return
+
+        # (a) Accumulate this cycle's 8-state x0 (extended) + estimate e_c.
+        # x0 from _current_state_4 is (4 or 7)-dim — we need 8-state for LapDatabase
+        # (px, py, ψ, vx, vy, r, s, δ_prev). For accumulation we approximate
+        # missing dims with the previous best estimate from solver.
+        if is_dyn and x0.shape[0] >= 7:
+            state8 = np.zeros(8)
+            state8[0:7] = x0[0:7]
+            state8[7] = float(getattr(self.mpc, '_v_cmd_for_stuck', 0.0))   # δ_prev proxy
+        else:
+            # kinematic fallback — vy, r, s, δ_prev fill with 0
+            state8 = np.zeros(8)
+            state8[0] = float(x0[0]); state8[1] = float(x0[1])
+            state8[2] = float(x0[2])
+            state8[6] = float(s_now)
+        self._lmpc_lap_buf['state'].append(state8.copy())
+        self._lmpc_lap_buf['time'].append(time.monotonic())
+        # max |e_c| running max (e_c estimated via CasADi center LUT)
+        try:
+            cx = float(self._track.center_lut_x(s_now))
+            cy = float(self._track.center_lut_y(s_now))
+            ec_est = float(np.hypot(state8[0] - cx, state8[1] - cy))
+            self._lmpc_lap_buf['max_abs_ec'] = max(self._lmpc_lap_buf['max_abs_ec'], ec_est)
+        except Exception:
+            pass
+        # n_resets — track from STUCK release flag if present
+        self._lmpc_lap_buf['n_resets_in_lap'] = getattr(self.mpc, '_stuck_release_total', 0)
+
+        # (b) SS query → set mpc attrs (these are picked up by p_arr builder
+        # at next set call in mpc.solve()).
+        v_bucket = float(getattr(self.mpc, 'v_max', 5.0))
+        # Activate only after enough real laps in this v bucket
+        n_real = self._lmpc_db.n_real_laps(v_bucket)
+        if n_real < self._lmpc_enable_after:
+            self.mpc.lmpc_w_live = 0.0
+            return
+
+        # Query SS — z_t = current state8 (we use current state as horizon-end proxy
+        # for now; proper: use mpc's predicted x_N from previous solve)
+        try:
+            track_L = float(self._track.element_arc_lengths_orig[-1]) if (
+                self._track.element_arc_lengths_orig is not None
+                and len(self._track.element_arc_lengths_orig) > 0
+            ) else 80.0
+            res = self._lmpc_ss.query(state8, v_bucket, s_curr=s_now, track_length=track_L)
+        except Exception as e:
+            self.get_logger().warn(f"[LMPC] query failed: {e}", throttle_duration_sec=2.0)
+            self.mpc.lmpc_w_live = 0.0
+            return
+
+        if not res.is_ready:
+            self.mpc.lmpc_w_live = 0.0
+            return
+
+        # Pack SS into (4, K) state matrix (px, py, ψ, vx) + (K,) Q
+        K = 10  # acados-side hardcoded
+        ss_states = np.zeros((4, K))
+        ss_Q = np.full(K, 1e6)  # padding = 1e6 → exp(-β·1e6)≈0 자연 무시
+        for i in range(min(res.K, K)):
+            ss_states[0, i] = res.states[i, 0]
+            ss_states[1, i] = res.states[i, 1]
+            ss_states[2, i] = res.states[i, 2]
+            ss_states[3, i] = res.states[i, 3]
+            ss_Q[i] = res.cost_to_go[i]
+        self.mpc._lmpc_ss_states = ss_states
+        self.mpc._lmpc_ss_Q = ss_Q
+        self.mpc.lmpc_w_live     = self._lmpc_w_target
+        self.mpc.lmpc_alpha_live = self._lmpc_alpha
+        self.mpc.lmpc_beta_live  = self._lmpc_beta
+        self.mpc.lmpc_reg_w_live = self._lmpc_reg_w
+
+    def _lmpc_on_lap_end(self, lap_idx: int) -> None:
+        """Called from _on_lap_count_step when lap counter increments —
+        finalize current lap buffer, push to LapDatabase if filters pass."""
+        buf = self._lmpc_lap_buf
+        if not buf['state'] or buf['last_lap'] < 0:
+            # First lap_count event ever — reset buffer for next lap
+            buf['state'] = []; buf['input'] = []; buf['time'] = []
+            buf['lap_start_t'] = time.monotonic()
+            buf['max_abs_ec'] = 0.0
+            buf['n_resets_in_lap'] = getattr(self.mpc, '_stuck_release_total', 0)
+            buf['last_lap'] = lap_idx
+            return
+
+        # Build arrays
+        states = np.array(buf['state'])
+        T = states.shape[0]
+        inputs = np.zeros((max(T - 1, 1), 2))   # actual input log skipped (P2)
+        t_arr = np.array(buf['time']) - buf['lap_start_t'] if buf['lap_start_t'] else np.linspace(0, T * 0.04, T)
+        lap_time = float(t_arr[-1] - t_arr[0]) if T > 1 else 0.0
+        # n_resets in this lap = delta since lap start
+        n_resets = max(0, buf['n_resets_in_lap'])
+
+        v_bucket = float(getattr(self.mpc, 'v_max', 5.0))
+        meta = {
+            'lap_idx': lap_idx,
+            'max_abs_ec': float(buf['max_abs_ec']),
+            'stuck_seconds': float(buf.get('stuck_seconds_accum', 0.0)),
+        }
+        ok = self._lmpc_db.add_lap(v_bucket, states, inputs, t_arr,
+                                    lap_time, n_resets=n_resets, metadata=meta)
+        reject_reason = getattr(self._lmpc_db, 'last_reject_reason', '') if not ok else ''
+        self.get_logger().info(
+            f"[LMPC] lap {lap_idx} buffered: v_bucket={v_bucket:.1f} T={T} "
+            f"lap_time={lap_time:.2f}s n_resets={n_resets} accepted={ok}"
+            + (f" reject_reason='{reject_reason}'" if reject_reason else "")
+            + f" max_abs_ec={meta['max_abs_ec']:.2f}m\n  db: {self._lmpc_db.summary()}")
+
+        # Reset buffer for next lap
+        buf['state'] = []; buf['input'] = []; buf['time'] = []
+        buf['lap_start_t'] = time.monotonic()
+        buf['max_abs_ec'] = 0.0
+        buf['n_resets_in_lap'] = getattr(self.mpc, '_stuck_release_total', 0)
+        buf['last_lap'] = lap_idx
+
+    def _lmpc_save_on_shutdown(self) -> None:
+        if not self._lmpc_save_path:
+            return
+        try:
+            from os.path import expanduser
+            self._lmpc_db.save_all(expanduser(self._lmpc_save_path))
+            self.get_logger().info(f"[LMPC] saved SS to {self._lmpc_save_path}")
+        except Exception as e:
+            self.get_logger().warn(f"[LMPC] save failed: {e}")
+
+    def _on_lap_count_step(self, msg) -> None:
+        """매 `auto_step_laps` lap 마다 effective max_speed 증가."""
+        lap = int(msg.data)
+        # LMPC: lap end detection + buffer flush
+        try:
+            self._lmpc_on_lap_end(lap)
+        except Exception as e:
+            self.get_logger().warn(f"[LMPC] lap_end failed: {e}")
+        st = self._auto_step_state
+        if lap == st['last_lap']:
+            return
+        # lap 0→1 첫 진입은 무시 (시작 상태 유지)
+        if st['last_lap'] >= 0 and lap > 0 and (lap - st['lap_at_step']) >= st['laps']:
+            st['current_step'] += 1
+            new_v = st['start'] + st['current_step'] * st['size']
+            if new_v > st['end'] + 1e-6:
+                self.get_logger().info(
+                    f"[auto_step] reached end ({st['end']:.1f}). holding.")
+                st['last_lap'] = lap
+                return
+            st['lap_at_step'] = lap
+            # 2026-05-28 #20: v step 시 LMPC SS warm_transfer
+            # 이전 v bucket 의 best lap → 새 v bucket 의 seed.
+            # 새 bucket 의 첫 real lap 도착 전까지 LMPC 활성 (synthetic 보다 real warm-transfer 가 좋음).
+            old_v = st['start'] + (st['current_step'] - 1) * st['size']
+            try:
+                ok = self._lmpc_db.warm_transfer(old_v, new_v)
+                if ok:
+                    self.get_logger().info(
+                        f"[LMPC] warm_transfer v={old_v:.1f}→v={new_v:.1f} (best from old bucket)"
+                    )
+            except Exception as e:
+                self.get_logger().warn(f"[LMPC] warm_transfer failed: {e}")
+            self._set_effective_max_speed(new_v)
+        st['last_lap'] = lap
+
+    def _auto_tune_from_max_speed(self, v_override: float | None = None) -> None:
+        """v_max 한 변수만 사용자 설정. 나머지 cost weights / corridor / EMA
+        를 heuristic 매핑으로 자동 결정. `on_set_parameters_callback` 가 자동
+        호출되어 live attrs (mpc.q_*_live 등) 도 같이 갱신됨.
+
+        매핑 식 (kinematic + raceline 가정, 안전 위주):
+            max_speed_p          = v_max * 0.95
+            q_lag_live           = max(50, 12 * v_max)
+            q_cte_live           = max(2, 8 - v_max * 0.4)
+            q_d_delta_live       = 25 (ROS1 검증값 고정 — 동적 조정은 MLP q_drate_scale 이 담당)
+            alpha_steer_live     = max(0.4, 0.7 - v_max * 0.02)  # 빠를수록 smooth
+            mpc_corridor_half_width = yaml 값 그대로 (auto override 제거 — 사용자 직접 결정)
+            D_apex_live          = 0 (raceline 자체가 apex 통과)
+            cost_spike_thr_live  = max(100, 250 - 5 * v_max)
+        """
+        from rclpy.parameter import Parameter as P
+        v = float(v_override) if v_override is not None else float(self.get_parameter('max_speed').value)
+        track_src = str(self.get_parameter('track_source').value).strip().lower()
+        # Agent R3 fix: D_apex=0.35 centerline 기본값이 random 트랙의 uniform 3m
+        # corridor 에서 effective margin (0.95 − 0.15 − 0.35 = 0.45) 너무 빠듯 →
+        # cost slack 폭증 → solver 가 감속 회피 → stuck. 0 으로 고정 (BO 가 13번째
+        # 차원으로 학습한 D_apex 값이 우선).
+        d_apex = 0.0
+        # 주의: mpc_corridor_half_width 는 auto 매핑에서 제외 (yaml 값 보존).
+        #       이전 auto 식 max(0.3, 0.8 - 0.03*v) 가 yaml 의 1.0 등 큰 값을 0.68 로
+        #       덮어써서 좌우 반경이 항상 작게 강제되는 회귀가 있었음. 사용자가
+        #       yaml 에서 직접 1.0~1.5 등으로 키우면 그대로 적용되어야 함.
+        auto = {
+            'max_speed_p':              v * 0.95,
+            'q_lag_live':               max(50.0, 12.0 * v),
+            'q_cte_live':               max(2.0, 8.0 - v * 0.4),
+            'q_d_delta_live':           25.0,
+            'alpha_steer_live':         max(0.4, 0.7 - v * 0.02),
+            'D_apex_live':              d_apex,
+            # Agent R-round2 Fix 2: cost_spike_thr_live 매핑 제거.
+            # 옛 식 `max(100, 250 - 5·v_max)` = 230 @ v=4 → 정상 cost ~330 도
+            # 매 cycle spurious fallback → MPC 의 정상 plan 거의 ignored.
+            # yaml 의 600 (N=120 시대 검증) 또는 N=80 면 yaml 에서 ~400 으로
+            # 직접 set. v_max 와 무관 (weight scale / N_horizon 에 의존).
+        }
+        params = [P(k, P.Type.DOUBLE, float(val)) for k, val in auto.items()]
+        self.set_parameters(params)
+        self.get_logger().info(
+            f"[auto_tune] v_max={v:.1f} → " +
+            ", ".join(f"{k.replace('_live', '')}={val:.2f}" for k, val in auto.items()))
+
     def _initialize_mpc(self, wpnts=None) -> None:
+        if bool(self.get_parameter('auto_tune').value):
+            self._auto_tune_from_max_speed()
         vel_scale = float(self.get_parameter('vel_scale').value)
         inflation = float(self.get_parameter('inflation_factor').value)
         extend_part = int(self.get_parameter('extend_part').value)
@@ -401,7 +860,8 @@ class MPCNode(Node):
                 wpnts, vel_scale=vel_scale,
                 inflation_factor=inflation, extend_part=extend_part,
                 default_v=float(self.get_parameter('max_speed').value),
-                corridor_half_width=corridor_half)
+                corridor_half_width=corridor_half,
+                a_lat_max=float(self.get_parameter('a_lat_safe_live').value))
         else:
             track_dir = self._resolve_track_dir()
             track_name = str(self.get_parameter('track_name').value)
@@ -441,10 +901,76 @@ class MPCNode(Node):
             float(self._track.element_arc_lengths_orig[-1]),
             self._track.lut_ref_v,
         )
+        # ── Dynamic Pacejka 모드 토글 — setup_MPC() 전에 적용해야 codegen 반영 ──
+        self.mpc.use_dynamic = bool(self.get_parameter('use_dynamic').value)
+        self.mpc.dyn_tire_model = str(self.get_parameter('dyn_tire_model').value)
+        self.mpc.dyn_use_pacejka = (self.mpc.dyn_tire_model == 'pacejka')
+        # Phase D closed-form CasADi GP residual flag — set BEFORE setup_MPC()
+        # so the dynamics codegen picks it up. Independent of use_gp_residual.
+        self.mpc.use_gp_casadi = bool(self.get_parameter('use_gp_casadi').value)
+        # 이전에 set_track_data 가 print 한 "MODEL = KINEMATIC" 은 toggle 이전 상태라 잘못됨.
+        # 명확하게 다시 announce.
+        self.get_logger().info(
+            f"[mpc] ACTUAL MODEL FOR CODEGEN = "
+            f"{'DYNAMIC 8-state, tire=' + self.mpc.dyn_tire_model if self.mpc.use_dynamic else 'KINEMATIC 5-state'}")
+
         self.get_logger().info("calling mpc.setup_MPC() — first run codegens acados (~30s)…")
+
+        # — setup_MPC 직후 실제 codegen 된 model 확인 (use_dynamic 토글이 정말 먹혔는지)
         self.mpc.setup_MPC()
+        # === 실제 codegen 된 model 검증 (use_dynamic 토글 안 먹은 경우 여기서 발각) ===
+        actual_n_states = int(self.mpc.n_states)
+        actual_n_controls = int(self.mpc.n_controls)
+        actual_dyn = bool(self.mpc.use_dynamic)
+        if actual_n_states == 8 and actual_dyn:
+            kind = "DYNAMIC ✓ (8-state Pacejka)"
+        elif actual_n_states == 5 and not actual_dyn:
+            kind = "KINEMATIC ✓ (5-state bicycle)"
+        else:
+            kind = f"UNEXPECTED (n_states={actual_n_states}, use_dynamic={actual_dyn})"
+        self.get_logger().info(
+            f"=== MODEL POST-CODEGEN: {kind}, n_controls={actual_n_controls} ===")
+        # 사용자가 토픽으로 확인할 수 있게 /mpc/model_info 도 latched 발행
+        from std_msgs.msg import String as _String
+        if not hasattr(self, '_model_info_pub'):
+            self._model_info_pub = self.create_publisher(_String, '/mpc/model_info',
+                self._latched_qos if hasattr(self, '_latched_qos') else 10)
+        self._model_info_pub.publish(_String(data=f"{kind} | n_states={actual_n_states} | n_controls={actual_n_controls}"))
+
+        # ── LMPC: raceline seed + npz load (2026-05-28 #18) ─────────────
+        try:
+            self._lmpc_load_or_seed()
+        except Exception as _e:
+            self.get_logger().warn(f"[LMPC] seed/load skipped: {_e}")
+
+        # ── Phase D: GP residual learning wrap ──────────────────────────
+        # use_gp_residual=true 면 setup_MPC() 결과 (acados ocp) 를 L4acados
+        # 의 ResidualLearningMPC 로 wrap. 미설정 시 plain acados 사용.
+        # 추가 codegen ~30s (첫 launch 만). gp_residual.pt 로드 실패 시
+        # 자동 fallback (plain acados 그대로).
+        if bool(self.get_parameter('use_gp_residual').value):
+            from .mpc_core.gp_residual_wrapper import wrap_solver_with_gp
+            ckpt = str(self.get_parameter('gp_ckpt_path').value).strip() \
+                   or os.path.expanduser('~/bo_results/gp_residual.pt')
+            ok = wrap_solver_with_gp(self.mpc, ckpt, logger=self.get_logger())
+            if ok:
+                self.get_logger().info("[Phase D] GP residual ACTIVE")
+            else:
+                self.get_logger().warn("[Phase D] GP wrap failed — plain acados fallback")
+
         self._mpc_ready = True
-        self.get_logger().info("MPC ready — control loop active")
+        # Startup ramp — MPC ready 직후 N 초 동안은 MPC output 무시하고 작은
+        # forward push (0.5 m/s, steer=0) 강제. 정지에서 dynamic 모드의
+        # Pacejka singularity (vx=0) 회피 + solver 가 plausible warm-start
+        # 형성하는 동안 vehicle 이 안전하게 출발.
+        self._startup_t = time.monotonic()
+        self.get_logger().info(
+            "MPC ready — control loop active (cold-start: vx-floor + speed-floor, "
+            "MPCC steering from t=0)")
+        # auto_step 활성 시, codegen 끝난 직후 effective v_max = start 로 강제.
+        # (codegen ubu cap 은 yaml max_speed = end_speed 그대로 12 인 상태)
+        if getattr(self, '_auto_step_state', {}).get('enabled', False):
+            self._set_effective_max_speed(self._auto_step_state['start'])
 
         # Latched RViz viz: raw (un-inflated) lanes. /boundary_marker (cycle)
         # shows inflated corridor — comparing the two reveals how much
@@ -519,6 +1045,28 @@ class MPCNode(Node):
     # Sub callbacks — cache only; heavy work runs on the control timer
     # ─────────────────────────────────────────────────────────────────
     def _odom_cb(self, msg: Odometry):
+        # Teleport detection — RViz /initialpose 로 차 이동 시 odom 위치가 점프.
+        # 이전 위치와 1m 이상 차이 나면 MPC warm-start reset (옛 traj 의 풀-스티어
+        # spin 방지). 정상 주행 dx 는 보통 v·dt = 5·0.025 = 0.125m 라 1m threshold
+        # 충분히 보수적.
+        if self._last_odom is not None and getattr(self, 'mpc', None) is not None:
+            p1 = msg.pose.pose.position
+            p0 = self._last_odom.pose.pose.position
+            jump = ((p1.x - p0.x) ** 2 + (p1.y - p0.y) ** 2) ** 0.5
+            if jump > 1.0:
+                self.get_logger().warn(
+                    f"[mpc] teleport 감지 ({jump:.2f}m jump) — warm-start reset")
+                self.mpc.WARM_START = False
+                # 일부 internal state 도 클리어 (있으면).
+                # _pos_for_v 는 (x,y,t) 3-tuple — solve() 가 unpack → None 로 reset.
+                # _last_sensor_s 도 None reset 으로 lap_count 누적 안 해야 함.
+                NONE_RESET = {'_last_sensor_s', '_pos_for_v', '_last_sensor_yaw'}
+                for attr in ('_last_sensor_s', '_pos_for_v', '_v_cmd_for_stuck',
+                             '_stuck_count', '_last_delta_applied'):
+                    if hasattr(self.mpc, attr):
+                        setattr(self.mpc, attr, None if attr in NONE_RESET else 0.0)
+                # startup ramp 다시 활성화 (정지에서 출발 안정화)
+                self._startup_t = time.monotonic()
         self._last_odom = msg
 
     def _pose_cb(self, msg: PoseStamped):
@@ -562,7 +1110,10 @@ class MPCNode(Node):
     # Control loop @ 40 Hz
     # ─────────────────────────────────────────────────────────────────
     def _current_state_4(self) -> np.ndarray | None:
-        """Assemble [x, y, psi, s] from latest pose/odom. Returns None if not ready."""
+        """Assemble state for MPC solver. Length depends on use_dynamic:
+          kinematic: [x, y, psi, s]                    (4-dim, solver appends δ_prev → 5)
+          dynamic:   [x, y, psi, vx, vy, r, s]         (7-dim, solver appends δ_prev → 8)
+        Returns None if not ready."""
         if self._last_pose is None and self._last_odom is None:
             return None
         if self._last_pose is not None:
@@ -571,14 +1122,231 @@ class MPCNode(Node):
         else:
             p = self._last_odom.pose.pose.position
             q = self._last_odom.pose.pose.orientation
-        # Yaw from quaternion (avoid tf_transformations dep for one expr).
         siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
         cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
         psi = math.atan2(siny_cosp, cosy_cosp)
         s = 0.0
         if self._track is not None:
             s, _ = find_current_arc_length(self._track, np.array([p.x, p.y]))
+
+        # dynamic 모드는 vx/vy/r 도 필요. odom 의 twist 에서 추출 (body frame).
+        use_dyn = bool(self.get_parameter('use_dynamic').value) if self.has_parameter('use_dynamic') else False
+        if use_dyn and self._last_odom is not None:
+            tw = self._last_odom.twist.twist
+            vx = float(tw.linear.x)
+            vy = float(tw.linear.y)
+            r  = float(tw.angular.z)
+            return np.array([p.x, p.y, psi, vx, vy, r, s], dtype=float)
         return np.array([p.x, p.y, psi, s], dtype=float)
+
+    def _load_ml_scaler(self) -> None:
+        """C: TorchScript WeightScaleMLP 로드. mpc_node init 시 1회 호출.
+        실패 시 self._ml_scaler = None — B heuristic 폴백."""
+        self._ml_scaler = None
+        if not bool(self.get_parameter('use_ml_scale').value):
+            return
+        try:
+            from .ml.inference import WeightScaleInference, default_model_path
+            path = self.get_parameter('ml_model_path').value or default_model_path()
+            self._ml_scaler = WeightScaleInference(path)
+            self.get_logger().info(f"[ml] WeightScaleMLP loaded from {path}")
+        except Exception as e:
+            self.get_logger().warn(
+                f"[ml] WeightScaleMLP load failed: {e} — falling back to B heuristic")
+
+    def _load_polynomial(self) -> None:
+        """BO 결과로 학습된 polynomial coefficients 로드 (override_mode='polynomial').
+        실패 시 self._poly = None — bucketed/B 폴백."""
+        self._poly = None
+        path = str(self.get_parameter('poly_path').value).strip()
+        if not path:
+            return
+        try:
+            import json, os
+            if not os.path.isfile(path):
+                self.get_logger().warn(f"[poly] file not found: {path} — fallback")
+                return
+            with open(path) as f:
+                d = json.load(f)
+            self._poly = {
+                'polys': {k: list(map(float, v)) for k, v in d['polys'].items()},
+                'bounds': tuple(d.get('scale_bounds', (0.3, 5.0))),
+                'speed_range': d.get('speed_range', [0, 100]),
+            }
+            self.get_logger().info(
+                f"[poly] loaded from {path}: degree {d.get('degree', '?')}, "
+                f"speed_range {d.get('speed_range', '?')}, "
+                f"{len(self._poly['polys'])} polynomials")
+        except Exception as e:
+            self.get_logger().warn(f"[poly] load failed: {e} — fallback")
+            self._poly = None
+
+    # ── Corner-exit detection (Method C: spatial-aware q_cte) ──
+    # 코너에서 직선으로 전환되는 시점 (s_exit) 기록. 그 후 EXIT_BLEND_M 동안
+    # q_cte 점진적 회복 (0 → 1). 코너 직후 centerline 강제 복귀 → 휘청 방지.
+    EXIT_BLEND_M = 5.0           # 출구 후 5m 동안 점진 회복
+    EXIT_KAPPA_HIGH = 0.3        # 코너 in/out 경계
+    EXIT_KAPPA_LOW  = 0.15
+
+    def _corner_exit_factor(self, s_now: float, kappa_abs_now: float) -> float:
+        """코너 출구 후 q_cte 감소 factor 계산.
+        반환: 0~1 (코너 출구 직후 0, EXIT_BLEND_M 후 1).
+        코너 안 또는 멀리 직선이면 1.0 (변경 X).
+        """
+        # 이전 cycle 의 kappa hi/lo 트래킹
+        prev_kappa = getattr(self, '_prev_kappa_abs', 0.0)
+        self._prev_kappa_abs = kappa_abs_now
+        # 코너→직선 전환 감지
+        if prev_kappa > self.EXIT_KAPPA_HIGH and kappa_abs_now < self.EXIT_KAPPA_LOW:
+            self._last_exit_s = s_now   # 출구 시점 기록
+        # 출구 이후 거리
+        last_exit_s = getattr(self, '_last_exit_s', None)
+        if last_exit_s is None:
+            return 1.0
+        d = s_now - last_exit_s
+        if d < 0 or d > self.EXIT_BLEND_M:
+            return 1.0
+        # 0 → 1 점진 회복
+        return float(d / self.EXIT_BLEND_M)
+
+    def _adaptive_weight_update(self, s_now: float) -> None:
+        """B: κ-aware online weight adaptation. 매 cycle 호출.
+
+        mpc_core 의 q_*_scale_live 가 cost residual multiplier (default 1.0).
+        forward-max κ_lookahead (6m 앞) 에 따라 동적 매핑:
+          - 직선 (κ ≈ 0): scale = 1.0 (yaml 기본값 유지)
+          - 코너 (κ ↑): cte/lag 약화, v 추종 강화, rate cost 강화
+                       → mpc 가 자동으로 코너 진입 감속 + smooth steering
+
+        매핑 (heuristic, kinematic + raceline 가정):
+          q_cte_scale   = max(0.3, 1 − 2·κ)   # 코너 path 자유도 ↑
+          q_lag_scale   = max(0.5, 1 − 1.5·κ) # 코너 progress 압박 ↓
+          q_v_scale     = 1 + 2·κ              # 코너 ref_v(=raceline IQP) 추종 ↑ → 감속
+          q_drate_scale = 1 + 3·κ              # 코너 steering rate cost ↑ → smooth
+        """
+        if self._track is None or not getattr(self, '_mpc_ready', False):
+            return
+        # BO sweep / 수동 override 분기 — auto_tune 보다 우선. 외부 평가용.
+        # 결정: override_mode == 'bucketed' OR ('fixed' / legacy override_scales=true).
+        mode = str(self.get_parameter('override_mode').value).lower()
+        if mode in ('fixed',) or bool(self.get_parameter('override_scales').value):
+            self.mpc.q_cte_scale_live   = float(self.get_parameter('override_q_cte_scale').value)
+            self.mpc.q_lag_scale_live   = float(self.get_parameter('override_q_lag_scale').value)
+            self.mpc.q_v_scale_live     = float(self.get_parameter('override_q_v_scale').value)
+            self.mpc.q_drate_scale_live = float(self.get_parameter('override_q_drate_scale').value)
+            return
+        if mode == 'bucketed':
+            # 현재 cycle 의 κ_abs 로 bucket 결정.
+            try:
+                L = float(self._track.element_arc_lengths_orig[-1])
+                kappa_abs_now = float(self.mpc.abs_kappa_lut(s_now % L))
+            except Exception:
+                kappa_abs_now = 0.0
+            b01 = float(self.get_parameter('bucket_kappa_b01').value)
+            b12 = float(self.get_parameter('bucket_kappa_b12').value)
+            b = 0 if kappa_abs_now < b01 else (1 if kappa_abs_now < b12 else 2)
+            self.mpc.q_cte_scale_live   = float(self.get_parameter(f'override_q_cte_scale_b{b}').value)
+            self.mpc.q_lag_scale_live   = float(self.get_parameter(f'override_q_lag_scale_b{b}').value)
+            self.mpc.q_v_scale_live     = float(self.get_parameter(f'override_q_v_scale_b{b}').value)
+            self.mpc.q_drate_scale_live = float(self.get_parameter(f'override_q_drate_scale_b{b}').value)
+            # ── C: Corner-exit spatial blending (2026-05-26 비활성) ──
+            # try/except 로 안전화 + 비활성 (BO startup fail 원인 진단 중).
+            # 원인 파악 후 재활성. 현재 BO 가 spatial-aware 없는 Hybrid 그대로.
+            # try:
+            #     exit_factor = self._corner_exit_factor(s_now, kappa_abs_now)
+            #     self.mpc.q_cte_scale_live *= exit_factor
+            # except Exception:
+            #     pass
+            return
+        if mode == 'polynomial' and getattr(self, '_poly', None) is not None:
+            # BO-learned polynomial: (v, κ_bucket) → 4 scales. 매 cycle eval, ~수 μs.
+            try:
+                L = float(self._track.element_arc_lengths_orig[-1])
+                kappa_abs_now = float(self.mpc.abs_kappa_lut(s_now % L))
+            except Exception:
+                kappa_abs_now = 0.0
+            b01 = float(self.get_parameter('bucket_kappa_b01').value)
+            b12 = float(self.get_parameter('bucket_kappa_b12').value)
+            b = 0 if kappa_abs_now < b01 else (1 if kappa_abs_now < b12 else 2)
+            v = float(getattr(self.mpc, 'v_max', 4.0))  # 현재 cost target (auto_step aware)
+            lo, hi = self._poly['bounds']
+            def _eval(key: str) -> float:
+                import numpy as _np
+                return float(_np.clip(_np.polyval(self._poly['polys'][key], v), lo, hi))
+            self.mpc.q_cte_scale_live   = _eval(f'q_cte_b{b}')
+            self.mpc.q_lag_scale_live   = _eval(f'q_lag_b{b}')
+            self.mpc.q_v_scale_live     = _eval(f'q_v_b{b}')
+            self.mpc.q_drate_scale_live = _eval(f'q_drate_b{b}')
+            return
+        if not bool(self.get_parameter('auto_tune').value):
+            return  # auto_tune=false 면 yaml 의 yaml 기본 scale 그대로
+        try:
+            L = float(self._track.element_arc_lengths_orig[-1])
+            kappa = float(self.mpc.abs_kappa_lut(s_now % L))
+            kappa_signed = float(self.mpc.signed_kappa_lut(s_now % L))
+        except Exception:
+            return
+
+        # C: NN inference 우선 (use_ml_scale=true 면)
+        if getattr(self, '_ml_scaler', None) is not None:
+            try:
+                v_act = self._last_odom.twist.twist.linear.x if self._last_odom else 0.0
+                ref_v = float(self.mpc.ref_v(s_now % L))
+                v_max_cost = float(getattr(self.mpc, 'v_max', 0.0))
+                qcte, qlag, qv, qdrate = self._ml_scaler(
+                    abs(kappa), kappa_signed, v_act, ref_v, v_max_cost)
+                self.mpc.q_cte_scale_live   = qcte
+                self.mpc.q_lag_scale_live   = qlag
+                self.mpc.q_v_scale_live     = qv
+                self.mpc.q_drate_scale_live = qdrate
+                return
+            except Exception as e:
+                self._mpc_log.warn_throttle(5.0, "[ml] inference failed: %s — fallback to B", str(e))
+
+        # B fallback (heuristic) — train.py 의 target 공식과 동일하게 유지!
+        # MLP 가 학습한 매핑과 일관성 — MLP 실패 시 폴백이 같은 동작.
+        k = min(max(abs(kappa), 0.0), 1.0)  # cap
+        self.mpc.q_cte_scale_live   = max(0.3, 1.0 - 2.0 * k)  # 코너 path 자유도 ↑
+        self.mpc.q_lag_scale_live   = max(0.5, 1.0 - 1.5 * k)  # 코너 progress 압박 ↓
+        self.mpc.q_v_scale_live     = 1.5 + 1.5 * k             # ref_v 추종 강화
+        self.mpc.q_drate_scale_live = 1.5 + 4.0 * k             # 강화 (2.5→4.0). κ=0.82→4.78
+
+    def _publish_safe_reset(self, x0) -> None:
+        """Agent A: gym `in_collision` latch escape.
+
+        Compute a safe respawn point 2m ahead of the current stuck position
+        on the centerline (so the car appears in clear track, facing forward),
+        publish `/initialpose` → gym_bridge.ego_reset_callback → env.reset()
+        → latch cleared, dynamics integration resumes. Also clears MPC warm-
+        start via the existing teleport detector.
+        """
+        if self._track is None:
+            return
+        try:
+            x = float(x0[0]); y = float(x0[1])
+            s_now, _ = find_current_arc_length(
+                self._track, np.array([x, y]))
+            L = float(self._track.element_arc_lengths_orig[-1])
+            s_safe = (s_now + 2.0) % L     # 2m ahead on centerline
+            rx = float(self._track.center_lut_x(s_safe))
+            ry = float(self._track.center_lut_y(s_safe))
+            dx = float(self._track.center_lut_dx(s_safe))
+            dy = float(self._track.center_lut_dy(s_safe))
+            yaw = math.atan2(dy, dx)
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().warn(f"[stuck-recover] safe pose calc failed: {e}")
+            return
+        msg = PoseWithCovarianceStamped()
+        msg.header.frame_id = 'map'
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.pose.pose.position.x = rx
+        msg.pose.pose.position.y = ry
+        msg.pose.pose.orientation.z = math.sin(yaw / 2.0)
+        msg.pose.pose.orientation.w = math.cos(yaw / 2.0)
+        self.initialpose_pub.publish(msg)
+        self.get_logger().warn(
+            f"[stuck-recover] /initialpose → ({rx:.2f},{ry:.2f},{yaw:.2f}) "
+            f"after {self._stuck_release_total} stuck cycles")
 
     def _control_loop_cb(self):
         if not self._mpc_ready:
@@ -586,11 +1354,35 @@ class MPCNode(Node):
         x0 = self._current_state_4()
         if x0 is None:
             return
+        # s position differs by mode: kinematic 4-dim state [x,y,ψ,s] → s=x0[3].
+        #                              dynamic   7-dim state [x,y,ψ,vx,vy,r,s] → s=x0[6].
+        is_dyn = bool(self.get_parameter('use_dynamic').value) if self.has_parameter('use_dynamic') else False
+        s_now = float(x0[6] if is_dyn else x0[3])
+        # B: κ-aware online weight adaptation (auto_tune=true 시 활성)
+        self._adaptive_weight_update(s_now)
+        # 2026-05-28 #18 LMPC: 매 cycle SS query → set mpc._lmpc_* attrs
+        try:
+            self._lmpc_update_per_cycle(x0, s_now, is_dyn)
+        except Exception as _e:
+            self.get_logger().warn(f"[LMPC] cycle update skipped: {_e}",
+                                    throttle_duration_sec=2.0)
+        # ── Cold-start vx floor (MPPI init_vel) ──
+        # 저속에서 dynamic Pacejka 가 ill-conditioned → solver 에 넘기는 x0 의
+        # vx 를 floor 해서 항상 well-conditioned 영역에서 풂 (저속 chatter 제거).
+        # 실측 vx (raw_vx) 는 아래 출력 speed floor 판단용으로 보존.
+        vx_floor = float(self.get_parameter('cold_start_vx_floor').value) \
+            if self.has_parameter('cold_start_vx_floor') else 0.0
+        raw_vx = float(x0[3]) if (is_dyn and len(x0) > 3) else None
+        x0_solve = x0
+        if is_dyn and vx_floor > 0.0 and raw_vx is not None and raw_vx < vx_floor:
+            x0_solve = x0.copy()
+            x0_solve[3] = vx_floor
         t0 = time.monotonic()
         try:
-            con_first, traj, u_seq, opti_value = self.mpc.solve(x0, self._obstacles)
+            con_first, traj, u_seq, opti_value = self.mpc.solve(x0_solve, self._obstacles)
         except Exception as e:
-            self.get_logger().error(f"mpc.solve raised: {e}")
+            import traceback
+            self.get_logger().error(f"mpc.solve raised: {e}\n{traceback.format_exc()}")
             return
         solve_dt = time.monotonic() - t0
 
@@ -598,8 +1390,59 @@ class MPCNode(Node):
         cmd = AckermannDriveStamped()
         cmd.header.stamp = self.get_clock().now().to_msg()
         cmd.header.frame_id = 'base_link'
-        cmd.drive.speed = float(con_first[0])
+        # u_seq[0,0] 의 의미가 모드별로 다름:
+        #   kinematic: u[0] = v (속도, 직접 사용)
+        #   dynamic:   u[0] = a_x (가속도) — drive.speed 로 보내면 안 됨!
+        #              대신 traj[1, 3] = 예측된 다음-step vx 사용.
+        if is_dyn and traj is not None and traj.shape[0] > 1:
+            # dynamic: gym 의 PID 가 추종할 target vx.
+            #
+            # Agent R-round2 Fix 1: v_now + floor 를 solver v_max cap 안에 강제.
+            # 이전 R1 (v_now + 1.0 무제한) 가 v=9.62 over-shoot → 첫 코너 진입에
+            # 못 회전 → boundary 박힘 → systemic stuck. solver 가 v_max=3.80 으로
+            # 제약됐는데 actuator cmd 가 escape 했던 게 root cause.
+            #
+            # Fix 3: STUCK release active → cmd=0/steer=0 강제 (wall contact 해제).
+            v_now = float(x0[3]) if (x0 is not None and len(x0) > 3) else 0.0
+            v_cap = float(getattr(self.mpc, 'v_max', 4.0))
+            # Agent A round-4 fix: gym in_collision latch 은 reverse 도 못 풀어줌.
+            # cumulative count wait 가 release_active reset 으로 누적 못 함.
+            # → stuck 감지 즉시 /initialpose publish (5s cooldown).
+            if getattr(self.mpc, '_stuck_release_active', False):
+                self._stuck_release_total += 1
+                cmd.drive.speed = -0.5
+                cmd.drive.steering_angle = 0.0
+                # 즉시 reset (5s cooldown 만 유지). 실차 (enable_sim_reset=false)
+                # 에선 publish 해도 무의미 → skip + warn 만.
+                if (time.monotonic() - self._last_reset_t) > 5.0:
+                    if bool(self.get_parameter('enable_sim_reset').value):
+                        self._publish_safe_reset(x0)
+                    else:
+                        self.get_logger().warn_throttle(2.0,
+                            "[real] STUCK detected but enable_sim_reset=false — "
+                            "publishing reverse cmd only (수동 e-stop 권장)")
+                    self._last_reset_t = time.monotonic()
+                    self._stuck_release_total = 0
+            else:
+                self._stuck_release_total = 0
+                v_ff = min(v_cap, v_now + 0.5)   # +0.5/cycle = 12.5 m/s² FF (was +1.0 = 25 m/s²)
+                cmd.drive.speed = max(0.0, min(v_cap, max(float(traj[-1, 3]), v_ff)))
+        else:
+            cmd.drive.speed = float(con_first[0])
         cmd.drive.steering_angle = float(con_first[1])
+
+        # ── Cold-start output speed floor (replaces old 3s PP warmup ramp) ──
+        # 실측 vx 가 floor 미만이면 forward push 보장 (차가 가속해 floor 넘김).
+        # 단 steering 은 t=0 부터 SOLVER (filtered) 출력 사용 → PP handoff 없이
+        # MPCC 가 처음부터 조향. 위 vx-floor 덕에 정지에서도 solver 출력 정상.
+        # stuck-release(후진) 중이면 floor 적용 안 함.
+        startup_speed = float(self.get_parameter('startup_speed').value) \
+            if self.has_parameter('startup_speed') else 0.0
+        if (is_dyn and vx_floor > 0.0 and raw_vx is not None
+                and raw_vx < vx_floor
+                and not getattr(self.mpc, '_stuck_release_active', False)):
+            cmd.drive.speed = max(float(cmd.drive.speed), startup_speed)
+
         self.ackermann_pub.publish(cmd)
 
         # Diagnostics
@@ -671,24 +1514,41 @@ class MPCNode(Node):
             ref_v_now = float(self.mpc.ref_v(current_s % float(self._track.element_arc_lengths_orig[-1])))
         except Exception:
             ref_v_now = 0.0
+        # C-1 학습 데이터: κ_lookahead + B 의 동적 scale 4개 추가 (총 22 필드)
+        kappa_abs, kappa_signed = 0.0, 0.0
+        if self._track is not None:
+            try:
+                L = float(self._track.element_arc_lengths_orig[-1])
+                kappa_abs = float(self.mpc.abs_kappa_lut(current_s % L))
+                kappa_signed = float(self.mpc.signed_kappa_lut(current_s % L))
+            except Exception:
+                pass
         dbg = Float32MultiArray()
         dbg.data = [
-            float(con_first[0]),       # v_cmd
-            float(con_first[1]),       # steer_cmd
-            v_actual,                  # v_actual
-            float(x0[0]),              # car_x
-            float(x0[1]),              # car_y
-            float(x0[2]),              # car_yaw
-            float(current_s),          # current_s
-            float(near_idx),           # near_idx
-            ref_v_now,                 # ref_v
-            float(len(self._obstacles)),  # n_obs_in
-            0.0,                       # sel_dmin  (obstacle TODO)
-            0.0,                       # sel_x
-            0.0,                       # sel_y
-            0.0,                       # side_pref
-            float(opti_value),         # opti_value
-            float(solve_dt * 1000.0),  # solve_ms
+            float(con_first[0]),       # 0  v_cmd
+            float(con_first[1]),       # 1  steer_cmd
+            v_actual,                  # 2  v_actual
+            float(x0[0]),              # 3  car_x
+            float(x0[1]),              # 4  car_y
+            float(x0[2]),              # 5  car_yaw
+            float(current_s),          # 6  current_s
+            float(near_idx),           # 7  near_idx
+            ref_v_now,                 # 8  ref_v
+            float(len(self._obstacles)),  # 9  n_obs_in
+            0.0,                       # 10 sel_dmin  (obstacle TODO)
+            0.0,                       # 11 sel_x
+            0.0,                       # 12 sel_y
+            0.0,                       # 13 side_pref
+            float(opti_value),         # 14 opti_value
+            float(solve_dt * 1000.0),  # 15 solve_ms
+            # C-1 추가 — MLP 학습 input (state) + B output (scale):
+            kappa_abs,                 # 16 kappa_abs (forward-max κ, B input)
+            kappa_signed,              # 17 kappa_signed (apex 방향)
+            float(getattr(self.mpc, 'q_cte_scale_live', 1.0)),    # 18
+            float(getattr(self.mpc, 'q_lag_scale_live', 1.0)),    # 19
+            float(getattr(self.mpc, 'q_v_scale_live', 1.0)),      # 20
+            float(getattr(self.mpc, 'q_drate_scale_live', 1.0)),  # 21
+            float(getattr(self.mpc, 'v_max', 0.0)),                # 22 v_max_cost
         ]
         self.mpc_debug_pub.publish(dbg)
 
