@@ -886,21 +886,31 @@ class MPC:
         # x_N 의 해당 4 dim: state = [x, y, psi, vx, vy, r, s, delta_prev]
         # 변수명은 우리 acados 스코프 기준 (x_, y_, psi, vx_for_cost).
         x_N_4 = ca.vertcat(x_, y_, psi, vx_for_cost)
-        # 2026-05-28 #19: SIMPLIFIED — softmin 제거 (numerical instability,
-        # v7 sim 에서 QP_Failure 매 5-10s 빈발). 단순 nearest-point attractor 사용.
-        # caller (mpc_node) 가 SS 를 Q 오름차순 정렬해서 보내므로 ss_states[:,0] 가
-        # cost-to-go 최소 점. terminal cost = lmpc_w · (Q_best + α·d²_best).
-        # Hessian 양정칙 (single quadratic), Gauss-Newton 안정.
-        x_star_best = lmpc_ss_states[:, 0]                  # (4,)
-        Q_best      = lmpc_ss_Q[0]                          # scalar
-        ss_diff_best = x_N_4 - x_star_best
-        d2_best = ca.sum1(ss_diff_best * (W_lmpc_diag @ ss_diff_best))
-
-        # y_lmpc residual = sqrt(w) · sqrt(Q_best + (α+reg_w)·d²_best + 1e-6).
-        # 모든 항 양수 보장 → sqrt 안정. softmin 의 multi-point smooth 포기,
-        # nearest single point attractor 만 사용 (reviewer #★4 추천 본질).
+        # ── min-time terminal: proximity-weighted cost-to-go (NLS-compatible) ──
+        # 2026-05-30: the single nearest-point attractor (ss[:,0], CONSTANT
+        # Q_best) only TRACKED the nearest stored state (its corner speed
+        # included) → never minimized time-to-go → lap time DRIFTED up after
+        # ~10 laps (not Rosolia-monotonic; measured). Replace with a smooth
+        # softmax over the K safe-set points: terminal cost = proximity-weighted
+        # cost-to-go  cog(x_N) = Σ_j w_j·Q_j ,  w_j = softmax_j(-β·d_j²).
+        # Minimizing √(lmpc_w·cog) pulls x_N toward LOW cost-to-go (far-along)
+        # states that are also REACHABLE (near) → forward progress / min-time.
+        # Padding points (Q=1e6, far) get w≈0. Single smooth scalar residual →
+        # stays in NONLINEAR_LS (no EXTERNAL_COST); a small reg toward the
+        # nearest point keeps the Gauss-Newton Hessian positive-definite (the
+        # 2026-05-28 log-sum-exp softmin's −1/β·log instability is avoided).
+        _d2_cols = []
+        for _j in range(K_LMPC):
+            _dj = x_N_4 - lmpc_ss_states[:, _j]
+            _d2_cols.append(ca.sum1(_dj * (W_lmpc_diag @ _dj)))
+        d2_vec = ca.vertcat(*_d2_cols)                      # (K,1)
+        _neg = -lmpc_beta_p * d2_vec
+        _w_un = ca.exp(_neg - ca.mmax(_neg))                # numerically stable softmax
+        _w_sm = _w_un / (ca.sum1(_w_un) + 1e-12)
+        cog = ca.sum1(_w_sm * lmpc_ss_Q)                    # proximity-weighted cost-to-go
+        d2_best = d2_vec[0]                                 # nearest-point reg (conditioning)
         lmpc_residual = ca.sqrt(lmpc_w_p + 1e-12) * ca.sqrt(
-            Q_best + (lmpc_alpha_p + lmpc_reg_w_p) * d2_best + 1e-6
+            cog + (lmpc_alpha_p + lmpc_reg_w_p) * d2_best + 1e-6
         )
 
         if self.use_dynamic:
