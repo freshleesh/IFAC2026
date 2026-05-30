@@ -195,11 +195,11 @@ mpc_node:
     # (PP 15.66, -8.6%; ideal 13.73, +4.3%; n_resets=2 안정; v_avg=4.99)
     # v=4 Phase A best (q_p=4.28 dominant) 과 정반대: v=6 에서는 q_cte=4.96 strong + q_p=0.42 약.
     # 빠른 차일수록 "centerline 단단히 추종 + anti-osc 강하게" 가 안전.
-    q_cte_scale_live: 0.8000   # 2026-05-30 RACING (MPCC B-mode): 3.79(centerline-hug 19.1)→0.8. 낮은 contouring+높은 progress(q_p=4.74)+corridor=racing line. 검증: 20랩 일관 18.76-19.00 mean 18.87 STUCK=0 (Liniger MPCC). q_psi=0.5 동반.
-    q_lag_scale_live: 1.1397
-    q_psi_scale_live: 0.5000   # EXP B-mode: 2.70→0.5 heading 자유 (centerline 헤딩 추종 X)
-    q_v_scale_live: 0.6766
+    q_cte_scale_live: 0.5910   # 2026-05-30 BO-optimized RACING: 20랩 일관 18.44-18.76 mean 18.62 STUCK=0 (best 18.44<PP 18.46!). low q_cte(apex)+high q_drate(smooth). bo_turbo_20260530_145222.json raw_best.
+    q_lag_scale_live: 2.1710
+    q_psi_scale_live: 0.4656   # EXP B-mode: 2.70→0.5 heading 자유 (centerline 헤딩 추종 X)
+    q_v_scale_live: 0.3166
     q_dd_scale_live: 1.0       # not in BO
-    q_p_scale_live: 4.7412   # committed (STUCK=0 18.87). q_p=6.0이면 best 18.52(PP근접)지만 STUCK=5(공격적). 속도/안정 tradeoff knob.
-    q_drate_scale_live: 2.6314
-    q_dv_scale_live: 0.3225
+    q_p_scale_live: 4.9593   # committed (STUCK=0 18.87). q_p=6.0이면 best 18.52(PP근접)지만 STUCK=5(공격적). 속도/안정 tradeoff knob.
+    q_drate_scale_live: 3.5936
+    q_dv_scale_live: 0.3161
