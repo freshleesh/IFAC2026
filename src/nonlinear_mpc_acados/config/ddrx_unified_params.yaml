@@ -39,7 +39,7 @@ mpc_node:
     cold_start_vx_floor: 2.0
     startup_speed: 1.5
     dT: 0.04                       # 0.025→0.04 (25Hz control rate). multi-dt 와 결합 — 첫 step.
-    N_horizon: 50                  # raceline: apex 감속 lookahead 필요 (N25는 브레이크 늦어 wedge)
+    N_horizon: 25                  # 50→25 (2026-06-01 N-sweep+검증): 17.72s 일관·STUCK0·solve 10.5→5.18ms(절반). v≤5·a_lat9 면 제동거리<1m 라 2.0s horizon 과함. N20도 OK. 과거 "N25 wedge"=오염weight artifact(거짓). 변수 더↓는 pyramidal multi-dt 필요.
     # time_steps_mode: 'uniform' (모든 step dt=dT) 또는 'pyramidal' (multi-dt: 가까이 sharp + 멀리 long planning).
     # pyramidal: dt = [dT]*20 + [dT*1.5]*30 + [dT*2.5]*30
     #   = [0.04]*20 + [0.06]*30 + [0.10]*30 → 0.8 + 1.8 + 3.0 = 5.6s horizon

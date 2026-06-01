@@ -40,7 +40,7 @@ if Path(log).exists():
 if csv and Path(csv).exists():
     print('\n--- eval_run_quality (hardened defaults) ---', flush=True)
     ev = subprocess.run(
-        ['python3', str(SCRIPTS / 'eval_run_quality.py'), csv,
+        ['python3', str(SCRIPTS / 'eval_run_quality.py'), '--csv', csv,
          '--map', MAP, '--json', '--n_resets', str(res.get('n_resets', 0))],
         capture_output=True, text=True)
     print(ev.stdout, flush=True)
