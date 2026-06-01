@@ -514,8 +514,20 @@ class MPC:
         # Real lateral acceleration (replaces v² tan(δ)/L kinematic form).
         a_lat_expr = vx * r_yaw
 
+        # ── LMPC joint-α (parameter-as-state): α as K constant-dynamics states ──
+        # x_aug = [x(8), α(K)], f_aug = [f_dyn(8), 0_K] → α constant over horizon,
+        # free at t=0, optimized JOINTLY with x/u in the single RTI solve. Used only
+        # in the terminal cost (Step 2). When lmpc inactive the α block is inert
+        # (only the simplex constraint binds it). See LMPC_REBUILD.md.
+        K_alpha = 10
+        alpha = ca.SX.sym('alpha', K_alpha)
+        x_aug = ca.vertcat(x, alpha)
+        xdot_aug = ca.SX.sym('xdot_aug', 8 + K_alpha)
+        f_aug = ca.vertcat(f_expl, ca.SX.zeros(K_alpha))
+
         return dict(
             x=x, u=u, xdot=xdot, f_expl=f_expl,
+            x_aug=x_aug, xdot_aug=xdot_aug, f_aug=f_aug, alpha=alpha, K_alpha=K_alpha,
             x_pos=x_pos, y_pos=y_pos, psi=psi,
             vx=vx, vy=vy, r=r_yaw, s=s, delta_prev=delta_prev,
             a_x=a_x, delta=delta, p_v=p_v,
@@ -997,6 +1009,17 @@ class MPC:
         a_lat = a_lat_expr
         model_ac.con_h_expr = ca.vertcat(h_obs, h_corridor_top, h_corridor_bot, a_lat)
 
+        # ---- LMPC joint-α: augment state with α (AFTER any GP residual on f_expl) ──
+        # x→[x,α], f_expl→[f_expl,0_K], xdot→18. Done here (post-GP) so the GP term
+        # (8-dim) is added before augmentation. nx 8→18. (dynamic only.)
+        if self.use_dynamic:
+            x = ca.vertcat(x, dyn['alpha'])
+            f_expl = ca.vertcat(f_expl, ca.SX.zeros(dyn['K_alpha']))
+            xdot = dyn['xdot_aug']
+            nx = nx + dyn['K_alpha']
+            self._nx_phys = 8
+            self._K_alpha = dyn['K_alpha']
+
         # ---- Compose model ----
         model_ac.f_impl_expr = xdot - f_expl
         model_ac.f_expl_expr = f_expl
@@ -1083,7 +1106,15 @@ class MPC:
         Tf = ocp.solver_options.tf
 
         # ---- Initial state placeholder ----
-        ocp.constraints.x0 = np.zeros(nx)
+        # LMPC joint-α: fix ONLY the 8 physical states at t=0; the K α-states are
+        # FREE (the solver optimizes them jointly with x/u). Full x0 would pin α=0,
+        # which contradicts the Σα=1 simplex → infeasible. (dynamic only.)
+        if self.use_dynamic:
+            ocp.constraints.idxbx_0 = np.arange(self._nx_phys)
+            ocp.constraints.lbx_0 = np.zeros(self._nx_phys)
+            ocp.constraints.ubx_0 = np.zeros(self._nx_phys)
+        else:
+            ocp.constraints.x0 = np.zeros(nx)
 
         # ---- Input bounds ----
         # Kinematic: u = [v, δ, p_v] — bounds on v, δ, p_v.
@@ -1107,9 +1138,14 @@ class MPC:
             # vx lower bound 0: 절대 후진 안 함. -1.0 허용 시 tire model
             # 의 vx<0 영역 (실제로는 vx²=0.01 이라도 sign(vx)·F 가 발산)
             # 에서 솔버 폭주 가능. 0 으로 강제하면 reverse 자체 차단.
-            ocp.constraints.idxbx = np.array([3, 4, 5])
-            ocp.constraints.lbx   = np.array([0.0, -10.0, -20.0])
-            ocp.constraints.ubx   = np.array([self.v_max + 0.5, 10.0, 20.0])   # 작은 margin (0.5 m/s). v_max 까지 빡빡하게 강제하면 solver IPM 발산 → 12m teleport. 원래 +2 로 풀어줌.
+            # vx,vy,r bounds + LMPC α bounds (indices 8..8+K-1) ∈ [0,1]. Σα=1 is NOT
+            # a hard constraint — the terminal cost uses α/(Σα+ε) (normalized), so
+            # α≥0 + bounded suffices and there's no infeasibility risk. (Step 2 cost.)
+            _Ka = self._K_alpha
+            _aidx = np.arange(self._nx_phys, self._nx_phys + _Ka)
+            ocp.constraints.idxbx = np.concatenate([np.array([3, 4, 5]), _aidx])
+            ocp.constraints.lbx   = np.concatenate([np.array([0.0, -10.0, -20.0]), np.zeros(_Ka)])
+            ocp.constraints.ubx   = np.concatenate([np.array([self.v_max + 0.5, 10.0, 20.0]), np.ones(_Ka)])
         else:
             ocp.constraints.lbu = np.array([0.0, self.theta_min, 0.0])
             ocp.constraints.ubu = np.array([self.v_max, self.theta_max, self.p_max])
@@ -1499,7 +1535,14 @@ class MPC:
                     self.X0[k + 1, :] = xk + self.dT * np.array(
                         [dx_dt, dy_dt, dpsi_dt, ds_dt, ddprev])
             for k in range(self.N + 1):
-                self.solver.set(k, "x", self.X0[k, :])
+                _xk = self.X0[k, :]
+                # LMPC joint-α: solver expects nx=8+K; X0 is kept physical (8).
+                # Pad the warm-start with a uniform-simplex α (1/K). (no-op if off)
+                _Ka = int(getattr(self, '_K_alpha', 0))
+                if _Ka and _xk.shape[0] < self._nx_phys + _Ka:
+                    _xk = np.concatenate([_xk[:self._nx_phys],
+                                          np.full(_Ka, 1.0 / _Ka)])
+                self.solver.set(k, "x", _xk)
             for k in range(self.N):
                 self.solver.set(k, "u", self.u0[k, :])
             self.WARM_START = True
@@ -1940,7 +1983,11 @@ class MPC:
         # rate-cost residual is consistent with the physical command stream.
         self._last_delta_applied = filt_steer
 
-        self.X0 = traj
+        # LMPC joint-α: keep warm-start X0 PHYSICAL (8) — drop the α columns from
+        # the 18-wide solver trajectory so the Euler/detour warm-start machinery
+        # (which assumes physical nx) stays correct. traj itself stays 18-wide for
+        # the LMPC query; downstream control/viz use traj[:, :8].
+        self.X0 = traj[:, :self.n_states] if traj.ndim == 2 and traj.shape[1] > self.n_states else traj
         self.u0 = u_seq
 
         # Visualize boundary along predicted s
