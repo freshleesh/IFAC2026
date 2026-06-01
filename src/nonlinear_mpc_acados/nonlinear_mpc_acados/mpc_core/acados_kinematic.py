@@ -750,8 +750,10 @@ class MPC:
         # never wins enough. With the cap, ref_v becomes ~3 m/s in tight
         # corners → MPC naturally slows for the apex; the rest of the
         # cost machinery just tracks the new (kinematically-safe) target.
-        # A_LAT_SAFE = 6.0 < a_lat_max = 8.0 leaves ~25% headroom so the
-        # actual a_lat constraint is rarely binding (no slack spike).
+        # The hard a_lat backstop is now derived as a_lat_safe + 1.0 (see
+        # a_lat_max below), so it sits just above this soft cap and is rarely
+        # binding — tracking ref_v=√(a_lat_safe/κ) yields steady a_lat≈a_lat_safe,
+        # which stays under the backstop (no per-corner slack spike).
         # Smooth fmin via 0.5·(a+b−sqrt((a−b)²+ε)) — differentiable
         # everywhere, kink rounded over ~0.03 m/s.
         ref_v_raw  = self.ref_v(s_periodic)
@@ -1119,11 +1121,19 @@ class MPC:
         # cost explodes, and HPIPM produces NaN step directions →
         # ACADOS_MINSTEP. With uh=1e15 the trivial case is well within
         # bounds.
-        # Reverted to 8 (briefly tried 12 → caused hairpin trembling:
-        # cost surface too flat at high κ, IPM picked different
-        # near-optima cycle-to-cycle and prediction wobbled). Trade-off
-        # accepted: obstacle-on-curve will struggle but hairpin steady.
-        a_lat_max = 8.0
+        # a_lat_max = HARD backstop on actual lateral accel (vx·r). It must
+        # sit ABOVE the soft κ-cap a_lat_safe, else it binds every corner:
+        # tracking ref_v=√(a_lat_safe/κ) gives steady-corner a_lat = vx²κ =
+        # a_lat_safe, so a_lat_max < a_lat_safe (the old 8 vs deploy-9 case)
+        # silently slacks the constraint on every apex. Derive it from the
+        # codegen-time a_lat_safe_live (pushed from yaml before setup_MPC)
+        # with a +1.0 backstop margin, floored at the historical 8.0.
+        #   NOTE: a full 12 was tried and reverted (hairpin trembling — cost
+        #   surface too flat at high κ → IPM zigzag). +1.0 keeps the cap a
+        #   true backstop (just above the soft cap) without re-entering that
+        #   flat region; the steer-output EMA filter further damps any wobble.
+        a_lat_max = max(8.0, float(self.a_lat_safe_live) + 1.0)
+        self._log.info(f"[MPC-acados] a_lat hard cap = {a_lat_max:.2f} (a_lat_safe={float(self.a_lat_safe_live):.2f} + 1.0 backstop)")
         # h order: [h_obs, h_corridor_top, h_corridor_bot, a_lat]
         ocp.constraints.lh = np.array([0.0, 0.0, 0.0, -a_lat_max])
         ocp.constraints.uh = np.array([1e15, 1e15, 1e15, a_lat_max])
@@ -1918,6 +1928,10 @@ class MPC:
         new_steer = float(u_seq[0, 1])
         prev_filt = getattr(self, '_steer_filt', new_steer)
         filt_steer = alpha * new_steer + (1.0 - alpha) * prev_filt
+        # Defensive clip: EMA of two in-bound values is in-bound by induction,
+        # but a numerical overshoot or a prev_filt seeded from a different
+        # bound regime must never push the actuator past the physical limit.
+        filt_steer = min(self.theta_max, max(self.theta_min, filt_steer))
         self._steer_filt = filt_steer
         u_seq[0, 1] = filt_steer
 

@@ -735,6 +735,7 @@ class MPCNode(Node):
             buf['state'] = []; buf['input'] = []; buf['time'] = []
             buf['lap_start_t'] = time.monotonic()
             buf['max_abs_ec'] = 0.0
+            buf['stuck_seconds_accum'] = 0.0   # reset per-lap (currently unwired — no incrementer yet; reset here so it never accumulates across laps once wired)
             buf['n_resets_in_lap'] = getattr(self.mpc, '_stuck_release_total', 0)
             buf['last_lap'] = lap_idx
             return
@@ -767,6 +768,7 @@ class MPCNode(Node):
         buf['state'] = []; buf['input'] = []; buf['time'] = []
         buf['lap_start_t'] = time.monotonic()
         buf['max_abs_ec'] = 0.0
+        buf['stuck_seconds_accum'] = 0.0   # reset per-lap (see note above — unwired, but keep reset symmetric)
         buf['n_resets_in_lap'] = getattr(self.mpc, '_stuck_release_total', 0)
         buf['last_lap'] = lap_idx
 
