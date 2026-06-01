@@ -957,6 +957,9 @@ class MPCNode(Node):
         # LM regularization (read before setup_MPC so codegen picks it up).
         self.mpc.lm_dynamic = float(self.get_parameter('lm_dynamic').value)
         self.mpc.dyn_use_pacejka = (self.mpc.dyn_tire_model == 'pacejka')
+        # LMPC codegen flag (Step 4): when LMPC active, drop the terminal contour/yaw
+        # W_e emphasis so the joint-α apex target — not centerline tracking — sets x_N.
+        self.mpc._lmpc_codegen = bool(self.get_parameter('use_lmpc').value)
         # Phase D closed-form CasADi GP residual flag — set BEFORE setup_MPC()
         # so the dynamics codegen picks it up. Independent of use_gp_residual.
         self.mpc.use_gp_casadi = bool(self.get_parameter('use_gp_casadi').value)

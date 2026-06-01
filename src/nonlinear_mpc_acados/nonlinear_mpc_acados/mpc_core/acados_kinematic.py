@@ -1076,11 +1076,20 @@ class MPC:
         ocp.cost.W_0 = ocp.cost.W
         # W_e: dynamic mode inserts vx terminal cost-to-go (q_v_def*3) before the
         # LMPC residual (last entry 1.0, since residual already carries sqrt(lmpc_w)).
+        # Step 4 reference-free terminal: when LMPC active, drop the terminal
+        # contour(×5→×0.5)/yaw(×4→×0.5) emphasis so the joint-α apex target sets
+        # x_N (else the centerline contour pins it). lag(×5, progress) kept; the
+        # lmpc_residual weight boosted (1→6) so the α terminal dominates. Non-LMPC
+        # deploy unchanged (×5/×4). Needs mpc._lmpc_codegen set before setup_MPC.
+        _lmpc_on = bool(getattr(self, '_lmpc_codegen', False))
+        _cte_e  = 0.5 if _lmpc_on else 5.0
+        _psi_e  = 0.5 if _lmpc_on else 4.0
+        _lmpc_e = 6.0 if _lmpc_on else 1.0
         if self.use_dynamic:
-            W_e_diag = [q_cte_def * 5.0, q_lag_def * 5.0,
-                        q_psi_def * 4.0, q_v_def * 3.0, 1.0]
+            W_e_diag = [q_cte_def * _cte_e, q_lag_def * 5.0,
+                        q_psi_def * _psi_e, q_v_def * 3.0, _lmpc_e]
         else:
-            W_e_diag = [q_cte_def * 5.0, q_lag_def * 5.0, q_psi_def * 4.0, 1.0]
+            W_e_diag = [q_cte_def * _cte_e, q_lag_def * 5.0, q_psi_def * _psi_e, _lmpc_e]
         ocp.cost.W_e = np.diag(W_e_diag)
         ocp.cost.yref   = np.zeros(ny)
         ocp.cost.yref_0 = np.zeros(ny)
