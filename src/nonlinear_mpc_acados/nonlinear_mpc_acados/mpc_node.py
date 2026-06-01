@@ -632,6 +632,20 @@ class MPCNode(Node):
                         s_arr = np.array([p['s_m'] for p in w], dtype=float)
                         kap = np.abs(np.array([p['kappa_radpm'] for p in w], dtype=float))
                         v_arr = np.minimum(v_max_now, np.sqrt(a_lat / np.maximum(kap, 1e-3)))
+                        # Clamp seed LATERAL to the corridor (raceline reaches ±0.97 >
+                        # corridor ±0.75): SS ⊂ corridor → α target ⊂ corridor → the car
+                        # cuts apex only to the corridor edge (no wall overshoot).
+                        _clh = max(0.10, float(self.get_parameter('mpc_corridor_half_width').value) - 0.15)
+                        _cl = np.asarray(tr.center_lane)
+                        _ang = getattr(tr, 'center_point_angles', None)
+                        for _i in range(len(xy)):
+                            _j = int(np.argmin(np.linalg.norm(_cl[:, :2] - xy[_i, :2], axis=1)))
+                            _ps = float(_ang[_j]) if (_ang is not None and _j < len(_ang)) else 0.0
+                            _lat = math.sin(_ps) * (xy[_i, 0] - _cl[_j, 0]) - math.cos(_ps) * (xy[_i, 1] - _cl[_j, 1])
+                            if abs(_lat) > _clh:
+                                _ex = _lat - max(-_clh, min(_clh, _lat))
+                                xy[_i, 0] -= _ex * math.sin(_ps)
+                                xy[_i, 1] -= _ex * (-math.cos(_ps))
                         self.get_logger().info(
                             f"[LMPC] IQP apex seed: {len(w)} pts, v∈"
                             f"[{v_arr.min():.1f},{v_arr.max():.1f}] grip-clamped @ a_lat={a_lat:.1f}")
@@ -1493,9 +1507,37 @@ class MPCNode(Node):
         # x_N forward). traj[-1] is the 8-state horizon end (dynamic).
         if getattr(self, '_lmpc_use', False) and traj is not None and traj.shape[0] > 1:
             try:
-                self._lmpc_query_state = np.asarray(traj[-1], dtype=float).copy()
+                # traj[-1] is 18-wide (8 physical + 10 α) after the joint-α state
+                # augmentation; the SS stores 8-dim physical states, so the query
+                # state MUST be the physical part only — else the SS distance broadcast
+                # fails (8 vs 18) every cycle → query fails → LMPC never activates
+                # (lmpc_w_live stays 0 → terminal cost 0 → pure-MPCC centerline). This
+                # was the reason Steps 2-8 showed NO behavioral change.
+                self._lmpc_query_state = np.asarray(traj[-1, :8], dtype=float).copy()
             except Exception:
                 self._lmpc_query_state = None
+            # DEBUG: in-solver α + terminal target lateral — confirms whether the
+            # joint-α terminal actually targets the APEX (tgt_lat≈±0.9) or centerline.
+            try:
+                ss = getattr(self.mpc, '_lmpc_ss_states', None)
+                if traj.shape[1] >= 18 and ss is not None and self._track is not None:
+                    a = np.asarray(traj[-1, 8:18], dtype=float); a = a / (a.sum() + 1e-6)
+                    ssm = np.asarray(ss)            # (4,K)
+                    tgt = ssm @ a                   # (4,)
+                    cl = np.asarray(self._track.center_lane)
+                    ang = getattr(self._track, 'center_point_angles', None)
+
+                    def _lat(xy):
+                        i = int(np.argmin(np.linalg.norm(cl[:, :2] - xy[:2], axis=1)))
+                        psi = float(ang[i]) if (ang is not None and i < len(ang)) else 0.0
+                        return math.sin(psi) * (xy[0] - cl[i, 0]) - math.cos(psi) * (xy[1] - cl[i, 1])
+                    ssl = [_lat(ssm[:2, j]) for j in range(ssm.shape[1])]
+                    self.get_logger().info(
+                        f"[αdbg] tgt_lat={_lat(tgt):+.2f} car_lat={_lat(np.asarray(x0_solve)):+.2f} "
+                        f"amax={a.max():.2f}@{int(a.argmax())} ssLat[{min(ssl):+.2f},{max(ssl):+.2f}]",
+                        throttle_duration_sec=0.5)
+            except Exception:
+                pass
 
         # Output: AckermannDrive
         cmd = AckermannDriveStamped()

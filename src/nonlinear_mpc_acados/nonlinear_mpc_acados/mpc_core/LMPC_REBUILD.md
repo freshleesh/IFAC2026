@@ -74,6 +74,25 @@ d_right − R_car), not a constant. Without it the apex is capped at ±0.60 rega
 - Terminal cost_e: α form (see Architecture). Needs `tgt=SS@alpha` in-graph (SS=p[18:58]
   reshaped 4×K, alpha=x_aug[8:8+K]). cost-to-go `Σ alpha*Q` (Q=p[58:68]).
 
+## ★ Progress log (branch lmpc-joint-alpha)
+- **Step 1 (committed 3faf664)**: state aug nx 8→18, α free at t=0, +1ms solve. ✓ verified LMPC-off.
+- **Step 2 (25291cc)**: joint-α soft terminal cost. **Step 3 (8ffb7e1)**: IQP apex seed grip-clamped.
+- **Steps 4-9 UNCOMMITTED** (reference-free terminal W_e, query fix, seed-penalty removal, αdbg
+  instrumentation, seed lateral-clamp, dial-back params).
+- ★★ **CRITICAL BUG found via data (Step 8b)**: `_lmpc_query_state = traj[-1]` was 18-wide
+  (incl α) but SS stores 8-dim → **SS query failed EVERY cycle → LMPC never activated
+  (lmpc_w_live=0) → pure-MPCC centerline through Steps 2-8.** That's why every knob (lmpc_w,
+  q_cte, CTG_COEF, seed-penalty) showed NO change — LMPC was OFF the whole time. Fixed:
+  `traj[-1, :8]`. → query 0 fails, αdbg fires, **tgt_lat=-0.95 (α DOES target the apex!)**.
+- After the fix, with the OVER-CRANKED params (set blindly while LMPC was off: lmpc_w=3.0,
+  CTG_COEF=0.5, q_cte=0.2) the now-active terminal OVERSHOT the corridor (ec=1.02 > 0.75 →
+  wall, lap 49s). → dial-back to moderate (lmpc_w=0.5, CTG_COEF=0.1, q_cte=0.45, q_v=0.3) +
+  **seed lateral-clamp to corridor** (raceline ±0.97 → ±0.6 so SS⊂corridor → no overshoot).
+  This config is BUILT but UNTESTED (next run).
+- **αdbg tool**: logs tgt_lat/car_lat/α-argmax/ssLat each 0.5s (mpc_node ~1499) — KEEP for tuning.
+- Next: test the dial-back+clamp config (LMPC active) → expect apex cut to ±0.6, stable, ≤17.7.
+  Then tune lmpc_w/CTG/q_cte for actual speed gain. Then max_speed↑ (5→6/7, user-requested).
+
 ## Gotchas (learned this session)
 - `_poll_lap_count` stale-latch → use lmpc_probe2.py (fixed-duration + CSV).
 - gym CSV appends across runs → archive old CSVs before analysis.

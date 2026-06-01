@@ -927,7 +927,7 @@ class MPC:
         _anchor   = x_N_4 - _target
         _anchor_d2 = ca.sum1(_anchor * (W_lmpc_diag @ _anchor))
         cog       = ca.sum1(_alpha_n * lmpc_ss_Q)           # cost-to-go of the chosen combo
-        _CTG_COEF = 0.01    # cost-to-go vs reachability balance (cog~O(200)·0.01 ≈ anchor); tunable
+        _CTG_COEF = 0.1     # moderate (LMPC 실제 활성 후 dial-back; 0.5는 over-crank)
         lmpc_residual = ca.sqrt(lmpc_w_p + 1e-12) * ca.sqrt(
             _anchor_d2 + _CTG_COEF * cog + 1e-6
         )

@@ -260,17 +260,19 @@ class LapDatabase:
             lap_time=lap_time, n_resets=0,
             metadata={"synthetic": True, "source": "raceline_seed"},
         )
-        # 2026-05-28 #21: Inflate synthetic seed's cost-to-go so SafeSet's
-        # nearest-by-Q lookup prefers real lap entries (which carry real
-        # dynamics info, vy/r/δ). Without this, seed (Q=T-1-t, often smaller
-        # than real laps' Q) dominates the attractor → car chases seed line
-        # that lacks slip info → corner slip → 박힘. +1000 makes synthetic
-        # only fall back if no real lap available.
+        # 2026-06-01 (rebuild Step 8): REMOVED the +1000 seed cost-to-go inflation.
+        # The apex seed is FASTER (fewer steps → lower cost-to-go) so the joint-α
+        # terminal (which minimizes Σα·Q) SHOULD prefer it — that is the whole point
+        # of seeding apex. The old +1000 inverted this → α picked the real centerline
+        # laps → car never cut apex (measured: ec stuck ~0.4 through Steps 2-7). The
+        # original slip-safety concern is now handled by the SOFT anchor + HARD
+        # corridor (joint-α), not by hiding the seed. Tiny tie-break so a genuinely
+        # faster real lap can still win once achieved.
         if ok:
             v_b = quantize_v(v_bucket)
             laps = self._db.get(v_b, [])
             if laps:
-                laps[-1].cost_to_go = laps[-1].cost_to_go + 1000.0
+                laps[-1].cost_to_go = laps[-1].cost_to_go + 5.0
         return ok
 
     def n_laps(self, v_bucket: float) -> int:
