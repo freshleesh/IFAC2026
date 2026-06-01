@@ -181,7 +181,7 @@ mpc_node:
     D_detour_live: 0.1
     # D_apex_live: B 단순화 후 dead path. acados_kinematic.py 의 e_c_ref=0
     # 하드코딩 → param 슬롯 p_sym[11] 만 차지하고 cost 에 안 들어감.
-    D_apex_live: 0.0
+    D_apex_live: 0.0    # apex bias off (코드는 복원됨: >0 시 코너 e_c_ref 안쪽 bias=in-out-in, 단 현 cost론 속도이득無→느려짐. 속도화 fix 후 활성)
     # R_car_live: 차 반지름 (m). F1TENTH width 0.30 ÷ 2 = 0.15.
     R_car_live: 0.15               # 원래값 복원
     # commit_dist_live: 회피 시작 거리. 클수록 일찍 commit. 10 → 15 (일찍).
@@ -195,7 +195,7 @@ mpc_node:
     # (PP 15.66, -8.6%; ideal 13.73, +4.3%; n_resets=2 안정; v_avg=4.99)
     # v=4 Phase A best (q_p=4.28 dominant) 과 정반대: v=6 에서는 q_cte=4.96 strong + q_p=0.42 약.
     # 빠른 차일수록 "centerline 단단히 추종 + anti-osc 강하게" 가 안전.
-    q_cte_scale_live: 0.5910   # 2026-05-30 BO-optimized RACING: 20랩 일관 18.44-18.76 mean 18.62 STUCK=0 (best 18.44<PP 18.46!). low q_cte(apex)+high q_drate(smooth). bo_turbo_20260530_145222.json raw_best.
+    q_cte_scale_live: 0.5910   # BO racing (deploy 18.62)
     q_lag_scale_live: 2.1710
     q_psi_scale_live: 0.4656   # EXP B-mode: 2.70→0.5 heading 자유 (centerline 헤딩 추종 X)
     q_v_scale_live: 0.3166

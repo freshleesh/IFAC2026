@@ -853,8 +853,21 @@ class MPC:
         sqrt_q_drate_scale = ca.sqrt(q_drate_scale_p + 1e-9)
         sqrt_q_dv_scale    = ca.sqrt(q_dv_scale_p    + 1e-9)
 
-        # B: apex bias 제거 (TUM AR variant, VPMPCC 없음). centerline 추종.
-        e_c_ref = ca.SX(0.0)
+        # ── Apex-biased lateral reference (2026-06-01, 해결3 복원) ──
+        # e_c_ref=0 (pure centerline) made the cost BLIND to the racing line:
+        # progress = centerline-arc-rate (capped at v_max) gives zero reward
+        # for apex-cutting, so low q_cte / wide corridor (tested) did NOT make
+        # the car cut apexes. The fix is to bias the lateral REFERENCE toward
+        # the inside of each corner (κ-dependent) so the contouring cost itself
+        # pulls the car onto an in-out-in apex line.
+        #   e_c sign: e_c<0 = left, >0 = right of centerline.
+        #   left turn (κ>0) → apex on the left → bias e_c_ref<0 = -sign(κ)·D.
+        # signed_kappa_lut is the apex-kernel-smoothed signed κ (bias kicks in
+        # BEFORE the geometric apex, decays on exit — see the kernel comments).
+        # tanh(·/κ_ref) saturates so |e_c_ref| ≤ D_apex on real corners and ≈0
+        # on straights. D_apex_p (=D_apex_live param) tunes depth; 0 = off.
+        _signed_k = self.signed_kappa_lut(s_periodic)
+        e_c_ref = -D_apex_p * ca.tanh(_signed_k / 0.20)
 
         # 9th residual: q_dv · a_x (longitudinal accel penalty).
         # 2026-05-27 review #8 — VPMPCC q_Δv 와 동일 정신. 이전엔 baked weight
