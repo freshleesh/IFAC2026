@@ -174,7 +174,7 @@ mpc_node:
     # (~0.9g) 초과라 곡률 speed-cap 무력화 → 타이트 코너 과속 진입 → 박힘 (2026-05-29
     # 진단: 남은 stall 13/13 over-speed entry). 물리적 그립으로 복원: 8 > 6 (코드 주석의
     # 의도값, a_lat_max=8 hard 아래 headroom). ref_v cap = √(a_lat/κ) 가 코너서 실제 작동.
-    a_lat_safe_live: 6.0   # known-good
+    a_lat_safe_live: 9.0   # 2026-06-01 #3: 6→9 (real vy/r 실측 그립 검증: a_lat 9.7/slip 5°=미포화). 코너 ref_v √9/κ → lap 18.62→17.84 (PP 18.46 깸, STUCK=0). 11은 v_max캡에 막혀 이득無+slip↑ → 9 최적
     # D_detour_live: 회피 시 lateral offset [m]. 0.3 → 0.2 → 0.1.
     # R_safe (hard constraint, 0.25m) 가 충돌 회피 보장하므로 D_detour 는
     # soft target 만이라 작아도 안전. 회피 후 raceline 복귀 시 over-shoot ↓.
