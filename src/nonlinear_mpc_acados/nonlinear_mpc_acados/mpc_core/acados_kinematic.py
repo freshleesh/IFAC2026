@@ -913,31 +913,23 @@ class MPC:
         # x_N 의 해당 4 dim: state = [x, y, psi, vx, vy, r, s, delta_prev]
         # 변수명은 우리 acados 스코프 기준 (x_, y_, psi, vx_for_cost).
         x_N_4 = ca.vertcat(x_, y_, psi, vx_for_cost)
-        # ── min-time terminal: proximity-weighted cost-to-go (NLS-compatible) ──
-        # 2026-05-30: the single nearest-point attractor (ss[:,0], CONSTANT
-        # Q_best) only TRACKED the nearest stored state (its corner speed
-        # included) → never minimized time-to-go → lap time DRIFTED up after
-        # ~10 laps (not Rosolia-monotonic; measured). Replace with a smooth
-        # softmax over the K safe-set points: terminal cost = proximity-weighted
-        # cost-to-go  cog(x_N) = Σ_j w_j·Q_j ,  w_j = softmax_j(-β·d_j²).
-        # Minimizing √(lmpc_w·cog) pulls x_N toward LOW cost-to-go (far-along)
-        # states that are also REACHABLE (near) → forward progress / min-time.
-        # Padding points (Q=1e6, far) get w≈0. Single smooth scalar residual →
-        # stays in NONLINEAR_LS (no EXTERNAL_COST); a small reg toward the
-        # nearest point keeps the Gauss-Newton Hessian positive-definite (the
-        # 2026-05-28 log-sum-exp softmin's −1/β·log instability is avoided).
-        _d2_cols = []
-        for _j in range(K_LMPC):
-            _dj = x_N_4 - lmpc_ss_states[:, _j]
-            _d2_cols.append(ca.sum1(_dj * (W_lmpc_diag @ _dj)))
-        d2_vec = ca.vertcat(*_d2_cols)                      # (K,1)
-        _neg = -lmpc_beta_p * d2_vec
-        _w_un = ca.exp(_neg - ca.mmax(_neg))                # numerically stable softmax
-        _w_sm = _w_un / (ca.sum1(_w_un) + 1e-12)
-        cog = ca.sum1(_w_sm * lmpc_ss_Q)                    # proximity-weighted cost-to-go
-        d2_best = d2_vec[0]                                 # nearest-point reg (conditioning)
+        # ── Step 2: JOINT-α soft terminal (Rosolia/TC-LMPC, acados-native) ──
+        # α = dyn['alpha'] is a STATE (x_aug[8:8+K]) the solver optimizes JOINTLY
+        # with x/u in the single RTI QP (no external loop, no decoupling). The
+        # terminal state is anchored (SOFT) to the convex combination SS·α_norm and
+        # α is biased toward low cost-to-go. α_norm = α/(Σα+ε) so no hard Σα=1 is
+        # needed. Because the SS-anchor is SOFT and the corridor is a hard STAGE
+        # constraint, when SS lies outside the corridor the CORRIDOR wins (no wall
+        # crash — the decoupled failure mode). lmpc_w=0 ⇒ residual ≡ 0 (deploy inert).
+        _alpha    = dyn['alpha'] if self.use_dynamic else ca.SX.zeros(K_LMPC)
+        _alpha_n  = _alpha / (ca.sum1(_alpha) + 1e-6)        # normalized convex weights
+        _target   = lmpc_ss_states @ _alpha_n               # (4,) = Σ αᵢ·SSᵢ
+        _anchor   = x_N_4 - _target
+        _anchor_d2 = ca.sum1(_anchor * (W_lmpc_diag @ _anchor))
+        cog       = ca.sum1(_alpha_n * lmpc_ss_Q)           # cost-to-go of the chosen combo
+        _CTG_COEF = 0.01    # cost-to-go vs reachability balance (cog~O(200)·0.01 ≈ anchor); tunable
         lmpc_residual = ca.sqrt(lmpc_w_p + 1e-12) * ca.sqrt(
-            cog + (lmpc_alpha_p + lmpc_reg_w_p) * d2_best + 1e-6
+            _anchor_d2 + _CTG_COEF * cog + 1e-6
         )
 
         if self.use_dynamic:
