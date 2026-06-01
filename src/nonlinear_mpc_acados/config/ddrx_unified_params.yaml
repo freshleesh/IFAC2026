@@ -124,8 +124,8 @@ mpc_node:
     # historical states) + regularization. lap-by-lap value function 학습으로
     # tire-model mismatch (gym ST vs MPCC Pacejka) 를 자동 보상.
     # use_lmpc=false (default) — LMPC term cost weight = 0, 기존 동작 동일.
-    use_lmpc: false            # B-mode(BO 18.62, 무drift)가 sustained 최선. softmin LMPC는 초반 18.48 더 빠르나 drift 잔존(full Rosolia 하드제약 필요).
-    lmpc_w: 0.1                # softmin term 가중 (acados W_e 의 lmpc residual entry 1.0 × lmpc_w)
+    use_lmpc: true             # Step2 joint-α 검증
+    lmpc_w: 0.2                # softmin term 가중 (acados W_e 의 lmpc residual entry 1.0 × lmpc_w)
     lmpc_alpha: 1.0            # distance penalty in g_i = Q_i + α·d_i²
     lmpc_beta: 0.01           # softmax smoothness. 0.01=안정(1.0은 sharp→chatter→wedge 검증).
     lmpc_reg_w: 0.01           # 0.001→0.01 (reviewer #★4: regularization 강화, Hessian 양정칙) (best SS attractor)
@@ -138,7 +138,7 @@ mpc_node:
     lmpc_seed_from_raceline: true    # cold-start raceline seed (LMPC용)
     # Failed lap filter (reviewer #4-A — bad lap 이 SS 오염 막음)
     lmpc_max_resets: 3
-    lmpc_max_abs_ec_m: 100.0
+    lmpc_max_abs_ec_m: 0.6
     lmpc_max_lap_time_ratio: 3.0
     lmpc_max_stuck_seconds: 5.0
     lmpc_buffer_per_bucket: 10
@@ -195,10 +195,10 @@ mpc_node:
     # (PP 15.66, -8.6%; ideal 13.73, +4.3%; n_resets=2 안정; v_avg=4.99)
     # v=4 Phase A best (q_p=4.28 dominant) 과 정반대: v=6 에서는 q_cte=4.96 strong + q_p=0.42 약.
     # 빠른 차일수록 "centerline 단단히 추종 + anti-osc 강하게" 가 안전.
-    q_cte_scale_live: 0.5910   # BO racing (deploy 18.62)
+    q_cte_scale_live: 0.6   # BO racing (deploy 18.62)
     q_lag_scale_live: 2.1710
     q_psi_scale_live: 0.4656   # EXP B-mode: 2.70→0.5 heading 자유 (centerline 헤딩 추종 X)
-    q_v_scale_live: 0.3166
+    q_v_scale_live: 0.3
     q_dd_scale_live: 1.0       # not in BO
     q_p_scale_live: 4.9593   # committed (STUCK=0 18.87). q_p=6.0이면 best 18.52(PP근접)지만 STUCK=5(공격적). 속도/안정 tradeoff knob.
     q_drate_scale_live: 3.5936

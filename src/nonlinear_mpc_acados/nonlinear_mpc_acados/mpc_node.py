@@ -755,7 +755,13 @@ class MPCNode(Node):
             ss_Q[i] = res.cost_to_go[i]
         self.mpc._lmpc_ss_states = ss_states
         self.mpc._lmpc_ss_Q = ss_Q
-        self.mpc.lmpc_w_live     = self._lmpc_w_target
+        # Post-crash robustness: while STUCK / in stuck-recovery the state x0 is bad
+        # (against a wall, vx≈0) → SQP_RTI prediction diverges and the LMPC terminal
+        # fights the recovery. Gate LMPC OFF during recovery so pure-MPCC (the proven
+        # stuck-release) pulls the car out; re-enable once moving again.
+        _vx_low = (x0 is not None and len(x0) > 3 and float(x0[3]) < 0.3)
+        _stuck = bool(getattr(self.mpc, '_stuck_release_active', False)) or _vx_low
+        self.mpc.lmpc_w_live     = 0.0 if _stuck else self._lmpc_w_target
         self.mpc.lmpc_alpha_live = self._lmpc_alpha
         self.mpc.lmpc_beta_live  = self._lmpc_beta
         self.mpc.lmpc_reg_w_live = self._lmpc_reg_w
