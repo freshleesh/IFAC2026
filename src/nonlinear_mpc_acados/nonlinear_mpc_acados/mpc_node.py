@@ -281,6 +281,9 @@ class MPCNode(Node):
         self.declare_parameter('lmpc_load_path', '')
         self.declare_parameter('lmpc_save_path', '')
         self.declare_parameter('lmpc_seed_from_raceline', True)
+        # IQP raceline json for the apex seed (grip-clamped). Set by launch to
+        # maps/<map>/global_waypoints.json. Empty → centerline seed fallback.
+        self.declare_parameter('lmpc_raceline_json', '')
         self.declare_parameter('lmpc_max_resets', 3)
         self.declare_parameter('lmpc_max_abs_ec_m', 1.0)
         self.declare_parameter('lmpc_max_lap_time_ratio', 1.5)
@@ -607,28 +610,45 @@ class MPCNode(Node):
             except Exception as e:
                 self.get_logger().warn(f"[LMPC] load failed ({path}): {e}")
 
-        # 2) raceline seed (cold start: 우리는 map 다 알아서 first lap 도 raceline 추종 of SS)
+        # 2) raceline seed (cold start). Step 3: PREFER the IQP raceline (apex line)
+        #    with GRIP-CLAMPED speed min(v_max, √(a_lat/|κ_raceline|)) — gives the
+        #    SS Q-function a feasible FASTER target than centerline. Falls back to
+        #    centerline geometry if no raceline json. (joint-α + soft anchor + hard
+        #    corridor keeps the car drivable even where the raceline is outside it.)
         if self._lmpc_seed_raceline and self._track is not None:
             try:
                 v_max_now = float(getattr(self.mpc, 'v_max', 5.0))
+                a_lat = float(getattr(self.mpc, 'a_lat_safe_live', 9.0))
                 tr = self._track
-                # Raw centerline (N_orig × 2) — non-extended, non-inflated original lane
-                cl = tr.raw_center_lane if tr.raw_center_lane is not None else tr.center_lane
-                xy = np.asarray(cl, dtype=float)
-                # s grid (raw original arc length)
-                s_arr = np.asarray(tr.element_arc_lengths_orig, dtype=float)[:len(xy)]
-                # ψ from center_point_angles, fallback to finite-diff
-                if tr.center_point_angles is not None and len(tr.center_point_angles) >= len(xy):
-                    psi = np.asarray(tr.center_point_angles, dtype=float)[:len(xy)]
-                else:
-                    dx = np.diff(xy[:, 0], append=xy[0, 0])
-                    dy = np.diff(xy[:, 1], append=xy[0, 1])
-                    psi = np.arctan2(dy, dx)
-                # ref_v from CasADi LUT — sample at each s. fallback uniform 0.8*v_max.
-                try:
-                    v_arr = np.array([float(tr.lut_ref_v(s)) for s in s_arr])
-                except Exception:
-                    v_arr = np.full(len(xy), v_max_now * 0.8)
+                xy = psi = s_arr = v_arr = None
+                rl_json = str(self.get_parameter('lmpc_raceline_json').value)
+                if rl_json and os.path.exists(rl_json):
+                    import json as _json
+                    gw = _json.load(open(rl_json))
+                    w = gw.get('global_traj_wpnts_iqp', {}).get('wpnts', [])
+                    if len(w) >= 10:
+                        xy = np.array([[p['x_m'], p['y_m']] for p in w], dtype=float)
+                        psi = np.array([p['psi_rad'] for p in w], dtype=float)
+                        s_arr = np.array([p['s_m'] for p in w], dtype=float)
+                        kap = np.abs(np.array([p['kappa_radpm'] for p in w], dtype=float))
+                        v_arr = np.minimum(v_max_now, np.sqrt(a_lat / np.maximum(kap, 1e-3)))
+                        self.get_logger().info(
+                            f"[LMPC] IQP apex seed: {len(w)} pts, v∈"
+                            f"[{v_arr.min():.1f},{v_arr.max():.1f}] grip-clamped @ a_lat={a_lat:.1f}")
+                if xy is None:
+                    cl = tr.raw_center_lane if tr.raw_center_lane is not None else tr.center_lane
+                    xy = np.asarray(cl, dtype=float)
+                    s_arr = np.asarray(tr.element_arc_lengths_orig, dtype=float)[:len(xy)]
+                    if tr.center_point_angles is not None and len(tr.center_point_angles) >= len(xy):
+                        psi = np.asarray(tr.center_point_angles, dtype=float)[:len(xy)]
+                    else:
+                        dx = np.diff(xy[:, 0], append=xy[0, 0]); dy = np.diff(xy[:, 1], append=xy[0, 1])
+                        psi = np.arctan2(dy, dx)
+                    try:
+                        v_arr = np.array([float(tr.lut_ref_v(s)) for s in s_arr])
+                    except Exception:
+                        v_arr = np.full(len(xy), v_max_now * 0.8)
+                    self.get_logger().info("[LMPC] centerline seed (no IQP raceline json)")
                 ok = self._lmpc_db.seed_from_raceline(v_max_now, xy, psi, v_arr, s_arr)
                 if ok:
                     self.get_logger().info(

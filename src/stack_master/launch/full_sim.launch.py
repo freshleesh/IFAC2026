@@ -209,6 +209,10 @@ def _build(context: LaunchContext, *_args, **_kwargs):
                         # CSV fallback 이 올바른 track 을 로드하도록 — map 이름이
                         # nonlinear_mpc_acados/share/tracks/track<name>/ 와 매칭.
                         "track_name": map_name,
+                        # IQP raceline json for LMPC apex seed (grip-clamped). Same
+                        # file global_republisher uses. Empty → centerline seed.
+                        "lmpc_raceline_json": os.path.join(
+                            sm_share, "maps", map_name, "global_waypoints.json"),
                         # teleport-rescue toggle (검증 시 false 로 raw wedging 노출)
                         "enable_sim_reset": (
                             LaunchConfiguration("enable_sim_reset").perform(context).lower()
