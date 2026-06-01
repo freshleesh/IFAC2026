@@ -57,6 +57,23 @@ d_right − R_car), not a constant. Without it the apex is capped at ±0.60 rega
    hold 16 laps STUCK=0 and ideally < 17.72 (apex gain) without drift.
 6. **Corridor var-width** (companion) → unlock full apex.
 
+## Exact edit points (acados_kinematic.py) — Step 1 state augmentation
+- `_build_dynamic_model` (~390): after `x=vertcat(...8...)`, add `alpha=SX.sym('alpha',K)`,
+  `x_aug=vertcat(x,alpha)`, `f_aug=vertcat(f_expl, SX.zeros(K))`, `xdot_aug=SX.sym('xdot',8+K)`.
+  Return x_aug/f_aug (and keep phys symbols for cost).
+- setup_MPC dynamic branch (~555-572): `x=dyn['x_aug']`, `f_expl=dyn['f_aug']`, `nx=8+K`.
+  Cost residuals still index phys symbols (x_,y_,psi,vx...) — UNCHANGED (they're the
+  same SX leaves inside x_aug).
+- `ocp.constraints.x0 = np.zeros(nx)` (~1086): REPLACE with partial initial constraint —
+  `idxbx_0 = arange(8)`, `lbx_0=ubx_0=zeros(8)` (set per-cycle). α NOT in idxbx_0 → free.
+- α bounds + simplex: extend `idxbx` (~1110) to include α indices [8..8+K-1] with
+  lbx=0,ubx=1; add `con_h` row `sum(alpha)-1` bounded [0,0] (eq) — or a linear constraint C.
+- Solve loop (~1704): `self.solver.set(0,"lbx_0",state8); set(0,"ubx_0",state8)` for the 8
+  phys indices (was `set(0,"lbx",initial_state)` with full x0). α left free.
+- traj extraction unchanged: `traj[:,0:8]` is the physical state (viz/control).
+- Terminal cost_e: α form (see Architecture). Needs `tgt=SS@alpha` in-graph (SS=p[18:58]
+  reshaped 4×K, alpha=x_aug[8:8+K]). cost-to-go `Σ alpha*Q` (Q=p[58:68]).
+
 ## Gotchas (learned this session)
 - `_poll_lap_count` stale-latch → use lmpc_probe2.py (fixed-duration + CSV).
 - gym CSV appends across runs → archive old CSVs before analysis.
