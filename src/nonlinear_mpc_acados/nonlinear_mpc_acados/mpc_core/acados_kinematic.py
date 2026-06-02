@@ -322,7 +322,10 @@ class MPC:
         smooth_win = 11
         kernel = np.ones(smooth_win) / float(smooth_win)
         abs_k_arr = np.convolve(abs_k_arr, kernel, mode='same')
-        LOOKAHEAD_M = 6.0   # 6 → 12 (코너 exit → 직선 over-shoot fix)
+        # 2026-06-02 속도비례: 고속일수록 코너 전 제동거리↑ 필요. v=8 면
+        # 8→2.3 감속에 ~10m. per-stage hard cap 이 u[0] 을 √(a_lat/κ_fwd) 로
+        # 묶으므로, forward-max 가 코너를 이만큼 일찍 봐야 cap 이 제때 내려감.
+        LOOKAHEAD_M = max(6.0, float(self.v_max) ** 2 / 6.0)   # v5→6m, v8→10.7m
         n_look = int(LOOKAHEAD_M / self.kappa_ds)
         n_grid = len(abs_k_arr)
         abs_k_fwd = np.empty(n_grid, dtype=float)
@@ -514,20 +517,8 @@ class MPC:
         # Real lateral acceleration (replaces v² tan(δ)/L kinematic form).
         a_lat_expr = vx * r_yaw
 
-        # ── LMPC joint-α (parameter-as-state): α as K constant-dynamics states ──
-        # x_aug = [x(8), α(K)], f_aug = [f_dyn(8), 0_K] → α constant over horizon,
-        # free at t=0, optimized JOINTLY with x/u in the single RTI solve. Used only
-        # in the terminal cost (Step 2). When lmpc inactive the α block is inert
-        # (only the simplex constraint binds it). See LMPC_REBUILD.md.
-        K_alpha = 10
-        alpha = ca.SX.sym('alpha', K_alpha)
-        x_aug = ca.vertcat(x, alpha)
-        xdot_aug = ca.SX.sym('xdot_aug', 8 + K_alpha)
-        f_aug = ca.vertcat(f_expl, ca.SX.zeros(K_alpha))
-
         return dict(
             x=x, u=u, xdot=xdot, f_expl=f_expl,
-            x_aug=x_aug, xdot_aug=xdot_aug, f_aug=f_aug, alpha=alpha, K_alpha=K_alpha,
             x_pos=x_pos, y_pos=y_pos, psi=psi,
             vx=vx, vy=vy, r=r_yaw, s=s, delta_prev=delta_prev,
             a_x=a_x, delta=delta, p_v=p_v,
@@ -775,8 +766,21 @@ class MPC:
         # CiMPCC g(κ) 원복 (alpha=2 도 너무 강함, mpc 가 vx=0 local min 갇힘).
         # Heilmeier CSV ref_v 이미 곡률+brake 포함 → 충분.
         diff_v     = ref_v_raw - v_kin_max
-        ref_v_expr = 0.5 * (ref_v_raw + v_kin_max
+        _rv1       = 0.5 * (ref_v_raw + v_kin_max
                             - ca.sqrt(diff_v * diff_v + EPS_VM))
+        # ── ★ 2026-06-02 WIDTH-AWARE speed cap (신규 방법) ──────────────────
+        # 진단: 차가 s≈29 의 "거의 직선이지만 좁은(폭 0.36m)" 구간을 풀스피드(5)로
+        # 진입 → 횡오차가 0.36m 벽 초과 → wedge. 곡률캡(√a_lat/κ)은 직선이라 못 잡음.
+        # → 코리도어 폭이 좁으면 속도도 캡: 좁을수록 느리게 해서 횡오차 예산 확보.
+        # w_left/w_right = boundary 의 e_c-투영(횡위치). 좁은 쪽 clearance = min(|.|).
+        _wl = sin_t * (left_x - ref_x) - cos_t * (left_y - ref_y)
+        _wr = sin_t * (right_x - ref_x) - cos_t * (right_y - ref_y)
+        _dmin = ca.fmin(ca.fabs(_wl), ca.fabs(_wr))          # 좁은 쪽 반폭 [m]
+        _K_WIDTH = 100.0  # 2026-06-02 width-cap 무력화(곡률cap 주도, PP원리). 느림=잘못된 땜빵이었음      # v_width = K·(clearance−margin). 0.36m→~2.3, 1.0m→~8 m/s
+        _v_width = _K_WIDTH * ca.fmax(_dmin - 0.10, 0.05)
+        diff_w     = _rv1 - _v_width
+        ref_v_expr = 0.5 * (_rv1 + _v_width
+                            - ca.sqrt(diff_w * diff_w + EPS_VM))   # smooth min(_rv1, v_width)
 
         # ---- Distance² to obstacle (used by h constraint only) ----
         d2 = (x_ - obs_x) ** 2 + (y_ - obs_y) ** 2
@@ -912,24 +916,35 @@ class MPC:
         W_lmpc_diag = ca.diag(ca.SX([1.0, 1.0, 1.5, 0.3]))   # px, py, ψ, vx
         # x_N 의 해당 4 dim: state = [x, y, psi, vx, vy, r, s, delta_prev]
         # 변수명은 우리 acados 스코프 기준 (x_, y_, psi, vx_for_cost).
-        x_N_4 = ca.vertcat(x_, y_, psi, vx_for_cost)
-        # ── Step 2: JOINT-α soft terminal (Rosolia/TC-LMPC, acados-native) ──
-        # α = dyn['alpha'] is a STATE (x_aug[8:8+K]) the solver optimizes JOINTLY
-        # with x/u in the single RTI QP (no external loop, no decoupling). The
-        # terminal state is anchored (SOFT) to the convex combination SS·α_norm and
-        # α is biased toward low cost-to-go. α_norm = α/(Σα+ε) so no hard Σα=1 is
-        # needed. Because the SS-anchor is SOFT and the corridor is a hard STAGE
-        # constraint, when SS lies outside the corridor the CORRIDOR wins (no wall
-        # crash — the decoupled failure mode). lmpc_w=0 ⇒ residual ≡ 0 (deploy inert).
-        _alpha    = dyn['alpha'] if self.use_dynamic else ca.SX.zeros(K_LMPC)
-        _alpha_n  = _alpha / (ca.sum1(_alpha) + 1e-6)        # normalized convex weights
-        _target   = lmpc_ss_states @ _alpha_n               # (4,) = Σ αᵢ·SSᵢ
-        _anchor   = x_N_4 - _target
-        _anchor_d2 = ca.sum1(_anchor * (W_lmpc_diag @ _anchor))
-        cog       = ca.sum1(_alpha_n * lmpc_ss_Q)           # cost-to-go of the chosen combo
-        _CTG_COEF = 0.1     # moderate (LMPC 실제 활성 후 dial-back; 0.5는 over-crank)
+        # 2026-06-02 fix: kinematic 서 vx_for_cost = v (control). terminal cost 는
+        # control 의존 금지(acados) → kinematic 은 vx 슬롯을 상수 0 으로(lmpc anchor 의
+        # vx 항 제거; lmpc 는 dynamic 전용이라 무해). dynamic 은 vx(state) 그대로.
+        x_N_4 = ca.vertcat(x_, y_, psi, (vx_for_cost if self.use_dynamic else ca.SX(0.0)))
+        # ── min-time terminal: proximity-weighted cost-to-go (NLS-compatible) ──
+        # 2026-05-30: the single nearest-point attractor (ss[:,0], CONSTANT
+        # Q_best) only TRACKED the nearest stored state (its corner speed
+        # included) → never minimized time-to-go → lap time DRIFTED up after
+        # ~10 laps (not Rosolia-monotonic; measured). Replace with a smooth
+        # softmax over the K safe-set points: terminal cost = proximity-weighted
+        # cost-to-go  cog(x_N) = Σ_j w_j·Q_j ,  w_j = softmax_j(-β·d_j²).
+        # Minimizing √(lmpc_w·cog) pulls x_N toward LOW cost-to-go (far-along)
+        # states that are also REACHABLE (near) → forward progress / min-time.
+        # Padding points (Q=1e6, far) get w≈0. Single smooth scalar residual →
+        # stays in NONLINEAR_LS (no EXTERNAL_COST); a small reg toward the
+        # nearest point keeps the Gauss-Newton Hessian positive-definite (the
+        # 2026-05-28 log-sum-exp softmin's −1/β·log instability is avoided).
+        _d2_cols = []
+        for _j in range(K_LMPC):
+            _dj = x_N_4 - lmpc_ss_states[:, _j]
+            _d2_cols.append(ca.sum1(_dj * (W_lmpc_diag @ _dj)))
+        d2_vec = ca.vertcat(*_d2_cols)                      # (K,1)
+        _neg = -lmpc_beta_p * d2_vec
+        _w_un = ca.exp(_neg - ca.mmax(_neg))                # numerically stable softmax
+        _w_sm = _w_un / (ca.sum1(_w_un) + 1e-12)
+        cog = ca.sum1(_w_sm * lmpc_ss_Q)                    # proximity-weighted cost-to-go
+        d2_best = d2_vec[0]                                 # nearest-point reg (conditioning)
         lmpc_residual = ca.sqrt(lmpc_w_p + 1e-12) * ca.sqrt(
-            _anchor_d2 + _CTG_COEF * cog + 1e-6
+            cog + (lmpc_alpha_p + lmpc_reg_w_p) * d2_best + 1e-6
         )
 
         if self.use_dynamic:
@@ -1001,17 +1016,6 @@ class MPC:
         a_lat = a_lat_expr
         model_ac.con_h_expr = ca.vertcat(h_obs, h_corridor_top, h_corridor_bot, a_lat)
 
-        # ---- LMPC joint-α: augment state with α (AFTER any GP residual on f_expl) ──
-        # x→[x,α], f_expl→[f_expl,0_K], xdot→18. Done here (post-GP) so the GP term
-        # (8-dim) is added before augmentation. nx 8→18. (dynamic only.)
-        if self.use_dynamic:
-            x = ca.vertcat(x, dyn['alpha'])
-            f_expl = ca.vertcat(f_expl, ca.SX.zeros(dyn['K_alpha']))
-            xdot = dyn['xdot_aug']
-            nx = nx + dyn['K_alpha']
-            self._nx_phys = 8
-            self._K_alpha = dyn['K_alpha']
-
         # ---- Compose model ----
         model_ac.f_impl_expr = xdot - f_expl
         model_ac.f_expl_expr = f_expl
@@ -1076,20 +1080,11 @@ class MPC:
         ocp.cost.W_0 = ocp.cost.W
         # W_e: dynamic mode inserts vx terminal cost-to-go (q_v_def*3) before the
         # LMPC residual (last entry 1.0, since residual already carries sqrt(lmpc_w)).
-        # Step 4 reference-free terminal: when LMPC active, drop the terminal
-        # contour(×5→×0.5)/yaw(×4→×0.5) emphasis so the joint-α apex target sets
-        # x_N (else the centerline contour pins it). lag(×5, progress) kept; the
-        # lmpc_residual weight boosted (1→6) so the α terminal dominates. Non-LMPC
-        # deploy unchanged (×5/×4). Needs mpc._lmpc_codegen set before setup_MPC.
-        _lmpc_on = bool(getattr(self, '_lmpc_codegen', False))
-        _cte_e  = 0.5 if _lmpc_on else 5.0
-        _psi_e  = 0.5 if _lmpc_on else 4.0
-        _lmpc_e = 6.0 if _lmpc_on else 1.0
         if self.use_dynamic:
-            W_e_diag = [q_cte_def * _cte_e, q_lag_def * 5.0,
-                        q_psi_def * _psi_e, q_v_def * 3.0, _lmpc_e]
+            W_e_diag = [q_cte_def * 5.0, q_lag_def * 5.0,
+                        q_psi_def * 4.0, q_v_def * 3.0, 1.0]
         else:
-            W_e_diag = [q_cte_def * _cte_e, q_lag_def * 5.0, q_psi_def * _psi_e, _lmpc_e]
+            W_e_diag = [q_cte_def * 5.0, q_lag_def * 5.0, q_psi_def * 4.0, 1.0]
         ocp.cost.W_e = np.diag(W_e_diag)
         ocp.cost.yref   = np.zeros(ny)
         ocp.cost.yref_0 = np.zeros(ny)
@@ -1107,15 +1102,7 @@ class MPC:
         Tf = ocp.solver_options.tf
 
         # ---- Initial state placeholder ----
-        # LMPC joint-α: fix ONLY the 8 physical states at t=0; the K α-states are
-        # FREE (the solver optimizes them jointly with x/u). Full x0 would pin α=0,
-        # which contradicts the Σα=1 simplex → infeasible. (dynamic only.)
-        if self.use_dynamic:
-            ocp.constraints.idxbx_0 = np.arange(self._nx_phys)
-            ocp.constraints.lbx_0 = np.zeros(self._nx_phys)
-            ocp.constraints.ubx_0 = np.zeros(self._nx_phys)
-        else:
-            ocp.constraints.x0 = np.zeros(nx)
+        ocp.constraints.x0 = np.zeros(nx)
 
         # ---- Input bounds ----
         # Kinematic: u = [v, δ, p_v] — bounds on v, δ, p_v.
@@ -1139,14 +1126,9 @@ class MPC:
             # vx lower bound 0: 절대 후진 안 함. -1.0 허용 시 tire model
             # 의 vx<0 영역 (실제로는 vx²=0.01 이라도 sign(vx)·F 가 발산)
             # 에서 솔버 폭주 가능. 0 으로 강제하면 reverse 자체 차단.
-            # vx,vy,r bounds + LMPC α bounds (indices 8..8+K-1) ∈ [0,1]. Σα=1 is NOT
-            # a hard constraint — the terminal cost uses α/(Σα+ε) (normalized), so
-            # α≥0 + bounded suffices and there's no infeasibility risk. (Step 2 cost.)
-            _Ka = self._K_alpha
-            _aidx = np.arange(self._nx_phys, self._nx_phys + _Ka)
-            ocp.constraints.idxbx = np.concatenate([np.array([3, 4, 5]), _aidx])
-            ocp.constraints.lbx   = np.concatenate([np.array([0.0, -10.0, -20.0]), np.zeros(_Ka)])
-            ocp.constraints.ubx   = np.concatenate([np.array([self.v_max + 0.5, 10.0, 20.0]), np.ones(_Ka)])
+            ocp.constraints.idxbx = np.array([3, 4, 5])
+            ocp.constraints.lbx   = np.array([0.0, -10.0, -20.0])
+            ocp.constraints.ubx   = np.array([self.v_max + 0.5, 10.0, 20.0])   # 작은 margin (0.5 m/s). v_max 까지 빡빡하게 강제하면 solver IPM 발산 → 12m teleport. 원래 +2 로 풀어줌.
         else:
             ocp.constraints.lbu = np.array([0.0, self.theta_min, 0.0])
             ocp.constraints.ubu = np.array([self.v_max, self.theta_max, self.p_max])
@@ -1191,6 +1173,8 @@ class MPC:
         #   idx 0 (h_obs):       zl=40,  Zl=30   (was 30/80)
         #   idx 1,2 (corridor):  zl=20,  Zl=15   (was 15/30)
         #   idx 3 (a_lat):       zl=50,  Zl=15   (was 50/30)
+        # (2026-06-02 corridor 6배 강화 시도 → 역효과 5.1접촉/랩: 강한 corridor
+        #  push 가 반대편 클립 유발. 원복.)
         ocp.cost.zl = np.array([40.0, 20.0, 20.0, 50.0])
         ocp.cost.zu = np.array([40.0, 20.0, 20.0, 50.0])
         ocp.cost.Zl = np.array([30.0, 15.0, 15.0, 15.0])
@@ -1536,14 +1520,7 @@ class MPC:
                     self.X0[k + 1, :] = xk + self.dT * np.array(
                         [dx_dt, dy_dt, dpsi_dt, ds_dt, ddprev])
             for k in range(self.N + 1):
-                _xk = self.X0[k, :]
-                # LMPC joint-α: solver expects nx=8+K; X0 is kept physical (8).
-                # Pad the warm-start with a uniform-simplex α (1/K). (no-op if off)
-                _Ka = int(getattr(self, '_K_alpha', 0))
-                if _Ka and _xk.shape[0] < self._nx_phys + _Ka:
-                    _xk = np.concatenate([_xk[:self._nx_phys],
-                                          np.full(_Ka, 1.0 / _Ka)])
-                self.solver.set(k, "x", _xk)
+                self.solver.set(k, "x", self.X0[k, :])
             for k in range(self.N):
                 self.solver.set(k, "u", self.u0[k, :])
             self.WARM_START = True
@@ -1699,6 +1676,28 @@ class MPC:
                 rx = float(self.right_lut_x(sk)); ry = float(self.right_lut_y(sk))
             except Exception:
                 lx = ly = rx = ry = 0.0
+            # ── ★ 2026-06-02 per-stage HARD corner-speed cap (kinematic) ──
+            # 진단: 곡률 soft-cost(ref_v) 와 slack 된 a_lat 제약은 q_p(progress)
+            # 에 밀려 코너 진입속도를 강제 못 함 → R=0.87m 코너에 v=3~5 진입 →
+            # 필요 a_lat=v²/κ⁻¹ ≫ 한계 → understeer 로 벽 클립/충돌(맵은 안 좁음).
+            # → 각 예측 stage 의 속도 컨트롤 u[0] 상한을 v ≤ √(a_lat_safe/|κ(s_k)|)
+            # 으로 HARD 제약. 직선(|κ|→0)은 v_max 그대로(빠름), 코너만 물리적
+            # grip 속도로 강제(깨끗). PP 가 암묵적으로 하는 grip-limited racing.
+            # |κ| 는 forward-max LUT(lookahead 6m) → 코너 6m 전부터 감속 시작.
+            # s_k 는 이전 solve 의 warm-start 궤적(self.X0)에서 — 약간의 오차는
+            # 보수적 floor 로 흡수. 후진(stuck-recover)은 mpc_node 가 cmd.speed
+            # 로 직접 처리 → u[0] lbu=0 이므로 이 cap 과 무간섭.
+            if (not self.use_dynamic) and k < self.N:
+                try:
+                    _absk = float(self.abs_kappa_lut(sk))
+                    _vcap = math.sqrt(float(self.a_lat_safe_live) / (_absk + 1e-3))
+                    # floor 1.0: κ-스파이크나 cold warm-start 에서 v→0 stall 방지
+                    # (가장 타이트한 코너도 √(6/0.84)=2.67 라 floor 는 평소 불활성).
+                    _vcap = min(float(self.v_max), max(_vcap, 1.0))
+                    self.solver.set(k, "ubu",
+                                    np.array([_vcap, self.theta_max, self.p_max]))
+                except Exception:
+                    pass
             # 2026-05-28 #18 LMPC: p_arr 길이 22 → 76. Reviewer #★1 confirmed —
             # codegen 길이가 76 이면 22 길이 set 은 dimension throw. p_arr 전체
             # 76 으로 짜되, LMPC slots (18..71) 은 attr 가 있으면 사용, 없으면 0
@@ -1984,11 +1983,7 @@ class MPC:
         # rate-cost residual is consistent with the physical command stream.
         self._last_delta_applied = filt_steer
 
-        # LMPC joint-α: keep warm-start X0 PHYSICAL (8) — drop the α columns from
-        # the 18-wide solver trajectory so the Euler/detour warm-start machinery
-        # (which assumes physical nx) stays correct. traj itself stays 18-wide for
-        # the LMPC query; downstream control/viz use traj[:, :8].
-        self.X0 = traj[:, :self.n_states] if traj.ndim == 2 and traj.shape[1] > self.n_states else traj
+        self.X0 = traj
         self.u0 = u_seq
 
         # Visualize boundary along predicted s

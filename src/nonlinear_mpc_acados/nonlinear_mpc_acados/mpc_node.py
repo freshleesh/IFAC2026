@@ -1578,7 +1578,7 @@ class MPCNode(Node):
                 cmd.drive.steering_angle = self._recovery_steer(x0)
                 # 즉시 reset (5s cooldown 만 유지). 실차 (enable_sim_reset=false)
                 # 에선 publish 해도 무의미 → skip + warn 만.
-                if (time.monotonic() - self._last_reset_t) > 5.0:
+                if (time.monotonic() - self._last_reset_t) > 1.0:   # 2026-06-02: 5s→1s. 5s 쿨다운이 첫 리스폰 후 재시도를 막아 stuck-loop 지속. 1s 면 gym latch 안 풀려도 빠르게 재리스폰.
                     if bool(self.get_parameter('enable_sim_reset').value):
                         self._publish_safe_reset(x0)
                     else:
@@ -1621,6 +1621,29 @@ class MPCNode(Node):
         else:
             cmd.drive.speed = float(con_first[0])
         cmd.drive.steering_angle = float(con_first[1])
+
+        # ── Unified stuck-recovery escalation (mode-agnostic) ──
+        # 2026-06-02 root-cause fix: the /initialpose teleport-escape lived ONLY
+        # inside the `if is_dyn:` branch above. In KINEMATIC mode the MPC core
+        # emits the reverse cmd (con_first[0] = -0.5) but NOTHING escalated to a
+        # teleport reset, so once the car touched a wall gym's in_collision latch
+        # froze integration forever (v_est=0 permanently, feas=Y) and every run
+        # died at the first wall contact (e.g. final s≈29). Manual /sim/initialpose
+        # was verified to clear the latch — so here we fire it automatically in
+        # kinematic mode too (the dynamic branch already does its own).
+        if (not is_dyn) and getattr(self.mpc, '_stuck_release_active', False):
+            self._stuck_release_total += 1
+            cmd.drive.steering_angle = self._recovery_steer(x0)
+            if (time.monotonic() - self._last_reset_t) > 1.0:
+                if bool(self.get_parameter('enable_sim_reset').value):
+                    self._publish_safe_reset(x0)
+                else:
+                    self.get_logger().warn(
+                        "[real] STUCK detected but enable_sim_reset=false — "
+                        "reverse cmd only (수동 e-stop 권장)",
+                        throttle_duration_sec=2.0)
+                self._last_reset_t = time.monotonic()
+                self._stuck_release_total = 0
 
         # ── Cold-start output speed floor (replaces old 3s PP warmup ramp) ──
         # 실측 vx 가 floor 미만이면 forward push 보장 (차가 가속해 floor 넘김).

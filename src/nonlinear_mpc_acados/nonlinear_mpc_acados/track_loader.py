@@ -206,7 +206,7 @@ def build_track_from_wpnts(wpnts, vel_scale: float = 1.0,
             # ~0.16 + buffer) on each side so the car body doesn't clip the
             # wall — without it the raceline (which hugs the inside edge at
             # apexes) leaves zero room and the car wedges (STUCK storm).
-            _WALL_MARGIN = 0.25
+            _WALL_MARGIN = 0.18   # 2026-06-02: 0.25→0.18 (final 좁은 트랙: d=0.36m서 0.25면 corridor 0.11m→QP infeasible→fails폭증. car 반폭~0.15 기준 0.18이 최소안전)
             d_r = max(0.05, float(w.d_right) - _WALL_MARGIN)
             d_l = max(0.05, float(w.d_left) - _WALL_MARGIN)
         # right normal = (+sin(psi), -cos(psi)); left normal = (-sin(psi), +cos(psi))
