@@ -109,8 +109,8 @@ class MPC:
         #   vx=0.5: w_std = 0.50  (50/50 — passing through this is brief)
         #   vx=1.0: w_std = 0.95  (95% dynamic)
         #   vx=2.0: w_std = 1.00  (~100% dynamic)
-        self.dyn_v_b   = 0.3       # blend centre [m/s] — was 0.5 (dynamic engages sooner)
-        self.dyn_v_s   = 0.1       # blend spread [m/s] — was 0.3 (tighter)
+        self.dyn_v_b   = 0.5       # 2026-06-03 0.3→0.5 (ifac_mpcc 검증값, ICRA·타이트)
+        self.dyn_v_s   = 0.3       # 2026-06-03 0.1→0.3 (블렌드 폭↑=tanh 부드럽게, stiff Hessian 방지)
         self.dyn_v_min = 0.2       # below: kinematic-dominated [m/s]
         self.dyn_a_max = 7.5       # max accel (matches sim max_accel)
         # Singularity epsilon for atan2 denominator. 1.0 m/s = robust for
@@ -121,7 +121,7 @@ class MPC:
         # fidelity. cold_start_vx_floor=2.0 feeds solver vx>=2.0 at startup,
         # which should avoid the singular start regime that previously
         # caused IPM collapse. Verified empirically.
-        self.dyn_v_eps = 0.5
+        self.dyn_v_eps = 1.0       # 2026-06-03 0.5→1.0 (ifac: 0.5는 IPM step collapse, 1.0 안정)
 
         # Bounds
         self.v_max = 6.0
@@ -1687,17 +1687,27 @@ class MPC:
             # s_k 는 이전 solve 의 warm-start 궤적(self.X0)에서 — 약간의 오차는
             # 보수적 floor 로 흡수. 후진(stuck-recover)은 mpc_node 가 cmd.speed
             # 로 직접 처리 → u[0] lbu=0 이므로 이 cap 과 무간섭.
-            if (not self.use_dynamic) and k < self.N:
-                try:
-                    _absk = float(self.abs_kappa_lut(sk))
-                    _vcap = math.sqrt(float(self.a_lat_safe_live) / (_absk + 1e-3))
-                    # floor 1.0: κ-스파이크나 cold warm-start 에서 v→0 stall 방지
-                    # (가장 타이트한 코너도 √(6/0.84)=2.67 라 floor 는 평소 불활성).
-                    _vcap = min(float(self.v_max), max(_vcap, 1.0))
+            try:
+                _absk = float(self.abs_kappa_lut(sk))
+                _vcap = math.sqrt(float(self.a_lat_safe_live) / (_absk + 1e-3))
+                # floor 1.0: κ-스파이크나 cold warm-start 에서 v→0 stall 방지
+                # (가장 타이트한 코너도 √(6/0.84)=2.67 라 floor 는 평소 불활성).
+                _vcap = min(float(self.v_max), max(_vcap, 1.0))
+                if self.use_dynamic:
+                    # dynamic: vx 는 STATE idx 3. HARD ubx[vx] cap 은 vx 가
+                    # 못 따라잡으면(a_min=-3 제동한계) QP infeasible → MINSTEP
+                    # 28→95 폭증(2026-06-03 측정). 대신 GENEROUS margin(×1.6)
+                    # 으로 극단 과속만 막고, 코너속도는 soft ref_v+a_lat 가 담당.
+                    # 이래야 dynamic 의 slip-aware 추종을 살리면서 MINSTEP 안 늘림.
+                    if k >= 1:
+                        _vcap_dyn = min(float(self.v_max) + 0.5, _vcap * 1.6)
+                        self.solver.set(k, "ubx",
+                                        np.array([_vcap_dyn, 10.0, 20.0]))
+                elif k < self.N:
                     self.solver.set(k, "ubu",
                                     np.array([_vcap, self.theta_max, self.p_max]))
-                except Exception:
-                    pass
+            except Exception:
+                pass
             # 2026-05-28 #18 LMPC: p_arr 길이 22 → 76. Reviewer #★1 confirmed —
             # codegen 길이가 76 이면 22 길이 set 은 dimension throw. p_arr 전체
             # 76 으로 짜되, LMPC slots (18..71) 은 attr 가 있으면 사용, 없으면 0

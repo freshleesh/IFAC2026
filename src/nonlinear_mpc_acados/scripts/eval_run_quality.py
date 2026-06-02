@@ -83,7 +83,7 @@ def evaluate(csv_path: str,
              j_inf: float = 1000.0,
              # B+C: reset/teleport 으로 인한 false lap 차단
              n_resets: int = 0,            # C: 외부 (BO) 가 sim log grep 으로 전달
-             reset_ceiling: int = 2,       # 0→2 (2 reset 까지 OK, BO 학습 데이터 확보)
+             reset_ceiling: int = 0,       # 2026-06-02 "박으면 안된다": 2→0 (무료 접촉 0, 접촉수 우선)
              min_lap_time_frac: float = 0.5,  # B: lap_time < 0.5 × ideal 이면 unqualified (false lap)
              # legacy kwargs (kept so BO harness import doesn't break — unused)
              gamma: float = None,
@@ -321,8 +321,8 @@ def main():
     # B + C 추가 filter
     p.add_argument("--n_resets", type=int, default=0,
                    help="C: BO 가 sim log 의 '/initialpose stuck-recover' grep 회수 전달")
-    p.add_argument("--reset_ceiling", type=int, default=2,
-                   help="C: n_resets > ceiling → unqualified (2 = 2 reset 까지 OK, 함수 기본값과 정렬)")
+    p.add_argument("--reset_ceiling", type=int, default=0,
+                   help="C: n_resets > ceiling 부터 페널티 (2026-06-02 0=무료접촉0, 박으면안됨)")
     p.add_argument("--min_lap_time_frac", type=float, default=0.5,
                    help="B: lap_time < frac × ideal 이면 false lap (teleport rollover)")
     p.add_argument("--json", action="store_true",

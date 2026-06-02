@@ -51,6 +51,9 @@ YAML = ROOT / 'src/nonlinear_mpc_acados/config/ddrx_unified_params.yaml'
 LOG_DIR = Path(os.path.expanduser('~/mpc_logs'))
 BO_DIR = Path(os.path.expanduser('~/bo_results'))
 BO_DIR.mkdir(parents=True, exist_ok=True)
+# 2026-06-02 'Q 최고점마다 기록': 새 best Q 갱신마다 한 줄씩 append (jsonl).
+# 각 줄에 ts/max_speed 포함 → 여러 run 구분 가능. tail -f 로 실시간 추적.
+PEAKS_PATH = BO_DIR / 'bo_q_peaks.jsonl'
 EVAL_SCRIPT = Path(__file__).parent / 'eval_run_quality.py'
 
 # B (VPMPCC simplify, 2026-05-26): 13D bucket + D_apex → 5D single weights.
@@ -63,34 +66,50 @@ EVAL_SCRIPT = Path(__file__).parent / 'eval_run_quality.py'
 #       GP 는 log10(scale) ∈ [-1.0, 0.70] 에서 작동, 평가 시 10^x 적용.
 #   #6: q_psi 추가 → 6D. EVO-MPCC search space 와 정합.
 #   #8: q_dv 추가 → 7D. a_x (longitudinal accel) penalty. EVO-MPCC Q_Δv 와 정합.
-DIM = 7
-PARAM_KEYS = ['q_cte', 'q_lag', 'q_psi', 'q_v', 'q_p', 'q_drate', 'q_dv']
-PER_DIM_LO = {'q_cte': 0.1, 'q_lag': 0.3, 'q_psi': 0.3, 'q_v': 0.3, 'q_p': 0.3, 'q_drate': 0.3, 'q_dv': 0.3}
-PER_DIM_HI = {'q_cte': 5.0, 'q_lag': 5.0, 'q_psi': 5.0, 'q_v': 5.0, 'q_p': 5.0, 'q_drate': 5.0, 'q_dv': 5.0}
+# 2026-06-01 Phase 1 roadmap: +a_lat_safe (corner grip) +D_apex (apex depth).
+# corner-limited 상태에서 a_lat 이 직접 레버, D_apex 가 racing line 깊이.
+# 둘은 scale factor 가 아니라 물리값이라 LINEAR (log 아님) per-dim.
+DIM = 9
+PARAM_KEYS = ['q_cte', 'q_lag', 'q_psi', 'q_v', 'q_p', 'q_drate', 'q_dv', 'a_lat_safe', 'D_apex']
+PARAM_SCALE_TYPE = {'q_cte': 'log', 'q_lag': 'log', 'q_psi': 'log', 'q_v': 'log',
+                    'q_p': 'log', 'q_drate': 'log', 'q_dv': 'log',
+                    'a_lat_safe': 'linear', 'D_apex': 'linear'}
+PER_DIM_LO = {'q_cte': 0.1, 'q_lag': 0.3, 'q_psi': 0.3, 'q_v': 0.3, 'q_p': 0.3, 'q_drate': 0.3, 'q_dv': 0.3,
+              'a_lat_safe': 3.0, 'D_apex': 0.0}   # 2026-06-02 a_lat LO 7→3: "박으면안됨" = 느린-코너 clean 영역 탐색 허용
+# q_v hi widened 5.0->8.0 (2026-06-01, EVO/RVP analysis): deploy q_v=0.317 sat
+# at the bottom of [0.3,5] — found on the OLD objective (min-lap, lat_g=50) that
+# favored loose ref_v tracking. EVO's edge is a brake-aware RVP tracked strongly;
+# on the hardened (median-lap = consistency) objective, stronger q_v should win.
+# Give the search room upward to test it (log-uniform → ~half the samples q_v>1.6).
+# a_lat_safe [7,11]: 9 가 v=5 최적였으나 v=7 헤드룸 다름 — 탐색. D_apex [0,1.0]: 0=centerline, 1.0=깊은 apex(코리도어 ±1.25 안).
+PER_DIM_HI = {'q_cte': 5.0, 'q_lag': 5.0, 'q_psi': 5.0, 'q_v': 8.0, 'q_p': 5.0, 'q_drate': 30.0, 'q_dv': 5.0,
+              'a_lat_safe': 11.0, 'D_apex': 1.0}
 # Linear bounds (보고용 / yaml 작성용)
 BOUNDS = torch.tensor(
     [[PER_DIM_LO[k] for k in PARAM_KEYS],
      [PER_DIM_HI[k] for k in PARAM_KEYS]],
     dtype=torch.double,
 )
-# Log-uniform bounds (GP 가 실제로 작동하는 공간)
-LOG_BOUNDS = torch.log10(BOUNDS)
+# Log-uniform bounds (log dim 만 사용; linear dim 은 0 하한이라 clamp 필수)
+LOG_BOUNDS = torch.log10(torch.clamp(BOUNDS, min=1e-6))
 SCALE_LO, SCALE_HI = 0.1, 5.0  # legacy print only
+_IS_LOG = torch.tensor([PARAM_SCALE_TYPE[k] == 'log' for k in PARAM_KEYS])
 
 
 def x_norm_to_scale(x_norm: torch.Tensor) -> torch.Tensor:
-    """[0,1]^d 정규화된 BO 점 → 실제 scale 값 (log-uniform).
-
-    x_norm 0 → 10^LOG_LO,  x_norm 1 → 10^LOG_HI.
-    """
+    """[0,1]^d 정규화된 BO 점 → 실제 값. log dim 은 log-uniform, linear dim 은 선형."""
     log_x = LOG_BOUNDS[0] + (LOG_BOUNDS[1] - LOG_BOUNDS[0]) * x_norm
-    return 10.0 ** log_x
+    out_log = 10.0 ** log_x
+    out_lin = BOUNDS[0] + (BOUNDS[1] - BOUNDS[0]) * x_norm
+    return torch.where(_IS_LOG.to(x_norm.device), out_log, out_lin)
 
 
 def scale_to_x_norm(scale: torch.Tensor) -> torch.Tensor:
-    """실제 scale → [0,1]^d 정규화 (warm start 용)."""
+    """실제 값 → [0,1]^d 정규화 (warm start 용). per-dim log/linear."""
     log_x = torch.log10(scale.clamp(min=1e-6))
-    return (log_x - LOG_BOUNDS[0]) / (LOG_BOUNDS[1] - LOG_BOUNDS[0])
+    norm_log = (log_x - LOG_BOUNDS[0]) / (LOG_BOUNDS[1] - LOG_BOUNDS[0])
+    norm_lin = (scale - BOUNDS[0]) / (BOUNDS[1] - BOUNDS[0])
+    return torch.where(_IS_LOG.to(scale.device), norm_log, norm_lin)
 # back-compat
 N_SCALES = DIM
 SCALE_KEYS = PARAM_KEYS
@@ -110,9 +129,11 @@ def sed_yaml_override(params: dict, mode: str = 'off'):
     txt = YAML.read_text()
     replacements = {'override_mode': f"'off'", 'override_scales': 'false'}
     if params:
+        # q_* → q_*_scale_live (scale factor). a_lat_safe/D_apex → *_live (물리값, scale 아님).
+        _DIRECT_LIVE = {'a_lat_safe', 'D_apex'}
         for k, v in params.items():
-            # q_cte → q_cte_scale_live, q_lag → q_lag_scale_live, ...
-            replacements[f'{k}_scale_live'] = f'{v:.4f}'
+            suffix = '_live' if k in _DIRECT_LIVE else '_scale_live'
+            replacements[f'{k}{suffix}'] = f'{v:.4f}'
     lines = txt.splitlines()
     for i, line in enumerate(lines):
         stripped = line.lstrip()
@@ -163,10 +184,15 @@ def run_one_sim(map_name: str, n_laps: int, wall_timeout: int, stuck_timeout: in
     # 됨 → ~/cyclonedds.xml 의 MaxAutoParticipantIndex 120 안 적용 → mpc_node
     # DDS slot fail. 명시 전달로 강제.
     env.setdefault('CYCLONEDDS_URI', f'file://{os.path.expanduser("~/cyclonedds.xml")}')
+    # 2026-06-01: a_lat_safe 가 BO dim 이 되며 codegen-baked hard cap(a_lat_max=
+    # a_lat_safe+1) 도 eval 마다 달라져야 함. codegen 캐시를 매 eval 지워 재생성
+    # (~30s/eval) → a_lat_safe 가 soft+hard cap 모두에 정확히 반영. (캐시 두면 hard
+    # cap 이 첫 eval 값에 고정돼 a_lat 탐색 편향.)
     cmd = ['bash', '-c',
            f'source /opt/ros/jazzy/setup.bash && '
            f'source ~/IFAC2026_SH/install/local_setup.bash && '
            f'export CYCLONEDDS_URI=file://$HOME/cyclonedds.xml && '
+           f'rm -rf /tmp/acados_codegen_evompcc && '
            f'ros2 launch stack_master full_sim.launch.py mode:=mpcc map:={map_name}']
     # stderr 를 file 로 redirect (debug 용 — startup fail 원인 파악).
     log_path = f'/tmp/bo_trial_sim.log'
@@ -289,7 +315,7 @@ class TurboState:
     def __init__(self, dim: int):
         self.dim = dim
         self.length = 0.8
-        self.length_min = 0.5 ** 7
+        self.length_min = 0.5 ** max(7, dim)   # 2026-06-01: dim 7→9 (a_lat,D_apex). hardcoded 7→dim
         self.length_max = 1.6
         self.failure_counter = 0
         self.failure_tolerance = max(4, int(dim / 1))   # dim=12 → 12 회 실패 → 축소
@@ -531,12 +557,38 @@ def main():
         elif len(maps_list) > 1:
             print(f'  → [alternate] Q@{iter_maps[0]} = {mean_Q:.2f}')
         history.append({
-            'scales': dict(params),  # 5D all keys (no D_apex)
+            'scales': dict(params),  # 9D all keys (incl a_lat_safe, D_apex)
             'params': params,
             'per_map': per_map,
             'mean_Q': mean_Q,
             'crashed': any_crash,
         })
+        # ── Q 최고점마다 기록 (2026-06-02 user req) ──
+        # non-crashed 중 새 best 갱신 시 peaks jsonl 에 append.
+        try:
+            _valid = [h['mean_Q'] for h in history if not h['crashed']]
+            if (not any_crash) and _valid and mean_Q >= max(_valid):
+                _rec = {
+                    'ts': datetime.now().strftime('%Y%m%d_%H%M%S'),
+                    'iter': len(history),
+                    'Q': round(mean_Q, 3),
+                    'max_speed': read_yaml_max_speed(),
+                    'params': {k: round(float(v), 4) for k, v in params.items()},
+                }
+                # 대표 metric(첫 map) 함께 — lap/속도 추적용
+                try:
+                    _m0 = per_map[0]['metrics']
+                    _rec['lap_time_mean'] = round(float(_m0.get('lap_time_mean', 0)), 3)
+                    _rec['v_max'] = round(float(_m0.get('max_speed', 0)), 2)
+                    _rec['v_avg'] = round(float(_m0.get('avg_speed', 0)), 2)
+                except Exception:
+                    pass
+                with open(PEAKS_PATH, 'a') as _pf:
+                    _pf.write(json.dumps(_rec, default=str) + '\n')
+                print(f'  ★ NEW Q-PEAK Q={mean_Q:.2f} (lap={_rec.get("lap_time_mean","?")}s, '
+                      f'v_max={_rec.get("v_max","?")}) → {PEAKS_PATH.name}')
+        except Exception:
+            pass
         return mean_Q, any_crash, {'Q': mean_Q, 'crashed': any_crash}
 
     # ── Phase 1: initial samples (Sobol + warm) ─────────────────────
