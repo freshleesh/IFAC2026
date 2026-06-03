@@ -79,7 +79,7 @@ mpc_node:
     #   linear: F_y = C_α · α (slip 작을 때만 정확)
     #   tanh  : 2026-05-27 review #9. lat_g=24 m/s² 영역에서 linear 한계 → tanh 권장.
     #           코너 진입 시 tire saturation 모델링.
-    use_dynamic: false
+    use_dynamic: true
     dyn_tire_model: tanh
     # acados LM regularization for dynamic model (QP conditioning / prediction
     # consistency). 1.0 = previous default. Higher → fewer QP_Failure/MINSTEP.
@@ -174,14 +174,14 @@ mpc_node:
     # (~0.9g) 초과라 곡률 speed-cap 무력화 → 타이트 코너 과속 진입 → 박힘 (2026-05-29
     # 진단: 남은 stall 13/13 over-speed entry). 물리적 그립으로 복원: 8 > 6 (코드 주석의
     # 의도값, a_lat_max=8 hard 아래 headroom). ref_v cap = √(a_lat/κ) 가 코너서 실제 작동.
-    a_lat_safe_live: 3.5
+    a_lat_safe_live: 7.1445
     # D_detour_live: 회피 시 lateral offset [m]. 0.3 → 0.2 → 0.1.
     # R_safe (hard constraint, 0.25m) 가 충돌 회피 보장하므로 D_detour 는
     # soft target 만이라 작아도 안전. 회피 후 raceline 복귀 시 over-shoot ↓.
     D_detour_live: 0.1
     # D_apex_live: B 단순화 후 dead path. acados_kinematic.py 의 e_c_ref=0
     # 하드코딩 → param 슬롯 p_sym[11] 만 차지하고 cost 에 안 들어감.
-    D_apex_live: 0.0
+    D_apex_live: 0.6253
     # R_car_live: 차 반지름 (m). F1TENTH width 0.30 ÷ 2 = 0.15.
     R_car_live: 0.15               # 원래값 복원
     # commit_dist_live: 회피 시작 거리. 클수록 일찍 commit. 10 → 15 (일찍).
@@ -195,11 +195,11 @@ mpc_node:
     # (PP 15.66, -8.6%; ideal 13.73, +4.3%; n_resets=2 안정; v_avg=4.99)
     # v=4 Phase A best (q_p=4.28 dominant) 과 정반대: v=6 에서는 q_cte=4.96 strong + q_p=0.42 약.
     # 빠른 차일수록 "centerline 단단히 추종 + anti-osc 강하게" 가 안전.
-    q_cte_scale_live: 1.0
-    q_lag_scale_live: 2.1268
-    q_psi_scale_live: 4.0020
-    q_v_scale_live: 2.5
+    q_cte_scale_live: 0.1495
+    q_lag_scale_live: 0.3629
+    q_psi_scale_live: 0.7885
+    q_v_scale_live: 0.5277
     q_dd_scale_live: 1.0       # not in BO
-    q_p_scale_live: 0.7775
-    q_drate_scale_live: 0.6003
-    q_dv_scale_live: 0.7457
+    q_p_scale_live: 2.6967
+    q_drate_scale_live: 9.0012
+    q_dv_scale_live: 0.3493
