@@ -111,3 +111,16 @@
 - J: traj fallback(~1866,1880) np.tile 폭 = _nx_solver. traj 추출은 `[:, :8]` phys. mpc_node `_lmpc_query_state=traj[-1,:8]`.
 - **Step1 검증**: `_lmpc_joint=True` flip → 빌드+final 거동 baseline 재현(α free·Σα=1뿐, terminal 미사용) 확인. nx=18, solve +1ms.
 - **Step2**: convex-α CONL terminal (linear Qᵀα + soft SS-anchor).
+
+## ★ B4' — Error Dynamics Regression (Xue+2024, 같은 repo 후속논문) — 고속 주행 핵심
+사용자 제공 PDF "Learning MPC with Error Dynamics Regression for Autonomous Racing" (MPC-Berkeley/Racing-LMPC-ROS2 후속). **B4(모델충실도)를 GP residual 대신 이걸로 승격.**
+- 개념: nominal physics f(x,u) 유지 + **오차 e=실제−nominal 만 velocity state(vx,vy,r)에 회귀**(식5-8). 데이터부족→e→0 nominal 폴백(안전). 튜닝(h,CRC)·data-scarcity 강건(Table I: [8]은 낮은 CRC 크래시, 이건 완주).
+- 고속: 랩 거듭하며 한계영역 velocity 동역학 교정 → LMPC가 고속예측 신뢰 → hairpin 점점 타이트·고속(Fig1/5). **실차 high-speed 정공법.**
+- 우리 적응(우리는 비선형 acados, 그들은 ATV-QP): velocity 오차를 **SS 이웃(이미 query함)에서 local 가중최소제곱**(Epanechnikov h) 회귀 → f_expl velocity rows에 더함. GP보다 강건·online·SS재사용. GP Jacobian버그 우회.
+- 필요: lap_database에 state transition (x,u,x⁺) 저장 추가(현재 state+cost-to-go만).
+- **의존성: B3(LMPC) 먼저.** 순서 B3→B4'(error regression)→고속 incremental.
+
+## 진행상태 2026-06-04 (B3 Step1 완료)
+- **B0 ✅커밋 bc0825a** (CONL 기반).
+- **B3 Step1 ✅커밋 c0ef7a7/c526b5a/24dc4cc** (joint-α state aug nx8→18, gate=_lmpc_joint default False). **검증: joint=True서 22.04s/0접촉 baseline 재현, solve 7→14ms.**
+- 다음: **B3 Step2** = convex-α CONL terminal(linear Qᵀα + soft SS-anchor) → Step3 SS infra/α warm-start → **B4'(error regression)** → 고속.
