@@ -154,15 +154,16 @@ TUM `trajectory_planning_helpers` IQP min-curvature optimizer. Cost=곡률² 적
 
 ### 4.1 State / Model
 
-**8-state dynamic Pacejka** (`acados_kinematic.py`):
+**Dynamic 8-state Pacejka** (default; kinematic 5-state 옵션):
 ```
-x_state = [x, y, ψ, vx, vy, r, s, δ_prev]
-u_input = [δ̇, p_v]              # steer rate + virtual progress velocity
+x_state(dyn, 8) = [x, y, ψ, vx, vy, r, s, δ_prev]
+x_state(kin, 5) = [x, y, ψ, s, δ_prev]
+u_input         = [v|a_x, δ, p_v]   # kin: 속도 v / dyn: 가속 a_x ‖ 조향각 δ ‖ virtual progress velocity
 ```
-- `vy` (lateral velocity), `r` (yaw rate): tire slip 모델링 필수
-- `s`: progress along centerline (cumulative arc length)
-- `δ_prev`: ZOH steering hold (steer rate cost 위해)
-- `p_v`: virtual progress speed (MPCC trick — progress 를 cost 화)
+- `δ` 는 **직접 제어**(state 아님). `δ_prev` = ZOH 추적 state → steer-rate cost = (δ − δ_prev).
+- `vy` (lateral velocity), `r` (yaw rate): tire slip 모델링 필수 (dynamic only).
+- `s`: progress along centerline (cumulative arc length).
+- `p_v`: virtual progress speed (MPCC trick — progress 를 cost 화).
 
 **Tire model** (`dyn_tire_model` yaml): `tanh` ✅ 현재 (2026-05-27 #9, saturation). 옵션 `linear`, `pacejka`(full Magic Formula).
 
@@ -182,10 +183,11 @@ u_input = [δ̇, p_v]              # steer rate + virtual progress velocity
 | 6 | `sqrt(q_p_scale) · (p_v - vmax)` | q_p (baked 1) | progress maximization |
 | 7 | `side_term` | 0 | VPMPCC 에서는 비활성 (장애물 회피) |
 | 8 | `sqrt(q_drate_scale) · (δ - δ_prev)` | q_drate | steer rate (oscillation) |
+| 9 | `sqrt(q_dv_scale) · a_x` | q_dv (baked 15) | longitudinal accel penalty (2026-05-27 #8) |
 
 **Cost = ½ · ‖y_expr · √W‖²**. W 는 codegen 시 baked, scale_p 는 live param (rqt / BO).
 
-**B 단순화 (2026-05-22)**: `e_c_ref=0` (apex bias off), `attenuation=1`·`att_kappa=1` (장애물/κ attenuation off — corner 에서도 centerline tracking), `side_term=0` (장애물 회피 off). 이전 `_old` 변수는 2026-05-27 삭제.
+**B 단순화 (2026-05-22)**: `attenuation=1`·`att_kappa=1` (장애물/κ attenuation off — corner 에서도 centerline tracking), `side_term=0` (장애물 회피 off). 이전 `_old` 변수는 2026-05-27 삭제. ★ **apex bias 는 2026-06-01 복원** — 현재 `e_c_ref = -D_apex·tanh(signed_κ/0.20)` 활성 (D_apex_live=0.63). 단 κ-cap 이 centerline-κ 기반이라 apex 가 더 빠른 ref_v 를 못 받음 → 라인만 바뀌고 속도이득 無 (§8 구조적 한계).
 
 ### 4.3 ref_v_expr (VPMPCC + κ-cap)
 
@@ -201,10 +203,10 @@ ref_v_expr  = smooth_min(ref_v_track, v_cap_kappa)  # 2-way smooth min
 
 | 변수 | lbx | ubx | 의미 |
 |------|-----|-----|------|
-| vx (state[3]) | 0 | `v_max + 0.5` | 절대 cap. solver 마진 +0.5 (IPM 발산 방지) |
-| δ (state[7]) | -0.3 | +0.3 | mpc_max_steering. hairpin R=0.7m 통과 가능 |
-| δ̇ (u[0]) | -2 | +2 | steer rate physical bound |
-| p_v (u[1]) | 0 | `v_max + 0.5` | progress speed cap |
+| v (u[0], kin) / a_x (dyn) | 0 / -3 | max_speed / +4 | 속도 직접 제어 (kin) 또는 가속 (dyn) |
+| δ (u[1]) | -0.45 | +0.45 | mpc_max_steering. hairpin 통과 (2026-06-02 0.3→0.45) |
+| p_v (u[2]) | 0 | max_speed | progress speed cap |
+| vx (state, dyn) | 0 | `v_max + 0.5` | dynamic 절대 cap. IPM 마진 +0.5 |
 
 **Corridor (path constraint)**: `|e_c| ≤ mpc_corridor_half_width` (0.75m). track width 2m → boundary half 1.0m, R_car 0.15m → 마진 0.10m. `inflation_factor=0.0` 필수 (0.1+ 면 corridor 음수 → solve fail).
 
@@ -234,7 +236,7 @@ under-actuation 방지 (predicted vx 가 너무 작으면 가속 명령 약함).
 **문제**: f1tenth_gym `base_classes.py:288` 의 `in_collision=True` latch 되면 reverse 무시.
 **해결** (`mpc_node.py` persistent stuck detect): 속도≈0 + cost spike + 지속 시 `cmd.speed=-0.5` (후진) + `_publish_safe_reset(x0)` + 5s cooldown. `_publish_safe_reset` = 최근접 s → 전방 2m 좌표+접선 yaw → `PoseWithCovarianceStamped` publish to **`/sim/initialpose`** (gym 전용, `/initialpose` 아님). gym_bridge 가 차 reset.
 
-### 4.7 yaml 핵심 값 (현재 deploy — 2026-06-01 B-mode racing line)
+### 4.7 yaml 핵심 값 (⚠️ rand_a centerline 시절 — 2026-06-01; **현재 deploy(final/raceline/dynamic 22s)는 §12 참조**)
 ```yaml
 max_speed: 5.0
 mpc_max_steering: 0.3

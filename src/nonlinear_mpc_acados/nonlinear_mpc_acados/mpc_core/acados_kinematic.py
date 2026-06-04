@@ -692,7 +692,7 @@ class MPC:
         q_lag_scale_p  = p_sym[8]   # × q_lag_def (rqt)
         e_c_obs_p      = p_sym[9]
         a_lat_safe_p   = p_sym[10]  # curvature speed-cap headroom (rqt)
-        D_apex_p       = p_sym[11]  # apex-bias offset (rqt) — dead (e_c_ref=0)
+        D_apex_p       = p_sym[11]  # apex-bias offset (rqt) — ACTIVE: drives e_c_ref (~L888)
         q_psi_scale_p   = p_sym[12]  # × q_psi_def
         q_v_scale_p     = p_sym[13]  # × q_v_def
         q_dd_scale_p    = p_sym[14]  # × q_dd_def
@@ -768,19 +768,12 @@ class MPC:
         diff_v     = ref_v_raw - v_kin_max
         _rv1       = 0.5 * (ref_v_raw + v_kin_max
                             - ca.sqrt(diff_v * diff_v + EPS_VM))
-        # ── ★ 2026-06-02 WIDTH-AWARE speed cap (신규 방법) ──────────────────
-        # 진단: 차가 s≈29 의 "거의 직선이지만 좁은(폭 0.36m)" 구간을 풀스피드(5)로
-        # 진입 → 횡오차가 0.36m 벽 초과 → wedge. 곡률캡(√a_lat/κ)은 직선이라 못 잡음.
-        # → 코리도어 폭이 좁으면 속도도 캡: 좁을수록 느리게 해서 횡오차 예산 확보.
-        # w_left/w_right = boundary 의 e_c-투영(횡위치). 좁은 쪽 clearance = min(|.|).
-        _wl = sin_t * (left_x - ref_x) - cos_t * (left_y - ref_y)
-        _wr = sin_t * (right_x - ref_x) - cos_t * (right_y - ref_y)
-        _dmin = ca.fmin(ca.fabs(_wl), ca.fabs(_wr))          # 좁은 쪽 반폭 [m]
-        _K_WIDTH = 100.0  # 2026-06-02 width-cap 무력화(곡률cap 주도, PP원리). 느림=잘못된 땜빵이었음      # v_width = K·(clearance−margin). 0.36m→~2.3, 1.0m→~8 m/s
-        _v_width = _K_WIDTH * ca.fmax(_dmin - 0.10, 0.05)
-        diff_w     = _rv1 - _v_width
-        ref_v_expr = 0.5 * (_rv1 + _v_width
-                            - ca.sqrt(diff_w * diff_w + EPS_VM))   # smooth min(_rv1, v_width)
+        # ref_v = Heilmeier CSV profile smooth-min'd with the curvature cap
+        # √(a_lat_safe/κ).  (A width-aware cap was tried 2026-06-02 but was
+        # neutralized — K_WIDTH=100 made the smooth-min always pick _rv1 — and
+        # removed 2026-06-03: it solved a non-existent width problem (map min
+        # width 0.89 m, not 0.36 m) and only ever slowed the car.)
+        ref_v_expr = _rv1
 
         # ---- Distance² to obstacle (used by h constraint only) ----
         d2 = (x_ - obs_x) ** 2 + (y_ - obs_y) ** 2
@@ -1070,14 +1063,14 @@ class MPC:
         ny   = 9   # 9 residuals (cte, lag, psi, v, dd, p, side, drate, dv)
         # terminal: dynamic adds vx cost-to-go residual before lmpc_residual.
         ny_e = 5 if self.use_dynamic else 4
-        ocp.cost.cost_type   = 'NONLINEAR_LS'
-        ocp.cost.cost_type_e = 'NONLINEAR_LS'
-        # Stage 0 mirrors stage cost; required in newer acados-template
-        ocp.cost.cost_type_0 = 'NONLINEAR_LS'
-        ocp.cost.W = np.diag([q_cte_def, q_lag_def, q_psi_def,
-                              q_v_def, q_dd_def, q_p_def, q_side_def,
-                              q_d_rate_def, q_dv_def])
-        ocp.cost.W_0 = ocp.cost.W
+        # ---- Cost: CONVEX_OVER_NONLINEAR (Phase B0, 2026-06-04) ----
+        # Migrated from NONLINEAR_LS. With ψ(r) = ½·rᵀWr and r = y_expr this
+        # reproduces the LS cost EXACTLY (same Gauss-Newton Hessian), but the
+        # CONL form lets later phases add convex non-LS terms — e.g. a linear
+        # progress reward −γ·p_v (B1) that pure NLS cannot express.
+        W_mat = np.diag([q_cte_def, q_lag_def, q_psi_def,
+                         q_v_def, q_dd_def, q_p_def, q_side_def,
+                         q_d_rate_def, q_dv_def])
         # W_e: dynamic mode inserts vx terminal cost-to-go (q_v_def*3) before the
         # LMPC residual (last entry 1.0, since residual already carries sqrt(lmpc_w)).
         if self.use_dynamic:
@@ -1085,13 +1078,27 @@ class MPC:
                         q_psi_def * 4.0, q_v_def * 3.0, 1.0]
         else:
             W_e_diag = [q_cte_def * 5.0, q_lag_def * 5.0, q_psi_def * 4.0, 1.0]
-        ocp.cost.W_e = np.diag(W_e_diag)
-        ocp.cost.yref   = np.zeros(ny)
-        ocp.cost.yref_0 = np.zeros(ny)
-        ocp.cost.yref_e = np.zeros(ny_e)
+        W_e_mat = np.diag(W_e_diag)
+        ocp.cost.cost_type   = 'CONVEX_OVER_NONLINEAR'
+        ocp.cost.cost_type_0 = 'CONVEX_OVER_NONLINEAR'
+        ocp.cost.cost_type_e = 'CONVEX_OVER_NONLINEAR'
+        # residual r(x,u) — identical to the NLS y_expr (live q_*_scale already
+        # baked inside via sqrt(q_*_scale) factors → effective w = W·q_scale).
         ocp.model.cost_y_expr   = y_expr
         ocp.model.cost_y_expr_0 = y_expr
         ocp.model.cost_y_expr_e = y_expr_e
+        # outer convex ψ(r) = ½ rᵀ W r, written in a fresh symbolic r.
+        _r_conl   = ca.SX.sym('r_conl',   ny)
+        _r_conl_e = ca.SX.sym('r_conl_e', ny_e)
+        ocp.model.cost_r_in_psi_expr   = _r_conl
+        ocp.model.cost_r_in_psi_expr_0 = _r_conl
+        ocp.model.cost_r_in_psi_expr_e = _r_conl_e
+        ocp.model.cost_psi_expr   = 0.5 * ca.mtimes([_r_conl.T,   ca.DM(W_mat),   _r_conl])
+        ocp.model.cost_psi_expr_0 = 0.5 * ca.mtimes([_r_conl.T,   ca.DM(W_mat),   _r_conl])
+        ocp.model.cost_psi_expr_e = 0.5 * ca.mtimes([_r_conl_e.T, ca.DM(W_e_mat), _r_conl_e])
+        ocp.cost.yref   = np.zeros(ny)
+        ocp.cost.yref_0 = np.zeros(ny)
+        ocp.cost.yref_e = np.zeros(ny_e)
 
         # ---- Dimensions / horizon ----
         ocp.solver_options.N_horizon = self.N
