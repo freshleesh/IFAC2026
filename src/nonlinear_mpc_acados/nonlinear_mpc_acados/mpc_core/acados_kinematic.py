@@ -56,7 +56,7 @@ class MPC:
         # Phase B3: joint-α LMPC — α as constant-dynamics STATE (nx 8→8+K),
         # optimized jointly with x/u in the RTI solve. OFF → nx=8 baseline.
         self._lmpc_joint = False
-        self._lmpc_cog_w = 0.03   # B3 Step2: linear cost-to-go weight (Qᵀα) in ψ_e
+        self._lmpc_cog_w = 0.02   # B3 Step2: linear cost-to-go weight (Qᵀα) in ψ_e
         # ── Phase D closed-form CasADi GP residual (dynamics-only) ─────────
         # Independent of the l4acados `use_gp_residual` path. Default OFF.
         # Set by mpc_node from the `use_gp_casadi` ROS param BEFORE setup_MPC.
