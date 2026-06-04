@@ -124,3 +124,17 @@
 - **B0 ✅커밋 bc0825a** (CONL 기반).
 - **B3 Step1 ✅커밋 c0ef7a7/c526b5a/24dc4cc** (joint-α state aug nx8→18, gate=_lmpc_joint default False). **검증: joint=True서 22.04s/0접촉 baseline 재현, solve 7→14ms.**
 - 다음: **B3 Step2** = convex-α CONL terminal(linear Qᵀα + soft SS-anchor) → Step3 SS infra/α warm-start → **B4'(error regression)** → 고속.
+
+## B4' 정밀 실행계획 (Error Dynamics Regression — 인프라 survey 완료)
+사용자 PDF Xue+2024. ★ **재사용 확정:**
+- `scripts/extract_residuals.py`: **Python f_dynamic/f_kinematic/f_expl/euler_step (acados 동역학 미러, line 56-116)** + residual=actual−Euler1step on (vx,vy,r) (line 238). → f_nominal 예측 이미 구현됨.
+- `mpc_core/gp_casadi_residual.py`: 3-vector correction을 f_expl velocity rows에 더하는 패턴 (`f_expl += vertcat(0,0,0,μ0,μ1,μ2,0,0)`, acados_kinematic ~632).
+- `lmpc/lap_database.py`: LapEntry에 state(T,n)+input(T-1,n) 저장 → transition (xₜ,uₜ,xₜ₊₁) 이미 있음.
+
+**구현 단계:**
+**B4'.1 (acados, p_sym 확장)**: `self._err_regr` flag. p_sym 76→79 (e_corr 3슬롯 @ 76-78, n_p_total+=3). setup_MPC B3분기 뒤 `if self._err_regr: corr=SX.zeros(nx); corr[3:6]=e_corr; f_expl+=corr` (nx-wide라 joint/비joint 양립). parameter_values zeros(79). 매-stage p_arr fill(~1773 루프)에 `p_arr[76:79]=self._e_corr`(const). 검증: _err_regr=True·e_corr=0 → baseline 재현.
+**B4'.2 (residual 저장)**: lap_database add_lap시 extract_residuals의 f_expl로 e[t]=state[t+1]−f_nominal(state[t],input[t]) on (vx,vy,r) 계산·저장(LapEntry에 residual 필드 추가). safe_set query가 이웃의 residual도 반환.
+**B4'.3 (mpc_node per-cycle 회귀)**: 매 cycle SS 이웃 M개의 residual을 **Epanechnikov 가중평균(bandwidth h)** → 3-vec e_corr → mpc._e_corr 채움. (Cᵉ-only=affine offset 먼저; Aᵉ/Bᵉ Jacobian은 refinement.)
+**B4'.4 검증**: use_error_regression on, final/dynamic, 모델 mismatch 교정으로 a_lat↑ 시 접촉↓(고속 한계 안전 탐색). cross-map 강건성(논문 Table I).
+
+**의존성 없음**(B3 LMPC와 독립적으로 dynamics만 교정; 단 SS 이웃 query는 LMPC 인프라 재사용). multi-file·focused session급.
