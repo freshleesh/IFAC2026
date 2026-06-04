@@ -56,6 +56,7 @@ class MPC:
         # Phase B3: joint-α LMPC — α as constant-dynamics STATE (nx 8→8+K),
         # optimized jointly with x/u in the RTI solve. OFF → nx=8 baseline.
         self._lmpc_joint = False
+        self._lmpc_cog_w = 0.1   # B3 Step2: linear cost-to-go weight (Qᵀα) in ψ_e
         # ── Phase D closed-form CasADi GP residual (dynamics-only) ─────────
         # Independent of the l4acados `use_gp_residual` path. Default OFF.
         # Set by mpc_node from the `use_gp_casadi` ROS param BEFORE setup_MPC.
@@ -976,6 +977,25 @@ class MPC:
             # speed profile ref_v_expr(s_N). Removes N-dependency (brakes for corners
             # beyond the horizon). Reuses BO-tunable q_v scale; baked terminal emphasis x3.
             vterm_res = sqrt_q_v_scale * (vx_for_cost - ref_v_expr)
+        if self._lmpc_joint and alpha_sym is not None:
+            # ── B3 Step 2: convex-α terminal (Racing-LMPC racing_mpc.cpp:479-504) ──
+            # x_N soft-anchored to the SS convex hull Σαⱼ·SSⱼ, and the cost-to-go
+            # Qᵀα minimized LINEARLY (CONL ψ_e) → the solver picks the convex combo
+            # of safe-set points with lowest time-to-go that x_N can reach. Gated
+            # by √(lmpc_w_p): inert (= baseline) when LMPC off, engages once the
+            # safe set is populated (lmpc_w>0).
+            _wl   = ca.sqrt(lmpc_w_p + 1e-12)
+            _ssa  = ca.mtimes(lmpc_ss_states, alpha_sym)          # Σαⱼ·SSⱼ  (4: px,py,ψ,vx)
+            _wanc = ca.sqrt(ca.SX([20.0, 20.0, 2.0, 2.0]))        # per-state hull-slack weight
+            _anc  = _wl * (_wanc * (x_N_4 - _ssa))                # 4 soft-anchor residuals
+            _cog  = _wl * ca.dot(lmpc_ss_Q, alpha_sym)            # cost-to-go (linear in ψ_e)
+            if self.use_dynamic:
+                y_expr_e = ca.vertcat(e_c, e_l, yaw_err, vterm_res,
+                                      _anc[0], _anc[1], _anc[2], _anc[3], _cog)
+            else:
+                y_expr_e = ca.vertcat(e_c, e_l, yaw_err,
+                                      _anc[0], _anc[1], _anc[2], _anc[3], _cog)
+        elif self.use_dynamic:
             y_expr_e = ca.vertcat(e_c, e_l, yaw_err, vterm_res, lmpc_residual)
         else:
             y_expr_e = ca.vertcat(e_c, e_l, yaw_err, lmpc_residual)
@@ -1097,7 +1117,11 @@ class MPC:
                                 # 안 됨 → 9th residual 로 연결.
         ny   = 9   # 9 residuals (cte, lag, psi, v, dd, p, side, drate, dv)
         # terminal: dynamic adds vx cost-to-go residual before lmpc_residual.
-        ny_e = 5 if self.use_dynamic else 4
+        # B3 joint: lmpc_residual(1) → anchor(4)+cog(1) = +4.
+        if self._lmpc_joint:
+            ny_e = 9 if self.use_dynamic else 8
+        else:
+            ny_e = 5 if self.use_dynamic else 4
         # ---- Cost: CONVEX_OVER_NONLINEAR (Phase B0, 2026-06-04) ----
         # Migrated from NONLINEAR_LS. With ψ(r) = ½·rᵀWr and r = y_expr this
         # reproduces the LS cost EXACTLY (same Gauss-Newton Hessian), but the
@@ -1108,7 +1132,14 @@ class MPC:
                          q_d_rate_def, q_dv_def])
         # W_e: dynamic mode inserts vx terminal cost-to-go (q_v_def*3) before the
         # LMPC residual (last entry 1.0, since residual already carries sqrt(lmpc_w)).
-        if self.use_dynamic:
+        if self._lmpc_joint and self.use_dynamic:
+            # [ec×5, el×5, yaw×4, vterm×3, anchor×4 (√wt in residual→1), cog (linear→0)]
+            W_e_diag = [q_cte_def * 5.0, q_lag_def * 5.0, q_psi_def * 4.0, q_v_def * 3.0,
+                        1.0, 1.0, 1.0, 1.0, 0.0]
+        elif self._lmpc_joint:
+            W_e_diag = [q_cte_def * 5.0, q_lag_def * 5.0, q_psi_def * 4.0,
+                        1.0, 1.0, 1.0, 1.0, 0.0]
+        elif self.use_dynamic:
             W_e_diag = [q_cte_def * 5.0, q_lag_def * 5.0,
                         q_psi_def * 4.0, q_v_def * 3.0, 1.0]
         else:
@@ -1130,7 +1161,12 @@ class MPC:
         ocp.model.cost_r_in_psi_expr_e = _r_conl_e
         ocp.model.cost_psi_expr   = 0.5 * ca.mtimes([_r_conl.T,   ca.DM(W_mat),   _r_conl])
         ocp.model.cost_psi_expr_0 = 0.5 * ca.mtimes([_r_conl.T,   ca.DM(W_mat),   _r_conl])
-        ocp.model.cost_psi_expr_e = 0.5 * ca.mtimes([_r_conl_e.T, ca.DM(W_e_mat), _r_conl_e])
+        if self._lmpc_joint:
+            # B3 Step2: cost-to-go Qᵀα enters ψ_e LINEARLY (last residual, W_e=0).
+            ocp.model.cost_psi_expr_e = (0.5 * ca.mtimes([_r_conl_e.T, ca.DM(W_e_mat), _r_conl_e])
+                                         + self._lmpc_cog_w * _r_conl_e[ny_e - 1])
+        else:
+            ocp.model.cost_psi_expr_e = 0.5 * ca.mtimes([_r_conl_e.T, ca.DM(W_e_mat), _r_conl_e])
         ocp.cost.yref   = np.zeros(ny)
         ocp.cost.yref_0 = np.zeros(ny)
         ocp.cost.yref_e = np.zeros(ny_e)
