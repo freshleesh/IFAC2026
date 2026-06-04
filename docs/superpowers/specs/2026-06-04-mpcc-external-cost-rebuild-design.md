@@ -93,3 +93,21 @@
 - softmin terminal 제거. CONL ψ_e에 **linear cost-to-go `+ w_Q·(Qᵀα)`** (B0 CONL이 가능케 함; NLS는 sqrt였음) + **soft SS-anchor** residual `√(w_s)·W^½·(x_N[0:4] − SS·α)` (r_e에 4행 추가, ψ_e 제곱). SS=p[18:58] reshape(4,K), Q=p[58:68], α=x_aug[8:8+K].
 - ★ soft anchor + corridor hard = 충돌이 drivable corridor로 해소(LMPC_REBUILD 핵심 안정성).
 ## B3 Step 3+ : SS infra(K↑·재영점·SS_next·forward window) → α warm-start(zt=SS_next·α) → 검증(use_lmpc on, lap2+).
+
+## B3 Step 1 진행 (2026-06-04, 이어서)
+**완료 (커밋됨, _lmpc_joint=False면 nx=8 baseline 무손상):**
+- 1a: model에 x_aug/f_aug/xdot_aug/alpha_aug/K_aug.
+- A: `self._lmpc_joint=False` flag (__init__).
+- B: setup_MPC dynamic 분기 (joint면 x_aug/f_aug/xdot_aug, nx=8+K).
+- C: x0 → partial `idxbx_0=arange(8)` (α free at t=0).
+- D: α bounds idxbx [8..8+K-1] ∈ [0,1].
+- E: con_h에 Σα 5번째 행 + lh/uh [1,1] (hard eq, idxsh는 [0,1,2,3] 유지).
+
+**남은 (X0/warm-start, n_states-aware — 다음):**
+- F(solve set): 불필요 확인됨 (idxbx_0=arange(8)라 set(0,"lbx",initial_state) 8-dim 그대로 OK).
+- G: `self._nx_solver=nx` 저장(setup_MPC). X0 alloc(~1309,2111) `np.zeros((N+1, self._nx_solver))`.
+- H: X0 init(~1543,1563) `X0[0,:self.n_states]=initial_state` + joint면 `X0[0,self.n_states:]=1/K`. 
+- I: warm rollout(~1556,1570) `X0[k+1,:self.n_states]=xk[:n_states]+dt·deriv` + `X0[k+1,n_states:]=X0[k,n_states:]`(α const).
+- J: traj fallback(~1866,1880) np.tile 폭 = _nx_solver. traj 추출은 `[:, :8]` phys. mpc_node `_lmpc_query_state=traj[-1,:8]`.
+- **Step1 검증**: `_lmpc_joint=True` flip → 빌드+final 거동 baseline 재현(α free·Σα=1뿐, terminal 미사용) 확인. nx=18, solve +1ms.
+- **Step2**: convex-α CONL terminal (linear Qᵀα + soft SS-anchor).

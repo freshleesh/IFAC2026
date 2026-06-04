@@ -53,6 +53,9 @@ class MPC:
         # Switch via env var or class override; full dynamic adapter
         # comes online in Phase 2 (cost/output rewiring).
         self.use_dynamic = False
+        # Phase B3: joint-α LMPC — α as constant-dynamics STATE (nx 8→8+K),
+        # optimized jointly with x/u in the RTI solve. OFF → nx=8 baseline.
+        self._lmpc_joint = False
         # ── Phase D closed-form CasADi GP residual (dynamics-only) ─────────
         # Independent of the l4acados `use_gp_residual` path. Default OFF.
         # Set by mpc_node from the `use_gp_casadi` ROS param BEFORE setup_MPC.
@@ -572,10 +575,21 @@ class MPC:
         # `a_lat_expr` (h-constraint) — vx·r vs v² tan(δ)/L.
         if self.use_dynamic:
             dyn = self._build_dynamic_model()
-            x          = dyn['x']
             u          = dyn['u']
-            f_expl     = dyn['f_expl']
-            xdot       = dyn['xdot']
+            # B3: joint-α swaps in the augmented state x_aug=[x(8),α(K)].
+            if self._lmpc_joint:
+                x        = dyn['x_aug']
+                f_expl   = dyn['f_aug']
+                xdot     = dyn['xdot_aug']
+                alpha_sym = dyn['alpha_aug']
+                K_aug    = dyn['K_aug']
+                nx       = 8 + K_aug
+            else:
+                x        = dyn['x']
+                f_expl   = dyn['f_expl']
+                xdot     = dyn['xdot']
+                alpha_sym = None
+                nx       = 8
             x_         = dyn['x_pos']
             y_         = dyn['y_pos']
             psi        = dyn['psi']
@@ -587,7 +601,6 @@ class MPC:
             a_lat_expr   = dyn['a_lat_expr']
             v_input_sym  = None              # no v input in dynamic
             a_x_input    = dyn['a_x']
-            nx = 8
             nu = 3
             # ── Phase D (closed-form CasADi GP residual) ──────────────────
             # Adds the offline-trained sparse-GP posterior MEAN (as a pure
@@ -1022,7 +1035,11 @@ class MPC:
         # Dynamic: a_lat = vx · r (true lateral acceleration). Both
         # are computed in the model branch above into `a_lat_expr`.
         a_lat = a_lat_expr
-        model_ac.con_h_expr = ca.vertcat(h_obs, h_corridor_top, h_corridor_bot, a_lat)
+        if self._lmpc_joint and alpha_sym is not None:
+            # B3: α simplex Σα=1 as a 5th h-row (hard eq, NOT slacked).
+            model_ac.con_h_expr = ca.vertcat(h_obs, h_corridor_top, h_corridor_bot, a_lat, ca.sum1(alpha_sym))
+        else:
+            model_ac.con_h_expr = ca.vertcat(h_obs, h_corridor_top, h_corridor_bot, a_lat)
 
         # ---- Compose model ----
         model_ac.f_impl_expr = xdot - f_expl
@@ -1124,7 +1141,14 @@ class MPC:
         Tf = ocp.solver_options.tf
 
         # ---- Initial state placeholder ----
-        ocp.constraints.x0 = np.zeros(nx)
+        if self._lmpc_joint:
+            # B3: fix only the 8 physical states at t=0; α(K) left FREE so the
+            # solver optimizes the convex combination jointly with x/u.
+            ocp.constraints.idxbx_0 = np.arange(8)
+            ocp.constraints.lbx_0 = np.zeros(8)
+            ocp.constraints.ubx_0 = np.zeros(8)
+        else:
+            ocp.constraints.x0 = np.zeros(nx)
 
         # ---- Input bounds ----
         # Kinematic: u = [v, δ, p_v] — bounds on v, δ, p_v.
@@ -1151,6 +1175,12 @@ class MPC:
             ocp.constraints.idxbx = np.array([3, 4, 5])
             ocp.constraints.lbx   = np.array([0.0, -10.0, -20.0])
             ocp.constraints.ubx   = np.array([self.v_max + 0.5, 10.0, 20.0])   # 작은 margin (0.5 m/s). v_max 까지 빡빡하게 강제하면 solver IPM 발산 → 12m teleport. 원래 +2 로 풀어줌.
+            if self._lmpc_joint:
+                # B3: α ∈ [0,1] state bound on the K augmented states (all stages).
+                _Ka = int(dyn['K_aug'])
+                ocp.constraints.idxbx = np.concatenate([ocp.constraints.idxbx, np.arange(8, 8 + _Ka)])
+                ocp.constraints.lbx   = np.concatenate([ocp.constraints.lbx, np.zeros(_Ka)])
+                ocp.constraints.ubx   = np.concatenate([ocp.constraints.ubx, np.ones(_Ka)])
         else:
             ocp.constraints.lbu = np.array([0.0, self.theta_min, 0.0])
             ocp.constraints.ubu = np.array([self.v_max, self.theta_max, self.p_max])
@@ -1175,9 +1205,13 @@ class MPC:
         #   flat region; the steer-output EMA filter further damps any wobble.
         a_lat_max = max(8.0, float(self.a_lat_safe_live) + 1.0)
         self._log.info(f"[MPC-acados] a_lat hard cap = {a_lat_max:.2f} (a_lat_safe={float(self.a_lat_safe_live):.2f} + 1.0 backstop)")
-        # h order: [h_obs, h_corridor_top, h_corridor_bot, a_lat]
-        ocp.constraints.lh = np.array([0.0, 0.0, 0.0, -a_lat_max])
-        ocp.constraints.uh = np.array([1e15, 1e15, 1e15, a_lat_max])
+        # h order: [h_obs, h_corridor_top, h_corridor_bot, a_lat, (Σα if joint)]
+        if self._lmpc_joint:
+            ocp.constraints.lh = np.array([0.0, 0.0, 0.0, -a_lat_max, 1.0])  # Σα=1 eq
+            ocp.constraints.uh = np.array([1e15, 1e15, 1e15, a_lat_max, 1.0])
+        else:
+            ocp.constraints.lh = np.array([0.0, 0.0, 0.0, -a_lat_max])
+            ocp.constraints.uh = np.array([1e15, 1e15, 1e15, a_lat_max])
         # Slack on all four — corridor and obstacle and a_lat can be
         # transiently violated. Slack absorbs without triggering cascade.
         ocp.constraints.idxsh = np.array([0, 1, 2, 3])
