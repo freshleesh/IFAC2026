@@ -980,6 +980,9 @@ class MPCNode(Node):
         # LMPC codegen flag (Step 4): when LMPC active, drop the terminal contour/yaw
         # W_e emphasis so the joint-α apex target — not centerline tracking — sets x_N.
         self.mpc._lmpc_codegen = bool(self.get_parameter('use_lmpc').value)
+        # Phase B3: joint-α LMPC (α as state + convex-α terminal). Tie activation
+        # to use_lmpc so the OCP is built with the augmented state (nx=8+K).
+        self.mpc._lmpc_joint = bool(self.get_parameter('use_lmpc').value)
         # Phase D closed-form CasADi GP residual flag — set BEFORE setup_MPC()
         # so the dynamics codegen picks it up. Independent of use_gp_residual.
         self.mpc.use_gp_casadi = bool(self.get_parameter('use_gp_casadi').value)

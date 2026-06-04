@@ -124,8 +124,8 @@ mpc_node:
     # historical states) + regularization. lap-by-lap value function 학습으로
     # tire-model mismatch (gym ST vs MPCC Pacejka) 를 자동 보상.
     # use_lmpc=false (default) — LMPC term cost weight = 0, 기존 동작 동일.
-    use_lmpc: false            # B-mode(BO 18.62, 무drift)가 sustained 최선. softmin LMPC는 초반 18.48 더 빠르나 drift 잔존(full Rosolia 하드제약 필요).
-    lmpc_w: 0.1                # softmin term 가중 (acados W_e 의 lmpc residual entry 1.0 × lmpc_w)
+    use_lmpc: true            # B-mode(BO 18.62, 무drift)가 sustained 최선. softmin LMPC는 초반 18.48 더 빠르나 drift 잔존(full Rosolia 하드제약 필요).
+    lmpc_w: 0.05                # softmin term 가중 (acados W_e 의 lmpc residual entry 1.0 × lmpc_w)
     lmpc_alpha: 1.0            # distance penalty in g_i = Q_i + α·d_i²
     lmpc_beta: 0.01           # softmax smoothness. 0.01=안정(1.0은 sharp→chatter→wedge 검증).
     lmpc_reg_w: 0.01           # 0.001→0.01 (reviewer #★4: regularization 강화, Hessian 양정칙) (best SS attractor)
