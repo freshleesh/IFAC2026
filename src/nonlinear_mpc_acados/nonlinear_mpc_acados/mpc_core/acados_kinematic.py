@@ -670,7 +670,10 @@ class MPC:
             # kinematic: a_x 자체가 입력 아님 (v 가 직접 입력). longitudinal
             # smoothness 는 dynamic 에서만. 0 으로 두면 q_dv 잔재 영향 없음.
             a_x_input    = ca.SX(0.0)
-        self.n_states   = nx
+        # B3: split physical state dim (ROS interface) from solver state dim.
+        # joint-α: solver carries nx=8+K but the ROS-facing physical state is 8.
+        self._nx_solver = nx
+        self.n_states   = 8 if (self.use_dynamic and self._lmpc_joint) else nx
         self.n_controls = nu
 
         # ---- Per-cycle parameters (constant across all stages) ----
@@ -1306,7 +1309,7 @@ class MPC:
         self._n_p_total = n_p_total
 
         # Storage
-        self.X0 = np.zeros((self.N + 1, self.n_states))
+        self.X0 = np.zeros((self.N + 1, getattr(self, '_nx_solver', self.n_states)))
         self.u0 = np.zeros((self.N, self.n_controls))
 
     # ------------------------------------------------------------------
@@ -1540,7 +1543,9 @@ class MPC:
                 self.u0[:, 0] = 0.0      # a_x (no acceleration in seed)
                 self.u0[:, 1] = 0.0      # delta
                 self.u0[:, 2] = seed_v   # p_v (input, can be set free)
-                self.X0[0, :] = initial_state
+                self.X0[0, :self.n_states] = initial_state
+                if self._lmpc_joint:
+                    self.X0[0, self.n_states:] = 1.0 / max(1, self._nx_solver - self.n_states)  # uniform α seed
                 for k in range(self.N):
                     xk = self.X0[k, :]
                     uk = self.u0[k, :]
@@ -1553,14 +1558,17 @@ class MPC:
                     dpsi_dt = (vx_ / self.L) * np.tan(delta_)
                     ds_dt   = p_
                     ddprev  = (delta_ - delta_prev_) / self.dT
-                    self.X0[k + 1, :] = xk + self.dT * np.array(
+                    self.X0[k + 1, :self.n_states] = xk[:self.n_states] + self.dT * np.array(
                         [dx_dt, dy_dt, dpsi_dt, 0.0, 0.0, 0.0,
                          ds_dt, ddprev])
+                    self.X0[k + 1, self.n_states:] = self.X0[k, self.n_states:]  # α constant over horizon
             else:
                 self.u0[:, 0] = seed_v   # v
                 self.u0[:, 1] = 0.0      # delta
                 self.u0[:, 2] = seed_v   # p
-                self.X0[0, :] = initial_state
+                self.X0[0, :self.n_states] = initial_state
+                if self._lmpc_joint:
+                    self.X0[0, self.n_states:] = 1.0 / max(1, self._nx_solver - self.n_states)  # uniform α seed
                 for k in range(self.N):
                     xk = self.X0[k, :]
                     uk = self.u0[k, :]
@@ -1573,8 +1581,9 @@ class MPC:
                     dpsi_dt = (v_ / self.L) * np.tan(delta_)
                     ds_dt   = p_
                     ddprev  = (delta_ - delta_prev_) / self.dT
-                    self.X0[k + 1, :] = xk + self.dT * np.array(
+                    self.X0[k + 1, :self.n_states] = xk[:self.n_states] + self.dT * np.array(
                         [dx_dt, dy_dt, dpsi_dt, ds_dt, ddprev])
+                    self.X0[k + 1, self.n_states:] = self.X0[k, self.n_states:]  # α constant
             for k in range(self.N + 1):
                 self.solver.set(k, "x", self.X0[k, :])
             for k in range(self.N):
@@ -2108,5 +2117,5 @@ class MPC:
         return yaw_to_quat(yaw)
 
     def init_mpc_start_conditions(self):
-        self.X0 = np.zeros((self.N + 1, self.n_states))
+        self.X0 = np.zeros((self.N + 1, getattr(self, '_nx_solver', self.n_states)))
         self.u0 = np.zeros((self.N, self.n_controls))
