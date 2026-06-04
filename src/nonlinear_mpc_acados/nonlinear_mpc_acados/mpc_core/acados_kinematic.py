@@ -517,7 +517,22 @@ class MPC:
         # Real lateral acceleration (replaces v² tan(δ)/L kinematic form).
         a_lat_expr = vx * r_yaw
 
+        # ── Phase B3 Step 1: α as constant-dynamics STATE (joint-α LMPC) ──
+        # x_aug = [x(8), α(K)],  f_aug = [f_expl; 0_K]  (α constant over the
+        # horizon → solver optimizes α jointly with x/u in one RTI solve).
+        # Built here as AVAILABLE-BUT-UNUSED; setup_MPC wires x_aug/f_aug/
+        # xdot_aug in only when joint-α LMPC is enabled (use_lmpc + lmpc_joint).
+        # Convex-α terminal (Σαᵢ·Qᵢ + soft SS-anchor) replaces the softmin.
+        # Refs: Racing-LMPC-ROS2 racing_mpc.cpp:479-504; LMPC_REBUILD.md.
+        K_aug    = 10  # = K_LMPC (lmpc_ss slots p[18:68])
+        alpha_aug = ca.SX.sym('alpha_lmpc', K_aug)
+        x_aug    = ca.vertcat(x, alpha_aug)
+        f_aug    = ca.vertcat(f_expl, ca.SX.zeros(K_aug))
+        xdot_aug = ca.SX.sym('xdot_aug', 8 + K_aug)
+
         return dict(
+            x_aug=x_aug, f_aug=f_aug, xdot_aug=xdot_aug,
+            alpha_aug=alpha_aug, K_aug=K_aug,
             x=x, u=u, xdot=xdot, f_expl=f_expl,
             x_pos=x_pos, y_pos=y_pos, psi=psi,
             vx=vx, vy=vy, r=r_yaw, s=s, delta_prev=delta_prev,
