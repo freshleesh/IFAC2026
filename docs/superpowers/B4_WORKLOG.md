@@ -149,8 +149,9 @@ nominal 예측   x̂_{t+1} = x_t + dt·f_expl(x_t, u_t)
 **D. 실차 (사용자가 ①②후 방향)**
   - D1. baseline ready. B4' 전 **EKF vy/r + observability gate + 안전폴백**([[state_estimation_refs]][[gym_vy_zero_finding]]). B4'=Mac CPU numpy(CUDA無 OK).
 
-**E. 별도 워크스트림 (B-phase 밖)**
-  - E1. 회피/overtaking: MPCC 정적장애물 cost(p_sym 0-4, `/external_obstacles`) **존재하나 미검증**. 동적추월 MPCC 미구현(f1tenth spliner=controller_manager 경로).
+**E. ★ 회피(avoidance) 동작시키기 (사용자 요청 — 다음 세션 명시 과제)**
+  - E1a. **MPCC 정적장애물 회피 검증·작동**: cost·배선 *존재함* — p_sym[0]=obs_dmin,[1]=obs_x,[2]=obs_y,[3]=side_pref,[4]=D_detour (acados_kinematic.py:697~); mpc_node가 `/external_obstacles`(PoseArray)·RViz clicked_point 구독→`self._obstacles`→`mpc.solve(x0,_obstacles)`. **테스트법**: 레이싱라인 위에 장애물 1개 publish(또는 RViz 클릭) → 차가 corridor 안에서 detour하나 확인. 관련 live param: D_detour_live(0.15)·R_car_live·commit_dist_live(10.0)·obs side_pref. **미검증이니 ① 실제 회피 거동 확인 → ② 안 되면 obs cost/corridor 튜닝.**
+  - E1b. 동적 overtaking(움직이는 상대): MPCC 미구현. f1tenth spliner는 `mode:=overtake`=controller_manager(L1) 경로(MPCC 아님). MPCC+동적추월은 상대궤적 예측 + MPCC 확장 필요 = 큰 별도과제.
   - E2. B2 co-tuned tire 제약(friction-ellipse+slip cap) — 미착수.
 
 ## 미결정/위생
