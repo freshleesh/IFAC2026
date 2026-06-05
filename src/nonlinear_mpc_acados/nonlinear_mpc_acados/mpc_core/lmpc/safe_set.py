@@ -34,6 +34,7 @@ class SafeSetQuery:
     """Result of SafeSet lookup — ready to pack into acados parameters."""
     states: np.ndarray              # (K, n_state) — closest historical points
     cost_to_go: np.ndarray          # (K,) — Rosolia step-count cost
+    residuals: np.ndarray           # (K, 3) — per-neighbour velocity residual
     distances: np.ndarray           # (K,) — measured distance to query (debug)
     K: int                          # effective K returned (may be < requested if SS small)
     used_buckets: List[float]       # which v_buckets contributed
@@ -103,14 +104,21 @@ class SafeSetLookup:
             return SafeSetQuery(
                 states=np.zeros((0, z_t.size)),
                 cost_to_go=np.zeros(0),
+                residuals=np.zeros((0, 3)),
                 distances=np.zeros(0),
                 K=0,
                 used_buckets=[],
             )
 
         # 2) Concatenate candidate points across selected laps, with optional s-window slicing
+        def _resid_of(e):
+            r = getattr(e, 'residual', None)
+            if r is None or r.shape[0] != e.state.shape[0]:
+                return np.zeros((e.state.shape[0], 3))
+            return r
         cand_states_list = []
         cand_cost_list = []
+        cand_resid_list = []
         for e in laps:
             if s_curr is not None and self.slice_window > 0 and e.state.shape[1] > _IDX_S:
                 s_arr = e.state[:, _IDX_S]
@@ -126,17 +134,21 @@ class SafeSetLookup:
                 hi = min(e.state.shape[0], idx_near + self.slice_window + 1)
                 cand_states_list.append(e.state[lo:hi])
                 cand_cost_list.append(e.cost_to_go[lo:hi])
+                cand_resid_list.append(_resid_of(e)[lo:hi])
             else:
                 cand_states_list.append(e.state)
                 cand_cost_list.append(e.cost_to_go)
+                cand_resid_list.append(_resid_of(e))
 
         cand_states = np.vstack(cand_states_list)
         cand_cost = np.concatenate(cand_cost_list)
+        cand_resid = np.vstack(cand_resid_list) if cand_resid_list else np.zeros((0, 3))
 
         if cand_states.shape[0] == 0:
             return SafeSetQuery(
                 states=np.zeros((0, z_t.size)),
                 cost_to_go=np.zeros(0),
+                residuals=np.zeros((0, 3)),
                 distances=np.zeros(0),
                 K=0,
                 used_buckets=used_buckets,
@@ -171,6 +183,7 @@ class SafeSetLookup:
         return SafeSetQuery(
             states=cand_states[order],
             cost_to_go=cand_cost[order],
+            residuals=cand_resid[order],
             distances=np.sqrt(d2[order]),
             K=K,
             used_buckets=used_buckets,
