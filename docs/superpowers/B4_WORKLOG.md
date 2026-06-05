@@ -6,7 +6,7 @@
 > - 실행계획(어떻게, 파일별 edit): `docs/superpowers/plans/2026-06-05-b4-error-regression.md`
 > - 이 워크로그(현재 상태): 바로 이 파일
 
-마지막 갱신: 2026-06-05, Task 5 완료 (입력로깅 선결버그 수정 포함). Task 1~5 ✅, Task 6 진행중. ★사용자 지적(e_corr↔GP 이중보정)은 Task 7 가드로 처리 예정.
+마지막 갱신: 2026-06-05. **★ 코드 Task 1~7 전부 ✅ (구현+리뷰+커밋 완료).** 남은 것 = Task 8 = 라이브 sim 검증(메인이 sim 하나씩). e_corr↔GP 이중보정 가드 적용됨(Task 7).
 
 ---
 
@@ -56,9 +56,9 @@ nominal 예측   x̂_{t+1} = x_t + dt·f_expl(x_t, u_t)
 | 3 | `nominal_dynamics.py` 공유 1-step 잔차 (pure-python TDD) | ✅ 완료 | `26429e4` | pytest 2 pass, 상수 bit-for-bit 검증 |
 | 4 | per-cycle 예측오차 로거 (정확성 게이트) | ✅ 완료 | `33dae85` | 코드+빌드 ✓ (★타이밍 수정: solve 후 호출, state8↔u_seq[0] 정확 페어링). **sim 로그체크 보류** |
 | 5 | `lap_database` 잔차 저장 (TDD) | ✅ 완료 | `a206ab2` + `1e70f9a`(입력로깅 fix) | pytest 7 pass |
-| 6 | `safe_set` query가 이웃 잔차 반환 (TDD) | ⏳ 진행중 | — | pytest |
-| 7 | Epanechnikov e_corr 회귀 + mpc 배선 (**+ e_corr↔GP 상호배제 가드**) | ⛔ 대기(6) | — | pytest + sim 보류 |
-| 8 | 폐루프 검증 (메인이 sim 직접) | ⛔ 대기(1,2,4,7) | — | sim 측정 |
+| 6 | `safe_set` query가 이웃 잔차 반환 (TDD) | ✅ 완료 | `303cf7e` | pytest 8 pass, order 정렬 검증 |
+| 7 | Epanechnikov e_corr 회귀 + mpc 배선 (+ e_corr↔GP 상호배제 가드) | ✅ 완료 | `ea23ca0` | pytest 11 pass. _err_regr=use_err∧use_lmpc, 4개 bail 모두 zero, GP guard 검증 |
+| 8 | 폐루프 검증 (메인이 sim 직접) | ⏳ 다음 (sim 단계) | — | sim 측정 |
 
 상태표는 ROS task tracker와 동기(이 대화의 TaskList).
 
