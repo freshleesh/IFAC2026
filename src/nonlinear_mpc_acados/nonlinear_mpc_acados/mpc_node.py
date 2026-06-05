@@ -53,6 +53,7 @@ from .track_loader import TrackData, build_track_from_wpnts, find_current_arc_le
 # 2026-05-28 #18 LMPC integration
 from .mpc_core.lmpc.lap_database import LapDatabase
 from .mpc_core.lmpc.safe_set import SafeSetLookup
+from .mpc_core.lmpc.nominal_dynamics import predict_next
 
 from std_msgs.msg import Bool, ColorRGBA, Float32MultiArray, Float64, Header, Int32
 from geometry_msgs.msg import (
@@ -696,6 +697,7 @@ class MPCNode(Node):
             state8[2] = float(x0[2])
             state8[6] = float(s_now)
         self._lmpc_lap_buf['state'].append(state8.copy())
+        self._b4_state8 = state8.copy()   # B4' pred-error gate: paired with u_seq[0] after solve
         self._lmpc_lap_buf['time'].append(time.monotonic())
         # max |e_c| running max (e_c estimated via CasADi center LUT)
         try:
@@ -765,6 +767,30 @@ class MPCNode(Node):
         self.mpc.lmpc_alpha_live = self._lmpc_alpha
         self.mpc.lmpc_beta_live  = self._lmpc_beta
         self.mpc.lmpc_reg_w_live = self._lmpc_reg_w
+
+    def _b4_pred_error_log(self, state8_now, u_now, dt):
+        """B4' correctness gate: compare the PREVIOUS cycle's nominal vs
+        corrected one-step velocity prediction against the realized current
+        state. 'Working' iff mean corrected-error < mean nominal-error over a
+        window. e_corr is paired with the control it was active for."""
+        prev = getattr(self, '_b4_prev', None)
+        if prev is not None:
+            ps, pu, pe, pdt = prev
+            pred = predict_next(ps, pu, pdt)
+            now_v = np.asarray(state8_now, float)[3:6]
+            nominal_err = float(np.linalg.norm(now_v - pred[3:6]))
+            corrected_err = float(np.linalg.norm(now_v - (pred[3:6] + pdt * np.asarray(pe))))
+            self._b4_nom_acc = getattr(self, '_b4_nom_acc', 0.0) + nominal_err
+            self._b4_cor_acc = getattr(self, '_b4_cor_acc', 0.0) + corrected_err
+            self._b4_cnt = getattr(self, '_b4_cnt', 0) + 1
+            if self._b4_cnt % 100 == 0:
+                self.get_logger().info(
+                    f"[B4'-pred] mean|err| nominal={self._b4_nom_acc / self._b4_cnt:.4f} "
+                    f"corrected={self._b4_cor_acc / self._b4_cnt:.4f} (n={self._b4_cnt})")
+        self._b4_prev = (np.asarray(state8_now, float).copy(),
+                         np.asarray(u_now, float).copy(),
+                         np.asarray(getattr(self.mpc, '_e_corr', np.zeros(3)), float).copy(),
+                         float(dt))
 
     def _lmpc_on_lap_end(self, lap_idx: int) -> None:
         """Called from _on_lap_count_step when lap counter increments —
@@ -1547,6 +1573,16 @@ class MPCNode(Node):
                         throttle_duration_sec=0.5)
             except Exception:
                 pass
+
+        # B4' prediction-error gate: realized state8 (stashed this cycle) vs the
+        # prediction from the previous (state, control). Guarded — never breaks control.
+        try:
+            if getattr(self, '_b4_state8', None) is not None and u_seq is not None and len(u_seq) > 0:
+                self._b4_pred_error_log(
+                    self._b4_state8, np.asarray(u_seq[0], float),
+                    float(self.get_parameter('dT').value))
+        except Exception:
+            pass
 
         # Output: AckermannDrive
         cmd = AckermannDriveStamped()
