@@ -1932,7 +1932,14 @@ class MPC:
                     seed_v = max(float(self.ref_v(s0 % L)) * 0.3, 0.5)
                 except Exception:
                     seed_v = 1.0
-                traj = np.tile(initial_state, (self.N + 1, 1))
+                # joint-α: solver expects _nx_solver-wide x (8 phys + K α). A bare
+                # 8-wide tile here makes self.X0 8-wide → next cycle's set(k,"x")
+                # raises "dimension 18 vs 8". Build at solver width, α uniform.
+                _nxs = getattr(self, '_nx_solver', self.n_states)
+                traj = np.zeros((self.N + 1, _nxs))
+                traj[:, :self.n_states] = initial_state
+                if _nxs > self.n_states:
+                    traj[:, self.n_states:] = 1.0 / max(1, _nxs - self.n_states)
                 u_seq = np.zeros((self.N, self.n_controls))
                 if self.use_dynamic:
                     # u[0] = a_x in dynamic — set to small positive accel
@@ -1946,7 +1953,11 @@ class MPC:
         except Exception as e:
             self._log.warn_throttle(2.0, "[MPC-acados] solver exception %s — reset", str(e))
             self.WARM_START = False
-            traj = np.tile(initial_state, (self.N + 1, 1))
+            _nxs = getattr(self, '_nx_solver', self.n_states)
+            traj = np.zeros((self.N + 1, _nxs))
+            traj[:, :self.n_states] = initial_state
+            if _nxs > self.n_states:
+                traj[:, self.n_states:] = 1.0 / max(1, _nxs - self.n_states)
             u_seq = np.zeros((self.N, self.n_controls))
             self.dbg_solver_status = "exception"
 
