@@ -770,9 +770,16 @@ class MPCNode(Node):
             # e_corr enters f_expl (a RATE, ẋ). The stored residual is a velocity
             # delta (actual_next − nominal_next). acados integrates x+dt·f_expl, so
             # to make dt·e_corr cancel the residual we inject residual/dt (a rate).
+            # Adaptive bandwidth: the SS weighted-L2 neighbour distances are not
+            # ~1; they scale with the state metric (observed ~37). A fixed h would
+            # zero the Epanechnikov kernel. Scale h to the neighbourhood: h =
+            # bandwidth_mult × max(neighbour distance), so the kernel always spans
+            # the K returned neighbours (farthest ~0 weight, nearest ~full).
+            _h_mult = float(self.get_parameter('err_regr_bandwidth').value)
+            _dmax = float(res.distances.max()) if res.distances.size else 1.0
             self.mpc._e_corr = epanechnikov_e_corr(
                 res.residuals, res.distances,
-                h=float(self.get_parameter('err_regr_bandwidth').value)) / max(_dt, 1e-6)
+                h=_h_mult * max(_dmax, 1e-6)) / max(_dt, 1e-6)
         else:
             self.mpc._e_corr = np.zeros(3)
         # Post-crash robustness: while STUCK / in stuck-recovery the state x0 is bad
