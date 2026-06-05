@@ -241,7 +241,8 @@ class MPCNode(Node):
         # Independent of use_gp_residual (l4acados). Default OFF.
         self.declare_parameter('use_gp_casadi', False)
         self.declare_parameter('use_error_regression', False)
-        self.declare_parameter('err_regr_bandwidth', 1.0)   # Epanechnikov h
+        self.declare_parameter('err_regr_bandwidth', 1.0)   # Epanechnikov h (× max neighbour vel-dist)
+        self.declare_parameter('err_regr_ema', 0.8)          # B4' e_corr temporal EMA: β·prev+(1-β)·new
         # 실차 모드: /sim/initialpose 없음. STUCK recovery 시도해도 무의미 + 위험.
         # sim=true (default) / real=false.
         self.declare_parameter('enable_sim_reset', True)
@@ -770,16 +771,23 @@ class MPCNode(Node):
             # e_corr enters f_expl (a RATE, ẋ). The stored residual is a velocity
             # delta (actual_next − nominal_next). acados integrates x+dt·f_expl, so
             # to make dt·e_corr cancel the residual we inject residual/dt (a rate).
-            # Adaptive bandwidth: the SS weighted-L2 neighbour distances are not
-            # ~1; they scale with the state metric (observed ~37). A fixed h would
-            # zero the Epanechnikov kernel. Scale h to the neighbourhood: h =
-            # bandwidth_mult × max(neighbour distance), so the kernel always spans
-            # the K returned neighbours (farthest ~0 weight, nearest ~full).
-            _h_mult = float(self.get_parameter('err_regr_bandwidth').value)
-            _dmax = float(res.distances.max()) if res.distances.size else 1.0
-            self.mpc._e_corr = epanechnikov_e_corr(
-                res.residuals, res.distances,
-                h=_h_mult * max(_dmax, 1e-6)) / max(_dt, 1e-6)
+            # R1: weight by VELOCITY-space distance (current vx,vy,r ↔ neighbour
+            # vx,vy,r = res.states[:,3:6]), NOT the position-heavy SS distance —
+            # so the Epanechnikov kernel picks velocity-local neighbours (the
+            # regime e_corr actually corrects). Reuses the same K neighbours;
+            # leaves the LMPC position-near terminal query untouched. h scales to
+            # the velocity neighbourhood (kernel spans the K returned points).
+            _qv = np.asarray(state8, float)[3:6]
+            _nv = np.asarray(res.states, float)[:, 3:6]
+            _vel_d = np.linalg.norm(_nv - _qv[None, :], axis=1)
+            _h = float(self.get_parameter('err_regr_bandwidth').value) * max(float(_vel_d.max()), 1e-6)
+            _newc = epanechnikov_e_corr(res.residuals, _vel_d, h=_h) / max(_dt, 1e-6)
+            # R2: temporal EMA low-pass — SS neighbours change cycle-to-cycle, so
+            # raw e_corr jitters → the injected model offset (hence the predicted
+            # trajectory) shakes. Smooth it.
+            _beta = float(self.get_parameter('err_regr_ema').value)
+            _prev = np.asarray(getattr(self.mpc, '_e_corr', np.zeros(3)), float)
+            self.mpc._e_corr = _beta * _prev + (1.0 - _beta) * _newc
         else:
             self.mpc._e_corr = np.zeros(3)
         # Post-crash robustness: while STUCK / in stuck-recovery the state x0 is bad
