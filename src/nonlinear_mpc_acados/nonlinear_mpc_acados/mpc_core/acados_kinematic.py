@@ -716,8 +716,8 @@ class MPC:
         #   72 left_x  73 left_y  74 right_x  75 right_y
         # B4' error regression (3, const across horizon):
         #   76 e_corr_vx  77 e_corr_vy  78 e_corr_r
-        n_p_const = 18 + 54   # 18 기존 + 50 SS + 4 LMPC scalars
-        n_p_stage = 4 + 3     # 4 corridor + 3 B4' e_corr
+        n_p_const = 18 + 54 + 3   # 18 기존 + 50 SS + 4 LMPC scalars + 3 B4' e_corr (const across horizon)
+        n_p_stage = 4             # 4 corridor (per-stage)
         n_p_total = n_p_const + n_p_stage   # 79
         K_LMPC = 10
         p_sym = ca.SX.sym('p_sym', n_p_total)
@@ -1867,6 +1867,7 @@ class MPC:
             # 72..75 — corridor (per-stage)
             p_arr[72] = lx; p_arr[73] = ly
             p_arr[74] = rx; p_arr[75] = ry
+            # 76..78 — B4' e_corr (const across horizon)
             p_arr[76] = float(self._e_corr[0])
             p_arr[77] = float(self._e_corr[1])
             p_arr[78] = float(self._e_corr[2])
