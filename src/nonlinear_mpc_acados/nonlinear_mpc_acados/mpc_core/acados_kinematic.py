@@ -57,6 +57,10 @@ class MPC:
         # optimized jointly with x/u in the RTI solve. OFF → nx=8 baseline.
         self._lmpc_joint = False
         self._lmpc_cog_w = 0.02   # B3 Step2: linear cost-to-go weight (Qᵀα) in ψ_e
+        # B4' error-dynamics regression: affine velocity correction added to
+        # f_expl rows [vx,vy,r]. Default OFF → p[76:79]=0 → baseline f_expl.
+        self._err_regr = False
+        self._e_corr = np.zeros(3)   # filled per-cycle by mpc_node (B4'.3)
         # ── Phase D closed-form CasADi GP residual (dynamics-only) ─────────
         # Independent of the l4acados `use_gp_residual` path. Default OFF.
         # Set by mpc_node from the `use_gp_casadi` ROS param BEFORE setup_MPC.
@@ -710,11 +714,14 @@ class MPC:
         #   71      : lmpc_reg_w (regularization 가중치 — best SS 점 attractor)
         # Per-stage (4):
         #   72 left_x  73 left_y  74 right_x  75 right_y
+        # B4' error regression (3, const across horizon):
+        #   76 e_corr_vx  77 e_corr_vy  78 e_corr_r
         n_p_const = 18 + 54   # 18 기존 + 50 SS + 4 LMPC scalars
-        n_p_stage = 4
-        n_p_total = n_p_const + n_p_stage   # 76
+        n_p_stage = 4 + 3     # 4 corridor + 3 B4' e_corr
+        n_p_total = n_p_const + n_p_stage   # 79
         K_LMPC = 10
         p_sym = ca.SX.sym('p_sym', n_p_total)
+        e_corr_sym = p_sym[76:79]   # B4' velocity-row correction (vx,vy,r)
         obs_dmin = p_sym[0]; obs_x = p_sym[1]; obs_y = p_sym[2]
         side_pref = p_sym[3]
         D_detour_p     = p_sym[4]   # side-cost detour offset (rqt)
@@ -1065,6 +1072,14 @@ class MPC:
             model_ac.con_h_expr = ca.vertcat(h_obs, h_corridor_top, h_corridor_bot, a_lat)
 
         # ---- Compose model ----
+        # B4' error-dynamics regression: add affine velocity correction to the
+        # blended dynamic f_expl. nx-wide via explicit rows [3,4,5]=[vx,vy,r] so
+        # it composes with joint-α (nx=18) and plain (nx=8) alike. Gated: when
+        # _err_regr is False the slots stay 0 → exact baseline f_expl.
+        if self._err_regr and self.use_dynamic:
+            f_expl = f_expl + ca.vertcat(
+                ca.SX.zeros(3), e_corr_sym[0], e_corr_sym[1], e_corr_sym[2],
+                ca.SX.zeros(f_expl.shape[0] - 6))
         model_ac.f_impl_expr = xdot - f_expl
         model_ac.f_expl_expr = f_expl
         model_ac.x = x
@@ -1852,6 +1867,9 @@ class MPC:
             # 72..75 — corridor (per-stage)
             p_arr[72] = lx; p_arr[73] = ly
             p_arr[74] = rx; p_arr[75] = ry
+            p_arr[76] = float(self._e_corr[0])
+            p_arr[77] = float(self._e_corr[1])
+            p_arr[78] = float(self._e_corr[2])
             self.solver.set(k, "p", p_arr)
 
         # ---- Stage 0 init state via tightened bounds ----
