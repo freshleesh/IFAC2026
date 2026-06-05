@@ -138,3 +138,37 @@
 **B4'.4 검증**: use_error_regression on, final/dynamic, 모델 mismatch 교정으로 a_lat↑ 시 접촉↓(고속 한계 안전 탐색). cross-map 강건성(논문 Table I).
 
 **의존성 없음**(B3 LMPC와 독립적으로 dynamics만 교정; 단 SS 이웃 query는 LMPC 인프라 재사용). multi-file·focused session급.
+
+## ★ B4' 정제 (2026-06-05 세션 — brainstorming/karpathy 적용, 사용자 승인)
+이전 B4'.1~.4는 *메커니즘*은 정확하나 **검증법이 비어있음**이 핵심 결함. B4'는 본질적으로 sim2real 기능 → sim의 model-mismatch가 작고 구조적이라 lap time으로는 "작동 vs 조용히 깨짐"을 구분 불가. 멀티턴 빌드 전 이걸 먼저 잠근다.
+
+### 사실 확인 (이번 세션, 코드 grep)
+- `extract_residuals.py`: f_expl(tanh Pacejka blend) 미러 + `residual=actual−Euler1step` on (vx,vy,r) **이미 완성** (nominal 예측기 done).
+- `gp_casadi_residual.py`: `f_expl += vertcat(0,0,0,μ0,μ1,μ2,0,0)` 주입 패턴 존재 → B4'.1은 이 패턴 복사.
+- `lap_database`: state+input 저장됨 → transition (xₜ,uₜ,xₜ₊₁) 존재.
+- **SS query는 use_lmpc=true 경로에서만 live** (`mpc_node.py:736`). → 스펙의 "B3 독립" vs "SS query 필요" 모순 해소: **dynamics는 직교, 단 이웃 query는 LMPC SS 플러밍 재사용 → B4'는 use_lmpc=true와 결합 운용** (use_lmpc=false면 e_corr=0 안전 no-op).
+- gym 실제 동역학 ≠ 컨트롤러 nominal tanh (gym=단일트랙 ST 모델) → sim residual 비영이나 작음/구조적. 따라서 **알려진 mismatch 주입 없이는 sim서 검증 불가** = 이 정제의 동기.
+
+### 정제 1 — 알려진 mismatch 주입 검증 (사용자 선택: "Inject known mismatch", gym 쪽 동의)
+- **gym 쪽** 타이어 마찰(또는 cornering stiffness)을 알려진 배율 `gym_mu_scale`로 스케일 (sim.yaml 노출). 컨트롤러 nominal은 **고정**.
+- 실차 sim2real 충실 방향: 실차=알 수 없는 실제 동역학, 컨트롤러=고정 nominal.
+- ground truth 확보 → (a) 학습된 e_corr 부호/크기 ≈ 주입 offset 복원 확인, (b) 폐루프서 보정 ON시 grip 과신 멈추고 접촉↓.
+
+### 정제 2 — 정확성 게이트 (lap time 의존 X)
+- per-cycle **N-step 예측오차** 로깅: nominal-예측 vs 보정-예측 vs 실제 실현 state. 동일 `f_expl` 미러 재사용 (값싸다).
+- **"작동" 정의 = 보정 예측오차 < nominal 예측오차** (맵 독립). lap time이 숨기는 조용한 회귀를 잡음.
+
+### 카파시 가이드라인 적용 (사용자 invoke)
+- **단순성**: affine e_corr **horizon 전체 상수**가 1차. per-stage 보정(3×N param + 예측궤적 따라 per-stage SS lookup)은 **선투자 금지** — 정확성 게이트가 far-horizon서 상수 offset 부족을 *증명*할 때만 승격.
+- **목표주도**: 검증 스캐폴딩이 성공기준을 verifiable하게 만듦 → gold-plating 아님. 단 최소(스칼라 1개 + 로그 1줄).
+- **외과적**: B4'.1=검증된 주입 패턴 복사. f_expl hook·p_sym 폭·per-stage fill만 건드림, 인접 setup 리팩토링 X.
+
+### 수정된 단계순서 + verifiable 성공기준
+```
+1. B4'.1 f_expl hook          → verify: _err_regr=True·e_corr=0 → 21.20s/0접촉 baseline 재현
+2. gym_mu_scale + 예측오차 로그 → verify: scale=1.0→residual≈0; scale=0.9→비영 구조적 residual
+3. B4'.2 residual 저장         → verify: 저장 e[t] = 오프라인 extract_residuals 동일 lap 일치
+4. B4'.3 가중 e_corr (affine)  → verify: scale=0.9서 e_corr 부호/크기 ≈ 주입 offset
+5. B4'.4 폐루프               → verify: 보정 N-step 예측오차 < nominal; 그 뒤 a_lat↑ → 접촉↓
+```
+각 단계 독립 검증점·회귀 시 정지·롤백. data-scarcity(이웃<M_min) → e_corr=0 폴백 + 크기 clamp(안전).
