@@ -133,6 +133,13 @@ class MPC:
 
         # Bounds
         self.v_max = 6.0
+        # R3 — decouple max_speed: v_max stays the HARD CAP (vx ubx, ubu, per-stage
+        # caps). These two are set independently (None → derive from v_max so
+        # behaviour is unchanged when unset) so raising the cap does NOT make the
+        # progress target more aggressive or lengthen the κ-lookahead (the things
+        # that caused the high-speed trajectory shake).
+        self.speed_target = None   # q_p progress reward target (None → v_max)
+        self.lookahead_m  = None   # ref_v κ-lookahead window [m] (None → max(6, v_max²/6))
         self.v_min = 0.5
         self.theta_max = 0.4
         self.theta_min = -0.4
@@ -333,7 +340,7 @@ class MPC:
         # 2026-06-02 속도비례: 고속일수록 코너 전 제동거리↑ 필요. v=8 면
         # 8→2.3 감속에 ~10m. per-stage hard cap 이 u[0] 을 √(a_lat/κ_fwd) 로
         # 묶으므로, forward-max 가 코너를 이만큼 일찍 봐야 cap 이 제때 내려감.
-        LOOKAHEAD_M = max(6.0, float(self.v_max) ** 2 / 6.0)   # v5→6m, v8→10.7m
+        LOOKAHEAD_M = float(self.lookahead_m) if self.lookahead_m else max(6.0, float(self.v_max) ** 2 / 6.0)   # R3: fixed window decouples shake from cap
         n_look = int(LOOKAHEAD_M / self.kappa_ds)
         n_grid = len(abs_k_arr)
         # R4 (refv_smoothing.distance_tapered_forward_max) was tried here to remove
@@ -934,12 +941,13 @@ class MPC:
         # 9th residual: q_dv · a_x (longitudinal accel penalty).
         # 2026-05-27 review #8 — VPMPCC q_Δv 와 동일 정신. 이전엔 baked weight
         # self.q_dv=15 만 정의되고 cost 에 미연결 (ghost weight) → 연결.
+        _spd_tgt = float(self.speed_target) if self.speed_target else float(self.v_max)  # R3: progress target (decoupled from hard cap)
         y_expr   = ca.vertcat(sqrt_q_cte_scale   * sqrt_att * (e_c - e_c_ref),
                               sqrt_q_lag_scale   * sqrt_att * e_l,
                               sqrt_q_psi_scale   * yaw_err,
                               sqrt_q_v_scale     * (vx_for_cost - ref_v_expr),
                               sqrt_q_dd_scale    * delta,
-                              sqrt_q_p_scale     * (p_v - self.v_max),
+                              sqrt_q_p_scale     * (p_v - _spd_tgt),
                               side_term,
                               sqrt_q_drate_scale * (delta - delta_prev),
                               sqrt_q_dv_scale    * a_x_input)

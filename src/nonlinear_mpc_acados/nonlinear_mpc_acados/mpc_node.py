@@ -243,6 +243,9 @@ class MPCNode(Node):
         self.declare_parameter('use_error_regression', False)
         self.declare_parameter('err_regr_bandwidth', 1.0)   # Epanechnikov h (× max neighbour vel-dist)
         self.declare_parameter('err_regr_ema', 0.8)          # B4' e_corr temporal EMA: β·prev+(1-β)·new
+        # R3 decouple max_speed: 0 → derive from max_speed (behaviour unchanged).
+        self.declare_parameter('speed_target', 0.0)          # q_p progress target (0 → max_speed)
+        self.declare_parameter('lookahead_m', 0.0)           # ref_v κ window [m] (0 → max(6, v²/6))
         # 실차 모드: /sim/initialpose 없음. STUCK recovery 시도해도 무의미 + 위험.
         # sim=true (default) / real=false.
         self.declare_parameter('enable_sim_reset', True)
@@ -1056,6 +1059,12 @@ class MPCNode(Node):
         # Phase B3: joint-α LMPC (α as state + convex-α terminal). Tie activation
         # to use_lmpc so the OCP is built with the augmented state (nx=8+K).
         self.mpc._lmpc_joint = bool(self.get_parameter('use_lmpc').value)
+        # R3: decouple max_speed — set progress target / κ-lookahead independently
+        # of the hard cap BEFORE setup_MPC (codegen-time). 0 → derive from v_max.
+        _st = float(self.get_parameter('speed_target').value)
+        _lk = float(self.get_parameter('lookahead_m').value)
+        self.mpc.speed_target = _st if _st > 0 else None
+        self.mpc.lookahead_m  = _lk if _lk > 0 else None
         # Phase D closed-form CasADi GP residual flag — set BEFORE setup_MPC()
         # so the dynamics codegen picks it up. Independent of use_gp_residual.
         self.mpc.use_gp_casadi = bool(self.get_parameter('use_gp_casadi').value)
