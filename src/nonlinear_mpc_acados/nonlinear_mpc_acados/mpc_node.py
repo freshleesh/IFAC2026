@@ -822,7 +822,9 @@ class MPCNode(Node):
             'stuck_seconds': float(buf.get('stuck_seconds_accum', 0.0)),
         }
         ok = self._lmpc_db.add_lap(v_bucket, states, inputs, t_arr,
-                                    lap_time, n_resets=n_resets, metadata=meta)
+                                    lap_time, n_resets=n_resets,
+                                    dt=float(self.get_parameter('dT').value),
+                                    metadata=meta)
         reject_reason = getattr(self._lmpc_db, 'last_reject_reason', '') if not ok else ''
         self.get_logger().info(
             f"[LMPC] lap {lap_idx} buffered: v_bucket={v_bucket:.1f} T={T} "

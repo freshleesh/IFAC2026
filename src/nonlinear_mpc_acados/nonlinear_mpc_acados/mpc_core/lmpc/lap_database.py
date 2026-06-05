@@ -39,6 +39,7 @@ class LapEntry:
     lap_time: float                # T * dt (or measured wall time)
     n_resets: int                  # number of safe_resets during this lap
     metadata: dict = field(default_factory=dict)
+    residual: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))  # (T,3) one-step velocity error
 
     @property
     def T(self) -> int:
@@ -76,6 +77,7 @@ class LapDatabase:
         time_step: np.ndarray,
         lap_time: float,
         n_resets: int = 0,
+        dt: float = 0.04,
         metadata: Optional[dict] = None,
     ) -> bool:
         """Append lap if it passes acceptance filter. Returns True if stored.
@@ -126,6 +128,13 @@ class LapDatabase:
         T = state.shape[0]
         cost_to_go = np.arange(T - 1, -1, -1, dtype=float)
 
+        # B4' one-step velocity residual per transition (last row left 0 so the
+        # residual aligns index-for-index with `state` for SS slicing).
+        from .nominal_dynamics import velocity_residual
+        residual = np.zeros((T, 3))
+        for t in range(T - 1):
+            residual[t] = velocity_residual(state[t], input_seq[t], state[t + 1], dt)
+
         entry = LapEntry(
             v_bucket=v_b,
             v_max_eff=float(v_max_eff),
@@ -133,6 +142,7 @@ class LapDatabase:
             input=np.asarray(input_seq, dtype=float),
             time_step=np.asarray(time_step, dtype=float),
             cost_to_go=cost_to_go,
+            residual=residual,
             lap_time=float(lap_time),
             n_resets=int(n_resets),
             metadata=dict(metadata or {}),
