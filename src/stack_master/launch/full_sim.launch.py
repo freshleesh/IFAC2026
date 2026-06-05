@@ -315,7 +315,7 @@ def generate_launch_description() -> LaunchDescription:
                               description="true → mpc_node 안 띄움. mux 가 pp_fallback 사용 (PP baseline 측정용)"),
         DeclareLaunchArgument("pp_wpnts_topic", default_value="/centerline_waypoints",
                               description="PP fallback reference. PP baseline 측정 시 /global_waypoints 로"),
-        DeclareLaunchArgument("pp_max_speed", default_value="2.5",
+        DeclareLaunchArgument("pp_max_speed", default_value="4.0",
                               description="PP fallback max speed. baseline 측정 시 yaml max_speed 와 맞춤"),
         DeclareLaunchArgument("enable_sim_reset", default_value="true",
                               description="true → STUCK 시 /initialpose teleport-rescue. false → 실차/검증 (teleport off)"),
