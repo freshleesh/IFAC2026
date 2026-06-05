@@ -64,7 +64,10 @@ def _build(context: LaunchContext, *_args, **_kwargs):
     # ── low_level ──
     low_level = IncludeLaunchDescription(
         AnyLaunchDescriptionSource(os.path.join(sm_share, "launch", "low_level.launch.xml")),
-        launch_arguments={"sim": "true", "map": map_name}.items(),
+        launch_arguments={
+            "sim": "true", "map": map_name,
+            "gym_mu_scale": LaunchConfiguration("gym_mu_scale").perform(context),
+        }.items(),
     )
 
     # ── global_republisher ──
@@ -316,5 +319,7 @@ def generate_launch_description() -> LaunchDescription:
                               description="PP fallback max speed. baseline 측정 시 yaml max_speed 와 맞춤"),
         DeclareLaunchArgument("enable_sim_reset", default_value="true",
                               description="true → STUCK 시 /initialpose teleport-rescue. false → 실차/검증 (teleport off)"),
+        DeclareLaunchArgument("gym_mu_scale", default_value="1.0",
+                              description="B4' known-mismatch: scale gym TRUE tire friction (1.0 = off)"),
         OpaqueFunction(function=_build),
     ])

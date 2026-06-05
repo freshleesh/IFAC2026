@@ -4,6 +4,7 @@
   <arg name="sim"            default="false"      description="Use simulator (true) or real hardware (false)"/>
   <arg name="vehicle_config" default="$(find-pkg-share stack_master)/config/vehicle_config.yaml"/>
   <arg name="use_estop"      default="false"               description="Use emergency stop (true) or not (false)"/>
+  <arg name="gym_mu_scale"   default="1.0"                 description="B4' known-mismatch: scale gym TRUE tire friction (1.0 = off)"/>
 
   <!-- ========== REAL HARDWARE SENSORS ========== -->
   <group unless="$(var sim)">
@@ -47,6 +48,7 @@
     <let name="map_path" value="$(var maps_dir)/$(var map)/$(var map)"/>
     <include file="$(find-pkg-share f1tenth_gym_ros)/launch/gym_bridge_launch.py">
       <arg name="map_yaml_path"  value="$(var map_path).yaml"/>
+      <arg name="gym_mu_scale"   value="$(var gym_mu_scale)"/>
     </include>
     <include file="$(find-pkg-share obstacle_publisher)/launch/obstacle_publisher.launch.xml">
       <arg name="map_name" value="$(var map)"/>

@@ -112,6 +112,11 @@ class GymBridge(Node):
         self.set_descriptor(name='kb_teleop', descriptor=ParameterDescriptor(
             type=ParameterType.PARAMETER_BOOL, description="Whether teleop is enabled"))
 
+        # B4' validation: scale gym's TRUE tire friction by a known factor so
+        # the controller's fixed nominal model is deliberately wrong by a known
+        # amount. Default 1.0 = no injection.
+        self.declare_parameter('gym_mu_scale', 1.0)
+
         # check num_agents
         num_agents = self.get_parameter('num_agent').value
         if num_agents < 1 or num_agents > 2:
@@ -124,6 +129,14 @@ class GymBridge(Node):
         sim_param_data = yaml.safe_load(open(sim_params_yaml, 'r'))
         sim_params = {key: float(value)
                       for key, value in sim_param_data.items()}
+
+        gym_mu_scale = float(self.get_parameter('gym_mu_scale').value)
+        if abs(gym_mu_scale - 1.0) > 1e-9:
+            mu0 = sim_params['mu']
+            sim_params['mu'] = mu0 * gym_mu_scale
+            self.get_logger().warn(
+                f"[B4' mismatch] gym mu {mu0:.4f} -> {sim_params['mu']:.4f} "
+                f"(scale={gym_mu_scale:.3f}) — controller nominal UNCHANGED")
 
         # get scan parameters
         scan_fov = self.get_parameter('scan_fov').value
