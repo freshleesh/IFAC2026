@@ -809,8 +809,20 @@ class MPCNode(Node):
         # Build arrays
         states = np.array(buf['state'])
         T = states.shape[0]
-        inputs = np.zeros((max(T - 1, 1), 2))   # actual input log skipped (P2)
+        # B4'.2: real applied-control log (3-wide [a_x,delta,p_v]). Truncate to the
+        # common prefix so state[t]→state[t+1] always has its control input[t].
+        inlog = np.array(buf['input'], dtype=float) if buf['input'] else np.zeros((0, 3))
+        if inlog.ndim != 2 or inlog.shape[1] != 3:
+            inlog = inlog.reshape(-1, 3) if inlog.size else np.zeros((0, 3))
+        n = min(states.shape[0], inlog.shape[0])
+        if n >= 2:
+            states = states[:n]
+            inputs = inlog[:n - 1]          # input[t] pairs state[t]->state[t+1]
+            T = states.shape[0]
+        else:
+            inputs = np.zeros((max(T - 1, 1), 3))   # not enough logged input → safe fallback
         t_arr = np.array(buf['time']) - buf['lap_start_t'] if buf['lap_start_t'] else np.linspace(0, T * 0.04, T)
+        t_arr = t_arr[:T]   # keep length == T after possible state truncation
         lap_time = float(t_arr[-1] - t_arr[0]) if T > 1 else 0.0
         # n_resets in this lap = delta since lap start
         n_resets = max(0, buf['n_resets_in_lap'])
@@ -1575,6 +1587,17 @@ class MPCNode(Node):
                         throttle_duration_sec=0.5)
             except Exception:
                 pass
+
+        # B4'.2: log the applied control [a_x,delta,p_v] in lockstep with the
+        # per-cycle state append (state appended pre-solve in _lmpc_update_per_cycle;
+        # u_seq[0] is the control applied from that state). Needed for the lap
+        # residual = actual - f_expl(state, u); a zero/stub input would make the
+        # residual absorb the control effect instead of model error.
+        try:
+            if getattr(self, '_lmpc_use', False) and u_seq is not None and len(u_seq) > 0:
+                self._lmpc_lap_buf['input'].append(np.asarray(u_seq[0], float).copy())
+        except Exception:
+            pass
 
         # B4' prediction-error gate: realized state8 (stashed this cycle) vs the
         # prediction from the previous (state, control). Guarded — never breaks control.
