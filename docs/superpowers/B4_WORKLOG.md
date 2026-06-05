@@ -6,7 +6,30 @@
 > - 실행계획(어떻게, 파일별 edit): `docs/superpowers/plans/2026-06-05-b4-error-regression.md`
 > - 이 워크로그(현재 상태): 바로 이 파일
 
-마지막 갱신: 2026-06-05. **★ 코드 Task 1~7 전부 ✅ (구현+리뷰+커밋 완료).** 남은 것 = Task 8 = 라이브 sim 검증(메인이 sim 하나씩). e_corr↔GP 이중보정 가드 적용됨(Task 7).
+마지막 갱신: 2026-06-05. **★ 코드 Task 1~7 ✅ + 라이브 sim 검증 완료.** 아래 §7 sim 검증결과 참조.
+
+# ════════ §7 라이브 SIM 검증 결과 (2026-06-05) ════════
+**B4' 작동은 검증, 단 plain sim 이득은 노이즈 범위. clean config 확정. 고속 한계·런타임버그2개 규명.**
+
+## 검증된 사실
+- **B4' end-to-end 작동 ✅**: 잔차저장→SS query(이웃 residual 반환)→Epanechnikov 회귀→e_corr→f_expl 주입→안전주행. codegen(주입포함) 성공, 차 안 망가짐.
+- **B4' 이득 = 노이즈 범위 ⚠️**: 같은 config(a_lat=7.14/max=6)서 한 런 −2.3%(corrected<nominal), 다른 런 +6.3%(corrected>nominal). **plain sim서 baseline 견고히 못 이김.** 원인: ①SS 이웃이 너무 멀다(weighted-L2 ~37~110, 진짜 local 아님 — 위치가중 W 탓) ②e_corr 시간평활 없어 cycle마다 출렁(2→14→3) ③sim mismatch 자체가 작음("not-binding"). **진짜 이득은 실차(큰 mismatch)/refine 후.**
+- **★ clean deploy config = a_lat=7.14 / max=6 / (B4' on이든 off든)**: lap 23.6~23.8s **매우 일관**, in_collision=0, **STUCK=0**, pred-shake 평균0.05. 지속 8랩 검증.
+- **고속은 무리**: a_lat=11 → STUCK 28(지속), a_lat=14 → STUCK 24·lap 34s, max=8 → pred-shake rms 1.4·B4' 역효과. **PP(mpc_disable)도 커브서 박힘(텔레포트 없음) = 맵(R0.87m) 물리한계 + MPCC ref_v shake 둘 다.** ★주의: "a_lat=11 sweet 20.16s"는 1~2랩 partial 착시였음(지속은 STUCK 28).
+
+## 런타임 버그 2개 잡음 (코드리뷰가 못잡고 sim서 드러남 → 커밋)
+- **`30059d3` gym_mu_scale 이중선언**: gym_bridge가 auto-declare-from-overrides인데 launch가 forward → 중복선언 ParameterAlreadyDeclared로 gym_bridge 죽음 → `has_parameter` 가드.
+- **`d28761c` joint-α fallback X0 폭**: 고속 solver 실패 시 fallback이 8-wide traj 생성→X0 8-wide→다음 cycle set "dim 18 vs 8" 크래시 → _nx_solver 폭으로 빌드.
+- **`a8a5f86` 적응형 bandwidth**: e_corr이 항상 0이던 원인 = h=1.0이 이웃거리~37 대비 너무작아 Epanechnikov 커널 0 → h=mult×max_dist 적응형.
+
+## pred-consistency 지표 (mpc_node.py:1803, `[pred-consistency] rms/ema`) = trajectory cycle간 변화. clean=0.05, 고속=1.4.
+
+## ★ 다음 (사용자 선택: ②③ refine + 실차 타진)
+- **② B4' refine**: SS query W를 속도가중↑(진짜 local 이웃) + e_corr EMA 평활(β·prev+(1-β)·new). → corrected<nominal 견고하게.
+- **③ max_speed decouple**(사용자 아이디어): max_speed가 지금 q_v 타겟+`LOOKAHEAD_M=max(6,v²/6)` 둘다 구동 → 순수 hard-cap으로 분리(q_v 타겟·윈도 고정)하면 cap↑ 무해 → 고속 재도전. + ref_v forward-max κ 계단점프를 soft-max/거리감쇠로 smooth(trajectory shake 근본).
+- **실차**: baseline은 ready. B4'는 ②③ + EKF vy/r observability gate + 안전폴백 후. 실차가 B4' 진짜 무대. B4'=Mac CPU numpy(CUDA無).
+- **미커밋**: ddrx_unified_params.yaml (a_lat=7.14/max=6 복원·use_error_regression=true·err_regr_bandwidth=2.0 실험값). deploy시 use_error_regression on/off 결정 필요.
+# ════════════════════════════════════════════
 
 ---
 
