@@ -114,8 +114,12 @@ class GymBridge(Node):
 
         # B4' validation: scale gym's TRUE tire friction by a known factor so
         # the controller's fixed nominal model is deliberately wrong by a known
-        # amount. Default 1.0 = no injection.
-        self.declare_parameter('gym_mu_scale', 1.0)
+        # amount. Default 1.0 = no injection. Guard with has_parameter: this node
+        # uses automatically_declare_parameters_from_overrides=True, so when the
+        # launch forwards gym_mu_scale it is already auto-declared (a second
+        # declare_parameter would raise ParameterAlreadyDeclaredException).
+        if not self.has_parameter('gym_mu_scale'):
+            self.declare_parameter('gym_mu_scale', 1.0)
 
         # check num_agents
         num_agents = self.get_parameter('num_agent').value
