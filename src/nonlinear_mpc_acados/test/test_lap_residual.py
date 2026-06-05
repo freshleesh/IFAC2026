@@ -29,3 +29,21 @@ def test_lap_entry_stores_velocity_residual():
     assert entry.residual.shape == (state.shape[0], 3)
     # interior transitions should recover the injected offset
     assert np.allclose(entry.residual[5:-2], offset, atol=1e-6)
+
+
+def test_two_column_input_does_not_crash_and_zeros_residual():
+    # Synthetic seed laps log a 2-wide input stub; add_lap must not crash and
+    # must store a zero residual (no model-error signal from a synthetic seed).
+    import numpy as np
+    from nonlinear_mpc_acados.mpc_core.lmpc.lap_database import LapDatabase
+    from nonlinear_mpc_acados.mpc_core.lmpc.nominal_dynamics import DT
+    T = 30
+    state = np.zeros((T, 8)); state[:, 3] = 3.0
+    inp2 = np.zeros((T - 1, 2))            # 2-wide stub
+    db = LapDatabase(min_lap_steps=5)
+    t_arr = np.arange(T) * DT
+    ok = db.add_lap(3.0, state, inp2, t_arr, lap_time=T * DT, dt=DT)
+    assert ok
+    entry = db.get_recent(3.0, K_laps=1)[0]
+    assert entry.residual.shape == (T, 3)
+    assert np.allclose(entry.residual, 0.0)

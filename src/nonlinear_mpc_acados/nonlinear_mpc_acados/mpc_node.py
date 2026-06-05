@@ -766,9 +766,13 @@ class MPCNode(Node):
         # B4'.3: local error regression over the SAME SS neighbours just queried.
         if getattr(self.mpc, '_err_regr', False) and res.residuals.shape[0] > 0:
             from .mpc_core.lmpc.error_regression import epanechnikov_e_corr
+            _dt = float(self.get_parameter('dT').value)
+            # e_corr enters f_expl (a RATE, ẋ). The stored residual is a velocity
+            # delta (actual_next − nominal_next). acados integrates x+dt·f_expl, so
+            # to make dt·e_corr cancel the residual we inject residual/dt (a rate).
             self.mpc._e_corr = epanechnikov_e_corr(
                 res.residuals, res.distances,
-                h=float(self.get_parameter('err_regr_bandwidth').value))
+                h=float(self.get_parameter('err_regr_bandwidth').value)) / max(_dt, 1e-6)
         else:
             self.mpc._e_corr = np.zeros(3)
         # Post-crash robustness: while STUCK / in stuck-recovery the state x0 is bad

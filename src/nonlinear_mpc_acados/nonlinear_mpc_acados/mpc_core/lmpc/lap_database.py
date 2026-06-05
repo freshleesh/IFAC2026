@@ -132,8 +132,10 @@ class LapDatabase:
         # residual aligns index-for-index with `state` for SS slicing).
         from .nominal_dynamics import velocity_residual
         residual = np.zeros((T, 3))
-        for t in range(T - 1):
-            residual[t] = velocity_residual(state[t], input_seq[t], state[t + 1], dt)
+        _inp = np.asarray(input_seq)
+        if _inp.ndim == 2 and _inp.shape[1] >= 3:
+            for t in range(min(T - 1, _inp.shape[0])):
+                residual[t] = velocity_residual(state[t], _inp[t], state[t + 1], dt)
 
         entry = LapEntry(
             v_bucket=v_b,
