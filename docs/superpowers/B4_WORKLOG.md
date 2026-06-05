@@ -6,7 +6,7 @@
 > - 실행계획(어떻게, 파일별 edit): `docs/superpowers/plans/2026-06-05-b4-error-regression.md`
 > - 이 워크로그(현재 상태): 바로 이 파일
 
-마지막 갱신: 2026-06-05, Task 2 완료 직후.
+마지막 갱신: 2026-06-05, Task 4 완료 직후 (Task 1~4 ✅, Task 5 진행중).
 
 ---
 
@@ -53,9 +53,9 @@ nominal 예측   x̂_{t+1} = x_t + dt·f_expl(x_t, u_t)
 |---|--------|------|------|------|
 | 1 | acados `f_expl` e_corr hook (p_sym 76→79, gated) | ✅ 완료 | `db18dc7` + `edb4795`(cleanup) | 코드+빌드 ✓. **sim 게이트테스트(e_corr=0→21.2s/0접촉 재현) = 보류(메인 sim 단계)** |
 | 2 | `gym_mu_scale` known-mismatch 노브 | ✅ 완료 | `030f447` | 코드+빌드 ✓. **sim 로그체크 보류** |
-| 3 | `nominal_dynamics.py` 공유 1-step 잔차 (pure-python TDD) | ⏳ 다음 | — | pytest |
-| 4 | per-cycle 예측오차 로거 (정확성 게이트) | ⛔ 대기(3) | — | sim 로그 보류 |
-| 5 | `lap_database` 잔차 저장 (TDD) | ⛔ 대기(3) | — | pytest |
+| 3 | `nominal_dynamics.py` 공유 1-step 잔차 (pure-python TDD) | ✅ 완료 | `26429e4` | pytest 2 pass, 상수 bit-for-bit 검증 |
+| 4 | per-cycle 예측오차 로거 (정확성 게이트) | ✅ 완료 | `33dae85` | 코드+빌드 ✓ (★타이밍 수정: solve 후 호출, state8↔u_seq[0] 정확 페어링). **sim 로그체크 보류** |
+| 5 | `lap_database` 잔차 저장 (TDD) | ⏳ 진행중 | — | pytest |
 | 6 | `safe_set` query가 이웃 잔차 반환 (TDD) | ⛔ 대기(5) | — | pytest |
 | 7 | Epanechnikov e_corr 회귀 + mpc 배선 | ⛔ 대기(6) | — | pytest + sim 보류 |
 | 8 | 폐루프 검증 (메인이 sim 직접) | ⛔ 대기(1,2,4,7) | — | sim 측정 |
@@ -81,6 +81,7 @@ nominal 예측   x̂_{t+1} = x_t + dt·f_expl(x_t, u_t)
 
 - **2026-06-05 commit-hygiene**: Task 2가 사용자의 기존 uncommitted launch 작업(gym_bridge_launch.py ~70줄 리팩토링, low_level 2줄)을 휩쓸어 커밋함 → 사용자 선택대로 **clean split**: 우리 커밋(`030f447`)엔 gym_mu_scale만, 사용자 기존 작업은 uncommitted WIP로 복원. gym_bridge_launch.py의 gym_mu_scale hop은 사용자 리팩토링과 얽혀있어 그 WIP에 같이 둠(working tree엔 다 있어 sim은 정상 동작).
 - **Task 1 cleanup(`edb4795`)**: e_corr 3슬롯을 `n_p_stage`(per-stage 의미)에서 `n_p_const`로 이동 — e_corr은 horizon 상수라 의미상 맞음. `n_p_total`=79 불변.
+- **Task 4 타이밍 수정(plan 대비)**: plan은 로거를 `_lmpc_update_per_cycle`(solve 前 호출, line 1485)에 두고 `_last_u_applied` 사용 → 적용제어가 1-cycle 어긋남(게이트 오염). 수정: state8를 그 메서드서 stash, **solve 後**에 `u_seq[0]`와 함께 로거 호출 → (state_t, u_t) 정확 페어링.
 
 ---
 
