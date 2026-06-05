@@ -10,7 +10,7 @@ Publishes obstacle positions for map_publisher or obstacle_publisher_grid to use
 import numpy as np
 import rclpy
 from rclpy.node import Node
-from geometry_msgs.msg import PointStamped, Point
+from geometry_msgs.msg import PointStamped, Point, PoseArray, Pose
 from visualization_msgs.msg import Marker, MarkerArray, InteractiveMarker, InteractiveMarkerControl, InteractiveMarkerFeedback
 from interactive_markers import InteractiveMarkerServer
 from std_msgs.msg import ColorRGBA
@@ -37,6 +37,11 @@ class StaticObstacleManager(Node):
         self.obstacle_positions_pub = self.create_publisher(MarkerArray, '/static_obstacles', 10)
         # state_machine 이 sub. random_obstacle 과 dual publisher 가능 (state_machine 의 cb 가 둘 다 받음).
         self.tracking_obstacles_pub = self.create_publisher(ObstacleArray, '/tracking/obstacles', 10)
+        # /external_obstacles (PoseArray) — single source of truth for the MPCC
+        # controller. mpc_node OVERWRITES its obstacle list from this each msg,
+        # so publishing the authoritative list (incl. empty) at 10 Hz makes the
+        # RViz Clear button actually clear the controller's obstacles.
+        self.external_obs_pub = self.create_publisher(PoseArray, '/external_obstacles', 1)
 
         # FrenetConverter — /global_waypoints 한 번 받으면 빌드. (x,y) → (s,d) 변환용.
         self._frenet_converter = None
@@ -197,6 +202,19 @@ class StaticObstacleManager(Node):
             marker_array.markers.append(delete_marker)
 
         self.obstacle_positions_pub.publish(marker_array)
+
+        # /external_obstacles — authoritative list for the MPCC controller
+        # (overwrite semantics in mpc_node). Always published, incl. empty, so
+        # Clear propagates to the controller.
+        pa = PoseArray()
+        pa.header.frame_id = "map"
+        pa.header.stamp = self.get_clock().now().to_msg()
+        for x_m, y_m in self.static_obstacles:
+            p = Pose()
+            p.position.x = x_m
+            p.position.y = y_m
+            pa.poses.append(p)
+        self.external_obs_pub.publish(pa)
 
         # ObstacleArray (state_machine 이 sub) — frenet 변환 후 발행
         self._publish_tracking_obstacles()

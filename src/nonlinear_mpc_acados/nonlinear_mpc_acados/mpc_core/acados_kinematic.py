@@ -902,7 +902,15 @@ class MPC:
         #   d=0    → att≈0.05 (tracking off)
         # B (VPMPCC simplify): obstacle attenuation + κ-attenuation off.
         # VPMPCC 는 corner 에서도 centerline tracking 유지.
-        attenuation = ca.SX(1.0)
+        # Restored (avoidance Option 2): lane-tracking attenuation near the
+        # selected obstacle, mirrors ifac_mpcc ipopt_kinematic.py:202. Fades
+        # the e_c/e_l contouring cost to ~5% at the obstacle center so the
+        # detour is "free" and not fighting the centerline pull. Gated by d²
+        # to the obstacle (line 837): no obstacle → sentinel → d²≈1e12 →
+        # proximity_atten=0 → attenuation=1.0 (Phase-B-identical).
+        sigma_atten     = 1.0
+        proximity_atten = ca.exp(-d2 / (2.0 * sigma_atten * sigma_atten))
+        attenuation     = 1.0 - 0.95 * proximity_atten
         att_kappa   = ca.SX(1.0)
         sqrt_att    = ca.sqrt(attenuation * att_kappa + 1e-6)
         # 8th residual: δ − δ_prev → steer-rate cost. Penalises stage-to-
