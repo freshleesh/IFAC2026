@@ -25,8 +25,12 @@ mpc_node:
     vehicle_L: 0.307               # F1TENTH (unicorn FIESTA1) wheelbase
     # Conservative IFAC-demo baseline. event_stuck CSV 에서 차가 outside
     # over-shoot 후 reverse stuck → 박히기 전에 막아야. 6 → 4 (코너 과속 ↓).
-    max_speed: 6.0
-    max_speed_p: 6.0
+    max_speed: 8.0
+    max_speed_p: 8.0
+    # R3 decouple test: hard cap=8 (above) but progress target + κ-window stay at
+    # the proven 6-regime → cap↑ should be harmless (unlike old coupled max=8).
+    speed_target: 6.0
+    lookahead_m: 6.0
     # 풀-스티어 (±0.4) 가 over-shoot 의 직접 원인. 0.4 → 0.3 으로 cap.
     # 헤어핀 통과 가능한 최소값: arctan(L / R_min) 기준 L=0.307, R_min≈0.7
     # → 0.4 rad. 그러나 mpc 가 미리 조향하므로 0.3 으로도 충분.
@@ -37,7 +41,7 @@ mpc_node:
     # startup_speed: 실측 vx 가 floor 미만일 때 출력 speed 하한 (forward push).
     # 이 둘로 기존 3초 PP warmup ramp 대체 → t=0 부터 MPCC 조향.
     cold_start_vx_floor: 2.0
-    startup_speed: 1.5
+    startup_speed: 3.0
     dT: 0.04                       # 0.025→0.04 (25Hz control rate). multi-dt 와 결합 — 첫 step.
     N_horizon: 20                         # 50→25 (2026-06-01 N-sweep+검증): 17.72s 일관·STUCK0·solve 10.5→5.18ms(절반). v≤5·a_lat9 면 제동거리<1m 라 2.0s horizon 과함. N20도 OK. 과거 "N25 wedge"=오염weight artifact(거짓). 변수 더↓는 pyramidal multi-dt 필요.
     # time_steps_mode: 'uniform' (모든 step dt=dT) 또는 'pyramidal' (multi-dt: 가까이 sharp + 멀리 long planning).
@@ -125,6 +129,8 @@ mpc_node:
     # tire-model mismatch (gym ST vs MPCC Pacejka) 를 자동 보상.
     # use_lmpc=false (default) — LMPC term cost weight = 0, 기존 동작 동일.
     use_lmpc: true            # B-mode(BO 18.62, 무drift)가 sustained 최선. softmin LMPC는 초반 18.48 더 빠르나 drift 잔존(full Rosolia 하드제약 필요).
+    use_error_regression: false  # B4' 실험(2026-06-05): error dynamics regression ON (e_corr=SS이웃 잔차 회귀/dt). 검증 후 false 로 되돌릴 것.
+    err_regr_bandwidth: 2.0       # B4' Epanechnikov bandwidth = 이 값 × max(SS이웃거리) (적응형, 스케일불변)
     lmpc_w: 0.05                # softmin term 가중 (acados W_e 의 lmpc residual entry 1.0 × lmpc_w)
     lmpc_alpha: 1.0            # distance penalty in g_i = Q_i + α·d_i²
     lmpc_beta: 0.01           # softmax smoothness. 0.01=안정(1.0은 sharp→chatter→wedge 검증).
