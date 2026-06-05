@@ -20,3 +20,6 @@
 casadi>=3.6
 numpy>=1.21
 scipy>=1.7
+
+# C: MLP weight scaler (use_ml_scale=true 일 때만 필요). CPU build OK.
+torch>=2.0

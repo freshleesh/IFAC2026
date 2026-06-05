@@ -46,7 +46,7 @@ if _TUM_LIB_PATH not in sys.path:
 # Config paths — share dir works for both symlink and non-symlink installs
 # because data_files are always copied to share/ during colcon build.
 # ─────────────────────────────────────────────────────────────────────────────
-_SHARE_DIR   = get_package_share_directory('planner')
+_SHARE_DIR   = get_package_share_directory('global_planner')
 _CONFIG_DIR  = os.path.join(_SHARE_DIR, 'config')
 _INI_PATH    = os.path.join(_CONFIG_DIR, 'racecar.ini')
 _VEH_DYN_DIR = os.path.join(_CONFIG_DIR, 'inputs', 'veh_dyn_info')
@@ -603,6 +603,22 @@ class TrajectoryOptimizer(Node):
             else {'markers': []}
         )
 
+        # Option α (2026-05-27): preserve centerline_waypoints if existing JSON
+        # has it. trajectory_optimizer 가 IQP raceline 으로 덮어쓰면 mpc 의 ref
+        # 좌표가 변경되어 spawn pose 와 mismatch. random track 의 원본 centerline
+        # 보존 → MPCC 가 centerline 기준 contour/lag tracking 그대로 + IQP 는
+        # raceline (global_traj_wpnts_iqp) 로 별도 PP baseline 용.
+        existing_cl_wpnts = None
+        existing_cl_markers = None
+        if os.path.exists(json_path):
+            try:
+                with open(json_path, 'r') as _f:
+                    _old = json.load(_f)
+                existing_cl_wpnts = _old.get('centerline_waypoints')
+                existing_cl_markers = _old.get('centerline_markers')
+            except Exception:
+                pass
+
         data = {
             'map_info_str': {'data': (
                 f'IQP estimated lap time: {lap_iqp:.4f}s; '
@@ -611,8 +627,8 @@ class TrajectoryOptimizer(Node):
                 f'SP maximum speed: {v_max_sp:.4f}m/s; '
             )},
             'est_lap_time':            {'data': float(lap_sp)},
-            'centerline_markers':      _traj_to_markers(traj_iqp, 0.0, 0.0, 1.0),
-            'centerline_waypoints':    _traj_to_wpnts(traj_iqp),
+            'centerline_markers':      existing_cl_markers or _traj_to_markers(traj_iqp, 0.0, 0.0, 1.0),
+            'centerline_waypoints':    existing_cl_wpnts or _traj_to_wpnts(traj_iqp),
             'global_traj_markers_iqp': _traj_to_markers(traj_iqp, 0.0, 1.0, 0.0),
             'global_traj_wpnts_iqp':   _traj_to_wpnts(traj_iqp),
             'global_traj_markers_sp':  _traj_to_markers(traj_sp, 1.0, 1.0, 0.0),

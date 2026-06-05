@@ -16,3 +16,19 @@ __pycache__/
 
 # OS
 .DS_Store
+
+# External libs (cloned, not part of project)
+random-track-generator/
+
+# Backups
+*.bak
+
+# Phase D big artifacts (사용자별 학습 결과 / sim 로그 — repo 에 X)
+bo_results/
+mpc_logs/
+*.pt
+
+# acados codegen artefacts
+c_generated_code/
+acados_ocp*.json
+acados_sim*.json

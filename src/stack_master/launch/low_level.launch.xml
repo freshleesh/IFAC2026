@@ -61,6 +61,8 @@
     <param from="$(var vehicle_config)"/>
     <param name="in_topic"      value="/vesc/high_level/ackermann_cmd"/>
     <param name="out_topic"     value="/vesc/ackermann_cmd"/>
+    <param name="fallback_topic" value="/vesc/pp_fallback"/>
+    <param name="autodrive_stale_sec" value="0.2"/>
     <param name="joy_max_speed" value="4.0"/>
     <param name="use_estop" value="$(var use_estop)"/>
     <param name="sim" value="$(var sim)"/>

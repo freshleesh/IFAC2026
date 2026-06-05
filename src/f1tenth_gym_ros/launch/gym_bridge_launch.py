@@ -23,16 +23,58 @@
 from launch import LaunchDescription
 from launch_ros.actions import Node
 from launch.substitutions import Command, LaunchConfiguration
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from ament_index_python.packages import get_package_share_directory
 import os
 import yaml
 
 
+def _build(context, sim_setup_params, ego_odom_topic, publish_tf, gym_mu_scale, has_opp):
+    map_yaml_path = LaunchConfiguration('map_yaml_path').perform(context)
+
+    bridge_params = [sim_setup_params,
+                     {'map_path': map_yaml_path},
+                     {'sim_params': os.path.join(get_package_share_directory('stack_master'), 'config', 'SIM', 'sim_params.yaml')},
+                     {'ego_odom_topic': ego_odom_topic},
+                     {'publish_tf': publish_tf},
+                     {'gym_mu_scale': gym_mu_scale}]
+
+    # Per-map start pose override: if <map_dir>/start_pose.yaml exists, use its
+    # sx/sy/stheta to override the defaults from sim.yaml.
+    candidate = os.path.join(os.path.dirname(map_yaml_path), 'start_pose.yaml')
+    if os.path.isfile(candidate):
+        try:
+            pose = yaml.safe_load(open(candidate)) or {}
+            overrides = {k: float(pose[k]) for k in ('sx', 'sy', 'stheta', 'sx1', 'sy1', 'stheta1') if k in pose}
+            if overrides:
+                print(f"[gym_bridge_launch] start pose override from {candidate}: {overrides}")
+                bridge_params.append(overrides)
+        except Exception as e:  # noqa: BLE001
+            print(f"[gym_bridge_launch] failed to parse {candidate}: {e}")
+
+    bridge_node = Node(
+        package='f1tenth_gym_ros',
+        executable='gym_bridge',
+        name='bridge',
+        parameters=bridge_params,
+        remappings=[('/initialpose', '/sim/initialpose')]
+    )
+    nodes = [bridge_node]
+    if has_opp:
+        nodes.append(Node(
+            package='robot_state_publisher',
+            executable='robot_state_publisher',
+            name='opp_robot_state_publisher',
+            parameters=[{'robot_description': Command(['xacro ', os.path.join(
+                get_package_share_directory('f1tenth_gym_ros'), 'config', 'opp_racecar.xacro')])}],
+            remappings=[('/robot_description', 'opp_robot_description')]
+        ))
+    return nodes
+
+
 def generate_launch_description():
     ld = LaunchDescription()
 
-    map_yaml_path = LaunchConfiguration('map_yaml_path')
     map_yaml_path_arg = DeclareLaunchArgument(
         'map_yaml_path', description="Path to map YAML file. Passed in via top-level launchfile.")
 
@@ -46,6 +88,12 @@ def generate_launch_description():
         'publish_tf', default_value='true',
         description="Whether gym_bridge publishes map->base_link TF. True only for gt localization mode.")
 
+    gym_mu_scale = LaunchConfiguration('gym_mu_scale')
+    gym_mu_scale_arg = DeclareLaunchArgument(
+        'gym_mu_scale', default_value='1.0',
+        description="B4' mismatch knob: scale gym TRUE tire friction mu by this factor. "
+                    "Default 1.0 = no-op. Controller nominal model is UNCHANGED.")
+
     sim_setup_params = os.path.join(
         get_package_share_directory('stack_master'),
         'config',
@@ -55,17 +103,6 @@ def generate_launch_description():
     config_dict = yaml.safe_load(open(sim_setup_params, 'r'))
     has_opp = config_dict['bridge']['ros__parameters']['num_agent'] > 1
 
-    bridge_node = Node(
-        package='f1tenth_gym_ros',
-        executable='gym_bridge',
-        name='bridge',
-        parameters=[sim_setup_params,
-                    {'map_path': map_yaml_path},
-                    {'sim_params': os.path.join(get_package_share_directory('stack_master'), 'config', 'SIM', 'sim_params.yaml')},
-                    {'ego_odom_topic': ego_odom_topic},
-                    {'publish_tf': publish_tf}],
-        remappings=[('/initialpose', '/sim/initialpose')]
-    )
     rviz_node = Node(
         package='rviz2',
         executable='rviz2',
@@ -83,24 +120,18 @@ def generate_launch_description():
             get_package_share_directory('f1tenth_gym_ros'), 'config', 'ego_racecar.xacro')])}],
         remappings=[('/robot_description', 'ego_robot_description')]
     )
-    opp_robot_publisher = Node(
-        package='robot_state_publisher',
-        executable='robot_state_publisher',
-        name='opp_robot_state_publisher',
-        parameters=[{'robot_description': Command(['xacro ', os.path.join(
-            get_package_share_directory('f1tenth_gym_ros'), 'config', 'opp_racecar.xacro')])}],
-        remappings=[('/robot_description', 'opp_robot_description')]
-    )
-    # TODO: add IMU
 
-    # finalize
     ld.add_action(map_yaml_path_arg)
     ld.add_action(ego_odom_topic_arg)
     ld.add_action(publish_tf_arg)
+    ld.add_action(gym_mu_scale_arg)
     ld.add_action(rviz_node)
-    ld.add_action(bridge_node)
+    ld.add_action(OpaqueFunction(function=_build,
+                                 kwargs={'sim_setup_params': sim_setup_params,
+                                         'ego_odom_topic': ego_odom_topic,
+                                         'publish_tf': publish_tf,
+                                         'gym_mu_scale': gym_mu_scale,
+                                         'has_opp': has_opp}))
     ld.add_action(ego_robot_publisher)
-    if has_opp:
-        ld.add_action(opp_robot_publisher)
 
     return ld
