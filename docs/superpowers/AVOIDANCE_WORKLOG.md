@@ -34,3 +34,23 @@ Branch `avoidance-restore`. Plan: `docs/superpowers/plans/2026-06-05-mpcc-static
 Reorder: do **Task 3 (scriptable single-obstacle publisher) before Tasks 1–2** so the
 avoidance gate is a controlled, repeatable single-obstacle detour rather than manual
 multi-clicks. Identity gate (no-obstacle == baseline) is unchanged.
+
+## Task 3 — scriptable single-obstacle publisher (2026-06-05)
+
+Created `src/nonlinear_mpc_acados/scripts/pub_static_obstacle.py` (standalone rclpy node,
+publishes one `PoseArray` pose to `/external_obstacles` at 10 Hz; default coord = Task-0-
+verified on-line point `(-4.41, 1.04)`, s_obs≈29.5). Verified: topic echo OK, and mpc_node
+picks it up → `[MPC] committed obs=(-4.41,1.04) s_obs=29.50 e_c_obs=-0.09 side=-1`.
+
+### Single-obstacle BEFORE reference (current code, hard-`h_obs` only) — the A/B baseline
+- Lap times: 20.54 / 21.36 / 20.88 / 21.60 s → **median ≈ 21.1 s** — essentially unchanged
+  vs no-obstacle baseline (21.2 s). A single on-line obstacle costs ~no lap time.
+- STUCK: **2** (≤ no-obstacle baseline). Single obstacle is handled cleanly.
+- **Obstacle-pass cost spike (s≈25–34):** climbs over laps 26 → 52 → 64 → **85**, overall
+  peak **114–193** (vs no-obstacle ~27–47). Speed dips to ~2.26 m/s by later laps.
+- Commit/side/release all correct (side=-1, cached, no flips).
+
+**Conclusion:** the Task 0 "roughness" (cost 405, 16 stucks) was the 3-obstacle stress case,
+not a single obstacle. The real improvement target for Tasks 1–2 is the **obstacle-pass cost
+spike + speed dip (detour smoothness)**, not lap time or stuck. A/B metric = peak cost during
+the pass (BEFORE peak ~114–193) and min speed (BEFORE ~2.26).
