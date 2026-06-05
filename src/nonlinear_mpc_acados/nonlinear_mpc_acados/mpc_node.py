@@ -240,6 +240,8 @@ class MPCNode(Node):
         # CasADi expression to the dynamics ONLY (cost/p_sym untouched).
         # Independent of use_gp_residual (l4acados). Default OFF.
         self.declare_parameter('use_gp_casadi', False)
+        self.declare_parameter('use_error_regression', False)
+        self.declare_parameter('err_regr_bandwidth', 1.0)   # Epanechnikov h
         # 실차 모드: /sim/initialpose 없음. STUCK recovery 시도해도 무의미 + 위험.
         # sim=true (default) / real=false.
         self.declare_parameter('enable_sim_reset', True)
@@ -680,6 +682,7 @@ class MPCNode(Node):
         if not self._lmpc_use:
             # LMPC OFF — ensure weights are 0 (in case toggled at runtime)
             self.mpc.lmpc_w_live = 0.0
+            self.mpc._e_corr = np.zeros(3)
             return
 
         # (a) Accumulate this cycle's 8-state x0 (extended) + estimate e_c.
@@ -717,6 +720,7 @@ class MPCNode(Node):
         n_real = self._lmpc_db.n_real_laps(v_bucket)
         if n_real < self._lmpc_enable_after:
             self.mpc.lmpc_w_live = 0.0
+            self.mpc._e_corr = np.zeros(3)
             return
 
         # Query SS at the PREDICTED HORIZON-END state (from the previous solve),
@@ -739,10 +743,12 @@ class MPCNode(Node):
         except Exception as e:
             self.get_logger().warn(f"[LMPC] query failed: {e}", throttle_duration_sec=2.0)
             self.mpc.lmpc_w_live = 0.0
+            self.mpc._e_corr = np.zeros(3)
             return
 
         if not res.is_ready:
             self.mpc.lmpc_w_live = 0.0
+            self.mpc._e_corr = np.zeros(3)
             return
 
         # Pack SS into (4, K) state matrix (px, py, ψ, vx) + (K,) Q
@@ -757,6 +763,14 @@ class MPCNode(Node):
             ss_Q[i] = res.cost_to_go[i]
         self.mpc._lmpc_ss_states = ss_states
         self.mpc._lmpc_ss_Q = ss_Q
+        # B4'.3: local error regression over the SAME SS neighbours just queried.
+        if getattr(self.mpc, '_err_regr', False) and res.residuals.shape[0] > 0:
+            from .mpc_core.lmpc.error_regression import epanechnikov_e_corr
+            self.mpc._e_corr = epanechnikov_e_corr(
+                res.residuals, res.distances,
+                h=float(self.get_parameter('err_regr_bandwidth').value))
+        else:
+            self.mpc._e_corr = np.zeros(3)
         # Post-crash robustness: while STUCK / in stuck-recovery the state x0 is bad
         # (against a wall, vx≈0) → SQP_RTI prediction diverges and the LMPC terminal
         # fights the recovery. Gate LMPC OFF during recovery so pure-MPCC (the proven
@@ -1026,6 +1040,17 @@ class MPCNode(Node):
         # Phase D closed-form CasADi GP residual flag — set BEFORE setup_MPC()
         # so the dynamics codegen picks it up. Independent of use_gp_residual.
         self.mpc.use_gp_casadi = bool(self.get_parameter('use_gp_casadi').value)
+        # B4' error regression. Coupled to use_lmpc (it reuses the SS-neighbour
+        # query). With use_lmpc off -> _err_regr off -> pure baseline f_expl.
+        _use_err = bool(self.get_parameter('use_error_regression').value)
+        self.mpc._err_regr = _use_err and bool(self.get_parameter('use_lmpc').value)
+        if _use_err and self.mpc.use_gp_casadi:
+            # e_corr and GP residual BOTH add to f_expl velocity rows -> double
+            # correction. They are alternatives (B4' supersedes the GP residual).
+            self.get_logger().warn(
+                "[B4'] use_error_regression AND use_gp_casadi both set -> "
+                "disabling GP residual to avoid double-correcting f_expl.")
+            self.mpc.use_gp_casadi = False
         # 이전에 set_track_data 가 print 한 "MODEL = KINEMATIC" 은 toggle 이전 상태라 잘못됨.
         # 명확하게 다시 announce.
         self.get_logger().info(

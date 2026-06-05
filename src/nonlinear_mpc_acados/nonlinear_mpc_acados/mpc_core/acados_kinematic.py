@@ -616,7 +616,12 @@ class MPC:
             # the 8-state vector [x, y, psi, vx, vy, r, s, delta_prev].
             # Default OFF (self.use_gp_casadi); guarded so any failure falls
             # back to the plain dynamic f_expl.
-            if getattr(self, 'use_gp_casadi', False):
+            if getattr(self, 'use_gp_casadi', False) and getattr(self, '_err_regr', False):
+                self._log.warn(
+                    "[MPC-acados] use_gp_casadi AND _err_regr both set — skipping "
+                    "GP residual (e_corr error-regression takes precedence; both add "
+                    "to f_expl velocity rows = double correction).")
+            if getattr(self, 'use_gp_casadi', False) and not getattr(self, '_err_regr', False):
                 try:
                     from .gp_casadi_residual import (
                         load_gp_casadi_params, build_casadi_residual,
