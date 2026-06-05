@@ -6,7 +6,7 @@
 > - 실행계획(어떻게, 파일별 edit): `docs/superpowers/plans/2026-06-05-b4-error-regression.md`
 > - 이 워크로그(현재 상태): 바로 이 파일
 
-마지막 갱신: 2026-06-05, Task 4 완료 직후 (Task 1~4 ✅, Task 5 진행중).
+마지막 갱신: 2026-06-05, Task 5 완료 (입력로깅 선결버그 수정 포함). Task 1~5 ✅, Task 6 진행중. ★사용자 지적(e_corr↔GP 이중보정)은 Task 7 가드로 처리 예정.
 
 ---
 
@@ -55,9 +55,9 @@ nominal 예측   x̂_{t+1} = x_t + dt·f_expl(x_t, u_t)
 | 2 | `gym_mu_scale` known-mismatch 노브 | ✅ 완료 | `030f447` | 코드+빌드 ✓. **sim 로그체크 보류** |
 | 3 | `nominal_dynamics.py` 공유 1-step 잔차 (pure-python TDD) | ✅ 완료 | `26429e4` | pytest 2 pass, 상수 bit-for-bit 검증 |
 | 4 | per-cycle 예측오차 로거 (정확성 게이트) | ✅ 완료 | `33dae85` | 코드+빌드 ✓ (★타이밍 수정: solve 후 호출, state8↔u_seq[0] 정확 페어링). **sim 로그체크 보류** |
-| 5 | `lap_database` 잔차 저장 (TDD) | ⏳ 진행중 | — | pytest |
-| 6 | `safe_set` query가 이웃 잔차 반환 (TDD) | ⛔ 대기(5) | — | pytest |
-| 7 | Epanechnikov e_corr 회귀 + mpc 배선 | ⛔ 대기(6) | — | pytest + sim 보류 |
+| 5 | `lap_database` 잔차 저장 (TDD) | ✅ 완료 | `a206ab2` + `1e70f9a`(입력로깅 fix) | pytest 7 pass |
+| 6 | `safe_set` query가 이웃 잔차 반환 (TDD) | ⏳ 진행중 | — | pytest |
+| 7 | Epanechnikov e_corr 회귀 + mpc 배선 (**+ e_corr↔GP 상호배제 가드**) | ⛔ 대기(6) | — | pytest + sim 보류 |
 | 8 | 폐루프 검증 (메인이 sim 직접) | ⛔ 대기(1,2,4,7) | — | sim 측정 |
 
 상태표는 ROS task tracker와 동기(이 대화의 TaskList).
@@ -82,6 +82,8 @@ nominal 예측   x̂_{t+1} = x_t + dt·f_expl(x_t, u_t)
 - **2026-06-05 commit-hygiene**: Task 2가 사용자의 기존 uncommitted launch 작업(gym_bridge_launch.py ~70줄 리팩토링, low_level 2줄)을 휩쓸어 커밋함 → 사용자 선택대로 **clean split**: 우리 커밋(`030f447`)엔 gym_mu_scale만, 사용자 기존 작업은 uncommitted WIP로 복원. gym_bridge_launch.py의 gym_mu_scale hop은 사용자 리팩토링과 얽혀있어 그 WIP에 같이 둠(working tree엔 다 있어 sim은 정상 동작).
 - **Task 1 cleanup(`edb4795`)**: e_corr 3슬롯을 `n_p_stage`(per-stage 의미)에서 `n_p_const`로 이동 — e_corr은 horizon 상수라 의미상 맞음. `n_p_total`=79 불변.
 - **Task 4 타이밍 수정(plan 대비)**: plan은 로거를 `_lmpc_update_per_cycle`(solve 前 호출, line 1485)에 두고 `_last_u_applied` 사용 → 적용제어가 1-cycle 어긋남(게이트 오염). 수정: state8를 그 메서드서 stash, **solve 後**에 `u_seq[0]`와 함께 로거 호출 → (state_t, u_t) 정확 페어링.
+- **★ Task 5 선결버그 발견·수정(`1e70f9a`)**: 랩버퍼 `buf['input']`이 reset만 되고 append 전무 → `_lmpc_on_lap_end`가 `inputs=zeros((T-1,2))` stub 사용. 이러면 잔차 = actual − f_expl(state, **u=0**) → 모델오차가 아니라 **제어효과 전체를 흡수** = B4' 무의미 + 언패킹 크래시. 수정: post-solve서 `u_seq[0]`(3-vec [a_x,delta,p_v]) 매 cycle 로깅(use_lmpc gate, state append와 lockstep), `_lmpc_on_lap_end`서 실제 입력으로 빌드. **한계**: solve 실패가 lap 중간에 나면 state/input 1-step desync(현 truncation은 trailing만 보정) — solve 실패는 드물고 그런 lap은 보통 필터됨. 필요시 solve-fail시 state pop으로 완전 lockstep 가능(미적용, gold-plating).
+- **★ 사용자 지적 — e_corr ↔ GP residual 이중보정**: 둘 다 f_expl 속도행 [vx,vy,r]에 더함 (GP `acados:636` gate=use_gp_casadi, e_corr `acados:1080` gate=_err_regr). 동시 ON이면 같은 sim2real 갭 2회 교정. 설계상 **대안**(B4'가 GP 후계자). → **Task 7서 상호배제 가드**: use_error_regression이면 GP 비활성+warn. (현재 둘 다 기본 off, GP는 실차전용이라 실제충돌 無이나 가드 필요.)
 
 ---
 
