@@ -336,6 +336,13 @@ class MPC:
         LOOKAHEAD_M = max(6.0, float(self.v_max) ** 2 / 6.0)   # v5→6m, v8→10.7m
         n_look = int(LOOKAHEAD_M / self.kappa_ds)
         n_grid = len(abs_k_arr)
+        # R4 (refv_smoothing.distance_tapered_forward_max) was tried here to remove
+        # the ref_v step when a corner crosses the window edge. On this ultra-tight
+        # map the forward window is SATURATED (a corner is always within ~6 m →
+        # p95≈max), so there is no edge step to smooth and R4 is a no-op here; it
+        # only helps open maps with sparse corners + long straights. Kept as a
+        # tested module (mpc_core/refv_smoothing.py) for that case; baseline uses
+        # the plain hard max.
         abs_k_fwd = np.empty(n_grid, dtype=float)
         for i in range(n_grid):
             j = min(i + n_look, n_grid)
