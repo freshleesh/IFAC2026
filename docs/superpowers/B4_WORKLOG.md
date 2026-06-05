@@ -118,3 +118,42 @@ nominal 예측   x̂_{t+1} = x_t + dt·f_expl(x_t, u_t)
 - sim 1개만 동시에. 코드수정 전 백그라운드 kill. 자잘한 건 에이전트 위임.
 - 잔차 품질 = 상태추정 품질. gym은 real vy/r 복원됨(커밋 6e83b12). 실차는 EKF 필요.
 - `nominal_dynamics.py`가 잔차 계산 단일 소스. `scripts/extract_residuals.py`에 중복 미러 있으나 surgical 원칙으로 그대로 둠(Task 5에서 교차검증).
+
+# ════════ §8 해결해야 할 것 (다음 세션 핸드오프, 2026-06-05) ════════
+
+## R3 검증 결과 (이번 세션 — max_speed decouple 성공)
+| config (a_lat=7.14, B4'off) | lap_time | STUCK | shake | 최고v |
+|---|---|---|---|---|
+| baseline max=6 | 23.4s | 0~2 | 0.05 | 4.9 |
+| **R3 cap=8/target=6/lookahead=6** | **21.8s** | 6 | 0.066 | 5.37 |
+| **R3 cap=10/target=8/lookahead=6** | **~21.0s (best 20.3)** | 10 | 0.085 | 5.52 |
+| (옛 coupled max=8, a_lat=11) | 28~34s | 20~48 | 1.4 | — |
+→ **R3 작동·검증**: cap 올려 직선 빨라지고(−6.8~−10%) shake는 baseline급 유지(decouple 덕). **speed_target이 속도↔STUCK trade-off 레버.** 수동 6/7/8 스윕 = BO가 할 일.
+
+## ★ 우선순위 TODO
+**A. BO (다음 핵심) — 더 파악 후 실행**
+  - A1. 검색공간: 현 9D(weights+a_lat+D_apex, 전부 live=빠름)에 **speed_target 추가할지** 결정. speed_target은 codegen-time → trial마다 40s 재빌드(느림). **대안: speed_target을 live param(p_sym slot)化** 하면 codegen 없이 BO 가능 (권장 선행작업).
+  - A2. **headless**: full_sim/gym_bridge_launch.py에 `use_rviz:=false` 옵션 추가 → BO 40× RViz 낭비 제거 (gym_bridge_launch.py:106 rviz_node 조건부).
+  - A3. **clobber-safe**: 시작 전 yaml 스냅샷 + trap 복원 ([[bo_config_clobber_regression]]). bo_chain_maps.sh에 trap 패턴 있음.
+  - A4. BO 실행: cap=10/lookahead=6 고정 + weights+a_lat(+speed_target) 튜닝 → STUCK-penalized objective로 fast-clean 자동탐색. ~수시간.
+  - A5. ⚠️ bo_sweep_turbo.py trial-간 정리가 `pkill -f` 패턴(self-kill 위험, ros2.*launch만 제외) — 시작 전 clean state 필수, orphan 감시.
+
+**B. R3/R4 진짜 검증 = 열린맵 필요**
+  - B1. 새 열린맵 `/home/luckypants/Desktop/final`(다른 머신) → scp/USB로 hmcl `maps/<새이름>`+`share/tracks/track<새이름>` 전송. 파생파일 없으면 gen_random_track 파이프라인.
+  - B2. 열린맵서 R3(cap↑ 무해)·R4(κ distance-taper, refv_smoothing.py 배선) 검증 — 'final'은 R0.87m 포화라 둘다 부분/no-op.
+
+**C. B4' (marginal, 실차서 진가)**
+  - C1. B4' plain sim 이득 노이즈(−2.3~+6.3%). 근본=잔차 제어(δ,a_x)의존 → **Aᵉ/Bᵉ 제어의존 회귀**(미구현, 스펙 deferred) 또는 실차 큰 mismatch.
+  - C2. deploy B4' on/off 결정 (현 marginal → off 권장, 코드 보존).
+
+**D. 실차 (사용자가 ①②후 방향)**
+  - D1. baseline ready. B4' 전 **EKF vy/r + observability gate + 안전폴백**([[state_estimation_refs]][[gym_vy_zero_finding]]). B4'=Mac CPU numpy(CUDA無 OK).
+
+**E. 별도 워크스트림 (B-phase 밖)**
+  - E1. 회피/overtaking: MPCC 정적장애물 cost(p_sym 0-4, `/external_obstacles`) **존재하나 미검증**. 동적추월 MPCC 미구현(f1tenth spliner=controller_manager 경로).
+  - E2. B2 co-tuned tire 제약(friction-ellipse+slip cap) — 미착수.
+
+## 미결정/위생
+- `ddrx_unified_params.yaml` 미커밋 (현 실험값: cap=10/target=8/lookahead=6/a_lat=7.14/use_error_regression=false/startup_speed=3). **deploy config 확정 후 커밋.** baseline 복원하려면 max_speed=6 + speed_target/lookahead_m 제거.
+- 사용자 기존 WIP(gym_bridge_launch.py·low_level.xml·sim.yaml 등) 여전히 미커밋.
+# ════════════════════════════════════════════
