@@ -84,6 +84,9 @@ nominal 예측   x̂_{t+1} = x_t + dt·f_expl(x_t, u_t)
 - **Task 4 타이밍 수정(plan 대비)**: plan은 로거를 `_lmpc_update_per_cycle`(solve 前 호출, line 1485)에 두고 `_last_u_applied` 사용 → 적용제어가 1-cycle 어긋남(게이트 오염). 수정: state8를 그 메서드서 stash, **solve 後**에 `u_seq[0]`와 함께 로거 호출 → (state_t, u_t) 정확 페어링.
 - **★ Task 5 선결버그 발견·수정(`1e70f9a`)**: 랩버퍼 `buf['input']`이 reset만 되고 append 전무 → `_lmpc_on_lap_end`가 `inputs=zeros((T-1,2))` stub 사용. 이러면 잔차 = actual − f_expl(state, **u=0**) → 모델오차가 아니라 **제어효과 전체를 흡수** = B4' 무의미 + 언패킹 크래시. 수정: post-solve서 `u_seq[0]`(3-vec [a_x,delta,p_v]) 매 cycle 로깅(use_lmpc gate, state append와 lockstep), `_lmpc_on_lap_end`서 실제 입력으로 빌드. **한계**: solve 실패가 lap 중간에 나면 state/input 1-step desync(현 truncation은 trailing만 보정) — solve 실패는 드물고 그런 lap은 보통 필터됨. 필요시 solve-fail시 state pop으로 완전 lockstep 가능(미적용, gold-plating).
 - **★ 사용자 지적 — e_corr ↔ GP residual 이중보정**: 둘 다 f_expl 속도행 [vx,vy,r]에 더함 (GP `acados:636` gate=use_gp_casadi, e_corr `acados:1080` gate=_err_regr). 동시 ON이면 같은 sim2real 갭 2회 교정. 설계상 **대안**(B4'가 GP 후계자). → **Task 7서 상호배제 가드**: use_error_regression이면 GP 비활성+warn. (현재 둘 다 기본 off, GP는 실차전용이라 실제충돌 無이나 가드 필요.)
+- **★★ 최종 통합리뷰가 잡은 2개 교차태스크 버그 (`bc608c9` 수정)** — per-task 리뷰는 못 잡고 end-to-end 리뷰가 잡음:
+  - **버그B(치명, 단위 불일치)**: `velocity_residual`은 **속도차(m/s)** 반환인데 `f_expl` 행은 **rate(ẋ, m/s²)**. acados는 `x_next=x+dt·f_expl` 적분 → 주입효과가 `dt·e_corr`≈0.04배 = **25배 약함**. 도출: `x+dt·(f_expl+corr)=actual`, `actual−(x+dt·f_expl)=residual` → `corr=residual/dt`. **수정: mpc_node B3서 `e_corr = epanechnikov(...)/dT`** (rate로 변환). 예측오차 게이트와도 일관(`dt·_e_corr=residual`). 이 수정 없었으면 B4'가 4% 효과 → 검증서 "효과 없음" 오판할 뻔.
+  - **버그A(blocker)**: `seed_from_raceline`이 2열 입력 stub로 add_lap 호출 → 잔차루프가 3개 언패킹 → ValueError(상위 try/except에 먹혀 노드는 살지만 LMPC cold-start seed 소실). **수정: add_lap 잔차루프를 `_inp.shape[1]>=3` 가드** (synthetic seed는 zero 잔차 = 올바름, 오염 안 함). 회귀테스트 추가.
 
 ---
 
