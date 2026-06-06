@@ -500,7 +500,7 @@ class MPCNode(Node):
     # Track + MPC setup
     # ─────────────────────────────────────────────────────────────────
     def _share_dir(self) -> str:
-        return get_package_share_directory('nonlinear_mpc_acados')
+        return get_package_share_directory(__package__)
 
     def _resolve_track_dir(self) -> str:
         explicit = str(self.get_parameter('track_dir').value or '').strip()
