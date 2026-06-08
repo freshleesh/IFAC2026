@@ -155,6 +155,14 @@ mpc_node:
     # raceline 자체가 안정 reference 이므로 corridor 넓혀도 oscillation 적음.
     # 너무 키우면(>0.9) 코너에서 corridor 가 트랙 벽 밖으로 빠질 수도.
     mpc_corridor_half_width: 0.0  # MPCC corridor half-width (centerline±, racing line 여지)
+    # 2026-06-08: 코리도어 폭-기반 속도캡 인프라 (track_loader.corridor_speed_cap).
+    # ★현재 OFF (floor=0): final 맵이 uniformly tight(post-margin 폭 mean 1.14)라
+    # 폭으로 crash지점(~0.7-1.0)을 typical(1.14)과 구분 못함 → 켜면 트랙 98% 감속
+    # → 랩타임↑·완만커브 가속 사라짐(사용자 지적). 폭 단일캡은 이 트랙엔 부적합.
+    # crash(s≈60 좁고직선) 진짜 해법 = racing-line(코너컷) / steer-hunting 잡기.
+    corridor_v_floor: 0.0         # >0 으로 켜면 width-cap 활성 (현재 끔)
+    corridor_v_tight_width: 1.0
+    corridor_v_wide_width: 1.6
 
     # Vehicle dynamics — only `l_wb` consumed in kinematic mode (current default)
     vehicle.l_wb: 0.307

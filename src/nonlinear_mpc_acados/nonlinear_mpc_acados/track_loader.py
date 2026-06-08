@@ -156,12 +156,35 @@ def load_track(track_dir: str, track_name: str,
                         inflation_factor=inflation_factor, extend_part=extend_part)
 
 
+def corridor_speed_cap(width: float, v_full: float, v_floor: float = 0.0,
+                       w_tight: float = 1.0, w_wide: float = 1.6) -> float:
+    """Speed cap from corridor width (complements the curvature cap).
+
+    A narrow-but-gently-curving section has low |κ|, so √(a_lat/|κ|) lets the
+    car run ~v_max and clip the wall. This caps speed by available width:
+    wide corridor → `v_full`; narrow → ramped linearly down to `v_floor`
+    between `w_wide` and `w_tight`. `v_floor<=0` (or w_wide<=w_tight) disables
+    it (returns `v_full`), so it is opt-in and a no-op by default.
+    """
+    if v_floor <= 0.0 or w_wide <= w_tight:
+        return v_full
+    if width >= w_wide:
+        return v_full
+    if width <= w_tight:
+        return v_floor
+    frac = (width - w_tight) / (w_wide - w_tight)
+    return v_floor + (v_full - v_floor) * frac
+
+
 def build_track_from_wpnts(wpnts, vel_scale: float = 1.0,
                            inflation_factor: float = 1.2,
                            extend_part: int = 2,
                            default_v: float = 5.0,
                            corridor_half_width: float = 0.0,
-                           a_lat_max: float = 6.0) -> TrackData:
+                           a_lat_max: float = 6.0,
+                           corridor_v_floor: float = 0.0,
+                           corridor_v_tight: float = 1.0,
+                           corridor_v_wide: float = 1.6) -> TrackData:
     """Same TrackData as `load_track`, but built from a list of `f110_msgs/Wpnt`.
 
     Designed for race-stack `/centerline_waypoints` ingestion: wpnt fields
@@ -225,7 +248,14 @@ def build_track_from_wpnts(wpnts, vel_scale: float = 1.0,
         v_kappa = np.sqrt(a_lat_max / kappa) if kappa > 1e-3 else default_v
         v_msg = float(w.vx_mps) * vel_scale
         v_src = v_msg if v_msg > 1e-3 else default_v
-        ref_v[i] = float(np.clip(min(v_src, v_kappa, default_v), 1.0, default_v))
+        # Corridor-width cap: the κ-cap is blind to width, so a narrow-but-
+        # straight section (low |κ|) otherwise runs at v_max and clips the wall
+        # (final-map s≈60 crash). d_r/d_l here are already wall-margin-subtracted,
+        # so (d_r+d_l) is the usable corridor the car center must stay within.
+        v_corr = corridor_speed_cap(d_r + d_l, default_v, corridor_v_floor,
+                                    corridor_v_tight, corridor_v_wide)
+        ref_v[i] = float(np.clip(min(v_src, v_kappa, default_v, v_corr),
+                                 1.0, default_v))
 
     # ── Forward-backward velocity profile (TUM calc_vel_profile style) ──
     # The pointwise κ-cap above sets the APEX speed but does NOT tell the car to

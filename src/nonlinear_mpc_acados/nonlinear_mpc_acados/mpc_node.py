@@ -178,6 +178,12 @@ class MPCNode(Node):
         # Fixed-width corridor (centerline ± half). >0 = enabled, 0 = raw
         # wpnt.d_left/d_right + inflation (기존 동작). 자세한 설명: ddrx_unified_params.yaml.
         self.declare_parameter('mpc_corridor_half_width', 0.0)
+        # Corridor-width speed cap (complements κ-cap; fixes narrow-but-straight
+        # wall clips). v_floor<=0 disables. width=usable corridor (d_l+d_r,
+        # post-margin); ramp speed from floor (at tight) to v_max (at wide).
+        self.declare_parameter('corridor_v_floor', 0.0)
+        self.declare_parameter('corridor_v_tight_width', 1.0)
+        self.declare_parameter('corridor_v_wide_width', 1.6)
         self.declare_parameter('vehicle_L', 0.307)
         self.declare_parameter('max_speed', 6.0)
         self.declare_parameter('max_speed_p', 6.0)
@@ -1019,7 +1025,10 @@ class MPCNode(Node):
                 inflation_factor=inflation, extend_part=extend_part,
                 default_v=float(self.get_parameter('max_speed').value),
                 corridor_half_width=corridor_half,
-                a_lat_max=float(self.get_parameter('a_lat_safe_live').value))
+                a_lat_max=float(self.get_parameter('a_lat_safe_live').value),
+                corridor_v_floor=float(self.get_parameter('corridor_v_floor').value),
+                corridor_v_tight=float(self.get_parameter('corridor_v_tight_width').value),
+                corridor_v_wide=float(self.get_parameter('corridor_v_wide_width').value))
         else:
             track_dir = self._resolve_track_dir()
             track_name = str(self.get_parameter('track_name').value)
