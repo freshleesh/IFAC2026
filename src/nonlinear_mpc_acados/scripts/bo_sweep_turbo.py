@@ -83,7 +83,7 @@ PER_DIM_LO = {'q_cte': 0.1, 'q_lag': 0.3, 'q_psi': 0.3, 'q_v': 0.3, 'q_p': 0.3, 
 # Give the search room upward to test it (log-uniform → ~half the samples q_v>1.6).
 # a_lat_safe [7,11]: 9 가 v=5 최적였으나 v=7 헤드룸 다름 — 탐색. D_apex [0,1.0]: 0=centerline, 1.0=깊은 apex(코리도어 ±1.25 안).
 PER_DIM_HI = {'q_cte': 5.0, 'q_lag': 5.0, 'q_psi': 5.0, 'q_v': 8.0, 'q_p': 5.0, 'q_drate': 30.0, 'q_dv': 5.0,
-              'a_lat_safe': 11.0, 'D_apex': 1.0}
+              'a_lat_safe': 16.0, 'D_apex': 1.0}   # 2026-06-07: HI 11→16 (16s 도전, 새 final 맵 코너 grip 캡 들어올림; ConstrainedEI가 슬립/접촉 페널티)
 # Linear bounds (보고용 / yaml 작성용)
 BOUNDS = torch.tensor(
     [[PER_DIM_LO[k] for k in PARAM_KEYS],
