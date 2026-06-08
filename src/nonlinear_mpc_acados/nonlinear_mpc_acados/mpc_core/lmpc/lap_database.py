@@ -283,8 +283,13 @@ class LapDatabase:
         if ok:
             v_b = quantize_v(v_bucket)
             laps = self._db.get(v_b, [])
-            if laps:
-                laps[-1].cost_to_go = laps[-1].cost_to_go + 5.0
+            # Inflate the SEED's cost-to-go, not laps[-1]: add_lap may have
+            # evicted the seed (if it was the worst lap in a full bucket), in
+            # which case laps[-1] is a faster REAL lap that must not be penalized.
+            seed = next((e for e in reversed(laps)
+                         if e.metadata.get("source") == "raceline_seed"), None)
+            if seed is not None:
+                seed.cost_to_go = seed.cost_to_go + 5.0
         return ok
 
     def n_laps(self, v_bucket: float) -> int:
@@ -322,6 +327,7 @@ class LapDatabase:
                 data[f"{key}_input"] = e.input
                 data[f"{key}_t"]     = e.time_step
                 data[f"{key}_q"]     = e.cost_to_go
+                data[f"{key}_res"]   = e.residual   # B4' one-step velocity residual
                 meta.append((v_b, e.v_max_eff, i, e.lap_time, e.n_resets))
         if meta:
             arr = np.array(meta, dtype=[
@@ -350,11 +356,14 @@ class LapDatabase:
             nr = int(row["n_resets"])
             base = f"v{v_b:.1f}_lap{lap_i}"
             try:
+                # residual is optional for back-compat with pre-2026-06 npz files
+                res_key = f"{base}_res"
+                residual = z[res_key] if res_key in z.files else np.zeros((0, 3))
                 e = LapEntry(
                     v_bucket=v_b, v_max_eff=v_eff,
                     state=z[f"{base}_state"], input=z[f"{base}_input"],
                     time_step=z[f"{base}_t"], cost_to_go=z[f"{base}_q"],
-                    lap_time=lt, n_resets=nr,
+                    lap_time=lt, n_resets=nr, residual=residual,
                 )
             except KeyError:
                 continue

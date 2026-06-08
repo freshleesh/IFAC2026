@@ -303,8 +303,11 @@ def find_current_arc_length(track: TrackData, car_pos: np.ndarray,
     else:
         current_s = float(s_arr[nearest])
 
-    if nearest == 0:
-        current_s = 0.0
+    # NOTE: do NOT force current_s=0 when nearest==0. When the car is just
+    # BEHIND the start/finish seam the projection legitimately yields s≈L
+    # (actual=last waypoint); clobbering it to 0 injected a full-lap
+    # discontinuity at the line every lap. The wrap below handles s≥L_orig,
+    # and the exactly-at-start case already reads s_arr[0]=0 via the else branch.
     if current_s >= L_orig:
         current_s = current_s % L_orig
     return current_s, nearest
