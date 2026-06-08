@@ -160,9 +160,9 @@ mpc_node:
     # 폭으로 crash지점(~0.7-1.0)을 typical(1.14)과 구분 못함 → 켜면 트랙 98% 감속
     # → 랩타임↑·완만커브 가속 사라짐(사용자 지적). 폭 단일캡은 이 트랙엔 부적합.
     # crash(s≈60 좁고직선) 진짜 해법 = racing-line(코너컷) / steer-hunting 잡기.
-    corridor_v_floor: 0.0         # >0 으로 켜면 width-cap 활성 (현재 끔)
-    corridor_v_tight_width: 1.0
-    corridor_v_wide_width: 1.6
+    corridor_v_floor: 3.0          # 2026-06-08 crash-fix: 제일 좁은 곳만 감속 (surgical)
+    corridor_v_tight_width: 0.75
+    corridor_v_wide_width: 1.0
 
     # Vehicle dynamics — only `l_wb` consumed in kinematic mode (current default)
     vehicle.l_wb: 0.307
