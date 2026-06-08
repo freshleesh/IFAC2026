@@ -291,7 +291,7 @@ class MPCNode(Node):
         # IQP raceline json for the apex seed (grip-clamped). Set by launch to
         # maps/<map>/global_waypoints.json. Empty → centerline seed fallback.
         self.declare_parameter('lmpc_raceline_json', '')
-        self.declare_parameter('lmpc_max_resets', 3)
+        self.declare_parameter('lmpc_max_resets', 0)  # 2026-06-08: teleport된 랩은 safe-set에서 거부
         self.declare_parameter('lmpc_max_abs_ec_m', 1.0)
         self.declare_parameter('lmpc_max_lap_time_ratio', 1.5)
         self.declare_parameter('lmpc_max_stuck_seconds', 5.0)
@@ -340,6 +340,12 @@ class MPCNode(Node):
         self.initialpose_pub = self.create_publisher(
             PoseWithCovarianceStamped, '/sim/initialpose', 10)
         self._stuck_release_total = 0
+        # Per-lap teleport (safe-reset) count for LMPC lap-acceptance. Counted in
+        # _publish_safe_reset (the single choke point both kinematic & dynamic
+        # branches pass through), read+reset at each lap boundary. Replaces the
+        # old _stuck_release_total sync which only incremented in the kinematic
+        # branch → dynamic-mode teleports counted as 0 → crash laps polluted SS.
+        self._lmpc_lap_teleports = 0
         self._last_reset_t = 0.0
         # Latched (TRANSIENT_LOCAL) viz publishers — small-sphere MarkerArray
         # in the style of race-stack's /centerline_waypoints/markers (type=2
@@ -473,7 +479,6 @@ class MPCNode(Node):
             'state': [], 'input': [], 'time': [],
             'lap_start_t': None, 'last_lap': -1,
             'max_abs_ec': 0.0, 'stuck_seconds_accum': 0.0,
-            'n_resets_in_lap': 0,
         }
         self.get_logger().info(
             f"[LMPC] use_lmpc={self._lmpc_use}  enable_after_real_laps={self._lmpc_enable_after}  "
@@ -714,8 +719,6 @@ class MPCNode(Node):
             self._lmpc_lap_buf['max_abs_ec'] = max(self._lmpc_lap_buf['max_abs_ec'], ec_est)
         except Exception:
             pass
-        # n_resets — track from STUCK release flag if present
-        self._lmpc_lap_buf['n_resets_in_lap'] = getattr(self.mpc, '_stuck_release_total', 0)
 
         # (b) SS query → set mpc attrs (these are picked up by p_arr builder
         # at next set call in mpc.solve()).
@@ -838,7 +841,7 @@ class MPCNode(Node):
             buf['lap_start_t'] = time.monotonic()
             buf['max_abs_ec'] = 0.0
             buf['stuck_seconds_accum'] = 0.0   # reset per-lap (currently unwired — no incrementer yet; reset here so it never accumulates across laps once wired)
-            buf['n_resets_in_lap'] = getattr(self.mpc, '_stuck_release_total', 0)
+            self._lmpc_lap_teleports = 0       # start counting teleports for lap 1
             buf['last_lap'] = lap_idx
             return
 
@@ -860,8 +863,9 @@ class MPCNode(Node):
         t_arr = np.array(buf['time']) - buf['lap_start_t'] if buf['lap_start_t'] else np.linspace(0, T * 0.04, T)
         t_arr = t_arr[:T]   # keep length == T after possible state truncation
         lap_time = float(t_arr[-1] - t_arr[0]) if T > 1 else 0.0
-        # n_resets in this lap = delta since lap start
-        n_resets = max(0, buf['n_resets_in_lap'])
+        # n_resets in this lap = teleport(safe-reset) count THIS lap, counted in
+        # _publish_safe_reset. With lmpc_max_resets=0 any teleport rejects the lap.
+        n_resets = int(self._lmpc_lap_teleports)
 
         v_bucket = float(getattr(self.mpc, 'v_max', 5.0))
         meta = {
@@ -885,7 +889,7 @@ class MPCNode(Node):
         buf['lap_start_t'] = time.monotonic()
         buf['max_abs_ec'] = 0.0
         buf['stuck_seconds_accum'] = 0.0   # reset per-lap (see note above — unwired, but keep reset symmetric)
-        buf['n_resets_in_lap'] = getattr(self.mpc, '_stuck_release_total', 0)
+        self._lmpc_lap_teleports = 0       # start counting teleports for the next lap
         buf['last_lap'] = lap_idx
 
     def _lmpc_save_on_shutdown(self) -> None:
@@ -1515,9 +1519,14 @@ class MPCNode(Node):
         msg.pose.pose.orientation.z = math.sin(yaw / 2.0)
         msg.pose.pose.orientation.w = math.cos(yaw / 2.0)
         self.initialpose_pub.publish(msg)
+        # Single source of truth for LMPC lap rejection: every teleport, in any
+        # control branch, lands here. Count it so the current lap is flagged as
+        # corrupted and rejected from the safe set.
+        self._lmpc_lap_teleports += 1
         self.get_logger().warn(
             f"[stuck-recover] /initialpose → ({rx:.2f},{ry:.2f},{yaw:.2f}) "
-            f"after {self._stuck_release_total} stuck cycles")
+            f"after {self._stuck_release_total} stuck cycles "
+            f"(lap teleports={self._lmpc_lap_teleports})")
 
     # Recovery-steer sign during reverse. +1 / -1, validated empirically.
     # 후진 중 steer→yaw 가 전진과 반대 → 이 부호로 검증/뒤집기.

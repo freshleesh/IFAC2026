@@ -52,7 +52,7 @@ class LapDatabase:
     def __init__(
         self,
         buffer_per_bucket: int = 10,
-        max_resets_accept: int = 3,
+        max_resets_accept: int = 0,   # 2026-06-08: teleport된 랩(reset>0)은 safe-set 오염 → 기본 거부
         min_lap_steps: int = 50,
         # Reviewer 2026-05-28 #4-A: failed-lap 필터 강화
         max_lap_time_ratio: float = 1.5,    # > 1.5 × best_in_bucket → reject
