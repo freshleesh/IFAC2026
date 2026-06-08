@@ -350,11 +350,27 @@ class MPC:
         # only helps open maps with sparse corners + long straights. Kept as a
         # tested module (mpc_core/refv_smoothing.py) for that case; baseline uses
         # the plain hard max.
+        # 2026-06-08 (사용자 통찰): plain forward-MAX 가 완만(저-κ) 구간서도 멀리
+        # 있는 tight 코너 κ로 ref_v 를 눌러 가속을 막음(twisty 맵서 p95≈max 포화).
+        # → brake-distance-aware 등가 κ 로 교체: 거리 d 만큼 떨어진 코너는 제동거리
+        # 가 있으니 지금은 빨라도 됨 → 등가-κ 를 거리로 할인.
+        #   v_allow(s)² = v_corner(s')² + 2·a_brake·d  (a_brake=a_lat 가정)
+        #   = a_lat/κ(s') + 2·a_lat·d = a_lat·(1/κ' + 2d)
+        #   κ_eq = a_lat/v_allow² = 1/(1/κ' + 2d) = κ'/(1+2d·κ')   ← a_lat 소거
+        # κ_eq[d=0]=κ'(local, 코너서 full), d↑ → κ_eq→0(제한 풀림). window 안
+        # 모든 upcoming 코너 중 가장 binding(max κ_eq) 채택 → 완만 구간 가속 허용,
+        # tight 코너는 제때 감속.
+        _ds = float(self.kappa_ds)
+        _bf = 0.7   # brake safety factor: a_brake = bf·a_lat (더 일찍 제동 → late-brake STUCK↓)
         abs_k_fwd = np.empty(n_grid, dtype=float)
         for i in range(n_grid):
             j = min(i + n_look, n_grid)
-            abs_k_fwd[i] = float(abs_k_arr[i:j].max())
-        self._log.info("[MPC-acados] forward-max |κ| (lookahead=%.1f m): max=%.3f p95=%.3f",
+            seg = abs_k_arr[i:j]
+            dist = np.arange(len(seg)) * _ds
+            k_eq = seg / (1.0 + 2.0 * _bf * dist * seg)   # brake-aware equivalent κ (margin)
+            abs_k_fwd[i] = float(k_eq.max()) if len(seg) else float(abs_k_arr[i])
+        self._log.info("[MPC-acados] brake-aware |κ_eq| (lookahead=%.1f m): max=%.3f p95=%.3f "
+                      "(was plain forward-max — 사용자 통찰: 완만구간 가속)",
                       LOOKAHEAD_M,
                       float(abs_k_fwd.max()),
                       float(np.percentile(abs_k_fwd, 95)))
@@ -652,8 +668,12 @@ class MPC:
                                       dyn['delta'], dyn['a_x'])
                     mu = build_casadi_residual(gp_z, gp_p)
                     # B_d: 3 GP outputs -> state rows vx(3), vy(4), r(5).
+                    # Pad residual to f_expl width: 8 (plain) or 18 (joint-α
+                    # LMPC appends 10 α-states AFTER the 8 physical, so rows
+                    # 3/4/5 = vx/vy/r in both; α rows get 0 residual).
+                    _nx_full = f_expl.shape[0]
                     f_expl = f_expl + ca.vertcat(
-                        0, 0, 0, mu[0], mu[1], mu[2], 0, 0)
+                        0, 0, 0, mu[0], mu[1], mu[2], *([0] * (_nx_full - 6)))
                     self._log.info(
                         "[MPC-acados] Phase D CasADi-GP residual ACTIVE "
                         "(M=%d inducing, ckpt=%s) — added to f_expl rows "
@@ -1260,6 +1280,7 @@ class MPC:
             if self._lmpc_joint:
                 # B3: α ∈ [0,1] state bound on the K augmented states (all stages).
                 _Ka = int(dyn['K_aug'])
+                self._lmpc_K_aug = _Ka   # needed for per-stage ubx padding below
                 ocp.constraints.idxbx = np.concatenate([ocp.constraints.idxbx, np.arange(8, 8 + _Ka)])
                 ocp.constraints.lbx   = np.concatenate([ocp.constraints.lbx, np.zeros(_Ka)])
                 ocp.constraints.ubx   = np.concatenate([ocp.constraints.ubx, np.ones(_Ka)])
@@ -1845,13 +1866,23 @@ class MPC:
                     # 이래야 dynamic 의 slip-aware 추종을 살리면서 MINSTEP 안 늘림.
                     if k >= 1:
                         _vcap_dyn = min(float(self.v_max) + 0.5, _vcap * 1.6)
-                        self.solver.set(k, "ubx",
-                                        np.array([_vcap_dyn, 10.0, 20.0]))
+                        # joint-α: idxbx was extended to [3,4,5, 8..8+Ka], so the
+                        # per-stage ubx MUST match that length or acados throws a
+                        # dimension error (previously swallowed by the bare except →
+                        # the per-stage corner speed cap was silently dead the entire
+                        # time joint-α LMPC was on). Pad with the α upper bounds (1.0).
+                        _ub = [_vcap_dyn, 10.0, 20.0]
+                        if self._lmpc_joint:
+                            _ub = _ub + [1.0] * int(getattr(self, '_lmpc_K_aug', 10))
+                        self.solver.set(k, "ubx", np.array(_ub))
                 elif k < self.N:
                     self.solver.set(k, "ubu",
                                     np.array([_vcap, self.theta_max, self.p_max]))
-            except Exception:
-                pass
+            except Exception as _e:
+                # Was `pass` — that hid the joint-α ubx dimension bug for weeks.
+                # Log (throttled) so a per-stage constraint failure is visible.
+                self._log.warn_throttle(2.0,
+                    "[MPC-acados] per-stage bound set failed (k=%d): %s", k, _e)
             # 2026-05-28 #18 LMPC: p_arr 길이 22 → 76. Reviewer #★1 confirmed —
             # codegen 길이가 76 이면 22 길이 set 은 dimension throw. p_arr 전체
             # 76 으로 짜되, LMPC slots (18..71) 은 attr 가 있으면 사용, 없으면 0
@@ -1941,7 +1972,10 @@ class MPC:
             # subsequent QPs into a 36-iter limit cycle (observed s≈48m
             # cascade). Forcing WARM_START=False rebuilds X0/u0 from the
             # current car state via Euler rollout next cycle.
-            bad_status = status in (1, 3, 4)
+            # 2026-06-08: include 2 (MaxIter) — a QP that hit the iteration limit
+            # without converging was being accepted as a good solve, applying a
+            # half-converged control and seeding a bad warm-start.
+            bad_status = status in (1, 2, 3, 4)
             has_nan = np.isnan(traj).any() or np.isnan(u_seq).any()
             if bad_status or has_nan:
                 self._log.warn_throttle(1.0,

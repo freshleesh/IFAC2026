@@ -143,7 +143,7 @@ mpc_node:
     lmpc_save_path: ""   # npz path to save SS at shutdown
     lmpc_seed_from_raceline: true    # cold-start raceline seed (LMPC용)
     # Failed lap filter (reviewer #4-A — bad lap 이 SS 오염 막음)
-    lmpc_max_resets: 3
+    lmpc_max_resets: 0    # 2026-06-08: teleport된 랩은 safe-set 거부 (코드 기본과 일치). 이전 3은 수정을 무효화했음
     lmpc_max_abs_ec_m: 100.0
     lmpc_max_lap_time_ratio: 3.0
     lmpc_max_stuck_seconds: 5.0

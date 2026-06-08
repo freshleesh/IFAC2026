@@ -688,6 +688,10 @@ class MPCNode(Node):
 
     def _lmpc_update_per_cycle(self, x0: np.ndarray, s_now: float, is_dyn: bool) -> None:
         """Every control cycle: (a) accumulate state into lap buffer, (b) SS query → set mpc attrs."""
+        # Cleared each cycle; set only when a state is buffered for this cycle. The
+        # post-solve lockstep append consumes it, so a raise / early-return / failed
+        # solve leaves no stale state and never appends a state without its input.
+        self._lmpc_pending_state = None
         if not self._lmpc_use:
             # LMPC OFF — ensure weights are 0 (in case toggled at runtime)
             self.mpc.lmpc_w_live = 0.0
@@ -708,9 +712,13 @@ class MPCNode(Node):
             state8[0] = float(x0[0]); state8[1] = float(x0[1])
             state8[2] = float(x0[2])
             state8[6] = float(s_now)
-        self._lmpc_lap_buf['state'].append(state8.copy())
+        # Defer the state/time append to the post-solve lockstep block (see the
+        # input append in the control loop). Appending here pre-solve meant a
+        # solve exception left a state with no paired input → every later
+        # (state,input) pair in the lap was misaligned by one.
         self._b4_state8 = state8.copy()   # B4' pred-error gate: paired with u_seq[0] after solve
-        self._lmpc_lap_buf['time'].append(time.monotonic())
+        self._lmpc_pending_state = state8.copy()
+        self._lmpc_pending_time = time.monotonic()
         # max |e_c| running max (e_c estimated via CasADi center LUT)
         try:
             cx = float(self._track.center_lut_x(s_now))
@@ -1656,8 +1664,15 @@ class MPCNode(Node):
         # residual = actual - f_expl(state, u); a zero/stub input would make the
         # residual absorb the control effect instead of model error.
         try:
-            if getattr(self, '_lmpc_use', False) and u_seq is not None and len(u_seq) > 0:
+            if (getattr(self, '_lmpc_use', False) and u_seq is not None and len(u_seq) > 0
+                    and getattr(self, '_lmpc_pending_state', None) is not None):
+                # Lockstep: append state[t], time[t], input[t] together, ONLY after a
+                # successful solve, so the lap buffer stays 1:1 aligned. (state/time
+                # were deferred from pre-solve; a failed solve appends nothing.)
+                self._lmpc_lap_buf['state'].append(self._lmpc_pending_state)
+                self._lmpc_lap_buf['time'].append(self._lmpc_pending_time)
                 self._lmpc_lap_buf['input'].append(np.asarray(u_seq[0], float).copy())
+                self._lmpc_pending_state = None
         except Exception:
             pass
 
@@ -1712,7 +1727,17 @@ class MPCNode(Node):
                             "[real] STUCK detected but enable_sim_reset=false — "
                             "publishing reverse cmd only (수동 e-stop 권장)")
                     self._last_reset_t = time.monotonic()
-                    self._stuck_release_total = 0
+                    # Do NOT zero _stuck_release_total on teleport — let it
+                    # accumulate over the whole stuck episode (reset happens only
+                    # on recovery, in the non-stuck else branch) so it reflects
+                    # true severity and we can escalate instead of teleporting
+                    # at 1 Hz forever with no give-up.
+                    if self._stuck_release_total > 400:   # ~10 s at 40 Hz, no recovery
+                        self.get_logger().error(
+                            "[stuck-recover] still stuck after %d cycles — recovery "
+                            "not progressing; manual intervention recommended"
+                            % self._stuck_release_total,
+                            throttle_duration_sec=3.0)
             else:
                 self._stuck_release_total = 0
                 # 2026-05-29 structural-bug fix: the target vx sent to the gym

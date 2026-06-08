@@ -645,7 +645,11 @@ class GymBridge(Node):
             v = float(ego_state[3])      # total speed at CoM
             beta = float(ego_state[6])   # slip angle β [rad]
             self.ego_speed[0] = v * np.cos(beta)  # body-frame v_x
-            self.ego_speed[1] = v * np.sin(beta)  # body-frame v_y (was hardcoded 0)
+            # f110_gym switches to the KINEMATIC single-track model below
+            # ~0.5 m/s, where the slip-angle state β is not integrated and holds
+            # a stale value → v*sin(β) would be a bogus lateral velocity. Below
+            # that threshold vy is physically ~0, so report 0 rather than stale.
+            self.ego_speed[1] = v * np.sin(beta) if abs(v) >= 0.5 else 0.0
         except (AttributeError, IndexError, TypeError):
             # If internal state is ever unreachable, keep obs values (v_y stays 0).
             pass
