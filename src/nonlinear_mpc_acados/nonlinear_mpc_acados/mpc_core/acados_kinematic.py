@@ -1864,7 +1864,9 @@ class MPC:
                     # 28→95 폭증(2026-06-03 측정). 대신 GENEROUS margin(×1.6)
                     # 으로 극단 과속만 막고, 코너속도는 soft ref_v+a_lat 가 담당.
                     # 이래야 dynamic 의 slip-aware 추종을 살리면서 MINSTEP 안 늘림.
-                    if k >= 1:
+                    # k<N only: the terminal node has no state box (nbx_e=0), so
+                    # setting ubx there throws (was 61×/run log spam at k=N).
+                    if 1 <= k < self.N:
                         _vcap_dyn = min(float(self.v_max) + 0.5, _vcap * 1.6)
                         # joint-α: idxbx was extended to [3,4,5, 8..8+Ka], so the
                         # per-stage ubx MUST match that length or acados throws a
