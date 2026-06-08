@@ -704,6 +704,12 @@ class MPCNode(Node):
             self.mpc._e_corr = np.zeros(3)
             return
 
+        # Accumulate per-lap stuck time so the lmpc_max_stuck_seconds filter is
+        # actually fed (previously unwired → meta['stuck_seconds'] stayed 0 →
+        # filter inert). One dT per cycle the car is in stuck-recovery.
+        if getattr(self.mpc, '_stuck_release_active', False):
+            self._lmpc_lap_buf['stuck_seconds_accum'] += float(self.get_parameter('dT').value)
+
         # (a) Accumulate this cycle's 8-state x0 (extended) + estimate e_c.
         # x0 from _current_state_4 is (4 or 7)-dim — we need 8-state for LapDatabase
         # (px, py, ψ, vx, vy, r, s, δ_prev). For accumulation we approximate
@@ -854,7 +860,7 @@ class MPCNode(Node):
             buf['state'] = []; buf['input'] = []; buf['time'] = []
             buf['lap_start_t'] = time.monotonic()
             buf['max_abs_ec'] = 0.0
-            buf['stuck_seconds_accum'] = 0.0   # reset per-lap (currently unwired — no incrementer yet; reset here so it never accumulates across laps once wired)
+            buf['stuck_seconds_accum'] = 0.0   # reset per-lap (wired: incremented in _lmpc_update_per_cycle while stuck)
             self._lmpc_lap_teleports = 0       # start counting teleports for lap 1
             buf['last_lap'] = lap_idx
             return
@@ -902,7 +908,7 @@ class MPCNode(Node):
         buf['state'] = []; buf['input'] = []; buf['time'] = []
         buf['lap_start_t'] = time.monotonic()
         buf['max_abs_ec'] = 0.0
-        buf['stuck_seconds_accum'] = 0.0   # reset per-lap (see note above — unwired, but keep reset symmetric)
+        buf['stuck_seconds_accum'] = 0.0   # reset per-lap (wired — see _lmpc_update_per_cycle)
         self._lmpc_lap_teleports = 0       # start counting teleports for the next lap
         buf['last_lap'] = lap_idx
 

@@ -567,6 +567,16 @@ class GymBridge(Node):
             self.obs, _, self.done, _ = self.env.step(np.array(
                 [[self.ego_steer, self.ego_requested_speed], [self.opp_steer, self.opp_requested_speed]]))
         _t2 = _t.perf_counter()
+        # Reflect the sim's collision flag (was initialized False and never
+        # updated → ego_collision was dead state).
+        try:
+            cols = self.obs.get('collisions') if isinstance(self.obs, dict) else None
+            if cols is not None and len(cols) > 0:
+                self.ego_collision = bool(cols[0])
+                if self.has_opp and len(cols) > 1:
+                    self.opp_collision = bool(cols[1])
+        except (KeyError, IndexError, TypeError):
+            pass
         self.ts = self.get_clock().now().to_msg()
         self._update_sim_state()
         _t3 = _t.perf_counter()

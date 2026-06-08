@@ -233,6 +233,12 @@ def build_track_from_wpnts(wpnts, vel_scale: float = 1.0,
             d_r = max(0.05, float(w.d_right) - _WALL_MARGIN)
             d_l = max(0.05, float(w.d_left) - _WALL_MARGIN)
         # right normal = (+sin(psi), -cos(psi)); left normal = (-sin(psi), +cos(psi))
+        # NOTE: d_left/d_right are measured along the CENTERLINE normal, so this
+        # projection is exact ONLY when psi == centerline tangent. Line 220
+        # prefers psi_centerline_rad (the centerline tangent) for exactly this
+        # reason. The psi_rad fallback (wpnts lacking centerline psi, e.g. a raw
+        # raceline) would place the boundary off by 1/cos(Δψ) at points where the
+        # wpnt heading differs from the centerline — feed centerline psi to avoid.
         right_lane[i] = (x + d_r * s,  y - d_r * c)
         left_lane[i]  = (x - d_l * s,  y + d_l * c)
         # Speed reference: cap to BOTH our top speed (default_v = v_max) AND the
