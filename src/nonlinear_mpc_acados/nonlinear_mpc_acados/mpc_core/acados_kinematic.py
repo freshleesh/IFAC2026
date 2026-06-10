@@ -321,6 +321,23 @@ class MPC:
         self.q_mu      = param.get('q_mu',            self.q_mu)
         self.q_vp_proj = param.get('mpc_vp_project',  self.q_vp_proj)
 
+    def a_lat_safe_eff(self):
+        """a_lat_safe_live clamped to physical grip μ·g·η.
+
+        BO/yaml/rqt 가 어떤 값을 요청하든 속도 프로필·vcap·a_lat 제약이
+        타이어가 못 내는 그립 위에 세워지지 않게 하는 단일 게이트.
+        Live-safe: 호출 시점의 a_lat_safe_live/dyn_mu 로 매번 계산.
+        """
+        eff, clamped = clamp_a_lat_to_grip(
+            self.a_lat_safe_live, self.dyn_mu, self.ellipse_frac)
+        if clamped and not getattr(self, '_alat_clamp_warned', False):
+            self._alat_clamp_warned = True
+            self._log.warning(
+                f"[MPC-acados] a_lat_safe_live {float(self.a_lat_safe_live):.2f} > "
+                f"μgη {eff:.2f} (mu={float(self.dyn_mu):.3f}) → clamped. "
+                "BO 탐색 상한이 물리 그립에 묶임 (의도된 동작).")
+        return eff
+
     def set_track_data(self, c_x, c_y, c_dx, c_dy, r_x, r_y, l_x, l_y,
                        element_arc_lengths, original_arc_length_total, ref_v):
         self.center_lut_x, self.center_lut_y = c_x, c_y
@@ -390,7 +407,9 @@ class MPC:
         # 모든 upcoming 코너 중 가장 binding(max κ_eq) 채택 → 완만 구간 가속 허용,
         # tight 코너는 제때 감속.
         _ds = float(self.kappa_ds)
-        _bf = 0.7   # brake safety factor: a_brake = bf·a_lat (더 일찍 제동 → late-brake STUCK↓)
+        # bf = a_brake/a_lat (κ_eq 유도식 그대로). 고정 0.7은 a_lat_safe=5 에서
+        # 제동 3.5 m/s² 가정 = 솔버 한계(3.0) 초과 낙관 — 솔버 값으로 일관화.
+        _bf = min(1.0, abs(A_MIN_DYN) / max(1e-3, self.a_lat_safe_eff()))
         abs_k_fwd = np.empty(n_grid, dtype=float)
         for i in range(n_grid):
             j = min(i + n_look, n_grid)
@@ -1296,8 +1315,8 @@ class MPC:
         #   surface too flat at high κ → IPM zigzag). +1.0 keeps the cap a
         #   true backstop (just above the soft cap) without re-entering that
         #   flat region; the steer-output EMA filter further damps any wobble.
-        a_lat_max = max(8.0, float(self.a_lat_safe_live) + 1.0)
-        self._log.info(f"[MPC-acados] a_lat hard cap = {a_lat_max:.2f} (a_lat_safe={float(self.a_lat_safe_live):.2f} + 1.0 backstop)")
+        a_lat_max = max(8.0, float(self.a_lat_safe_eff()) + 1.0)
+        self._log.info(f"[MPC-acados] a_lat hard cap = {a_lat_max:.2f} (a_lat_safe={float(self.a_lat_safe_eff()):.2f} + 1.0 backstop)")
         # h order: [h_obs, h_corridor_top, h_corridor_bot, a_lat, (Σα if joint)]
         if self._lmpc_joint:
             ocp.constraints.lh = np.array([0.0, 0.0, 0.0, -a_lat_max, 1.0])  # Σα=1 eq
@@ -1336,7 +1355,7 @@ class MPC:
         ocp.parameter_values[6]  = self.q_cte_scale_live    # q_cte scale
         ocp.parameter_values[7]  = self.R_safe_live         # R_safe
         ocp.parameter_values[8]  = self.q_lag_scale_live    # q_lag scale
-        ocp.parameter_values[10] = self.a_lat_safe_live     # A_LAT_SAFE
+        ocp.parameter_values[10] = self.a_lat_safe_eff()    # A_LAT_SAFE (μ-clamped)
         ocp.parameter_values[11] = self.D_apex_live         # D_apex
         ocp.parameter_values[12] = self.q_psi_scale_live    # q_psi scale
         ocp.parameter_values[13] = self.q_v_scale_live      # q_v scale
@@ -1815,7 +1834,7 @@ class MPC:
             # 로 직접 처리 → u[0] lbu=0 이므로 이 cap 과 무간섭.
             try:
                 _absk = float(self.abs_kappa_lut(sk))
-                _vcap = math.sqrt(float(self.a_lat_safe_live) / (_absk + 1e-3))
+                _vcap = math.sqrt(float(self.a_lat_safe_eff()) / (_absk + 1e-3))
                 # floor 1.0: κ-스파이크나 cold warm-start 에서 v→0 stall 방지
                 # (가장 타이트한 코너도 √(6/0.84)=2.67 라 floor 는 평소 불활성).
                 _vcap = min(float(self.v_max), max(_vcap, 1.0))
@@ -1874,7 +1893,7 @@ class MPC:
             p_arr[7]  = float(self.R_safe_live)
             p_arr[8]  = float(self.q_lag_scale_live)
             p_arr[9]  = e_c_obs_val
-            p_arr[10] = float(self.a_lat_safe_live)
+            p_arr[10] = float(self.a_lat_safe_eff())
             p_arr[11] = float(self.D_apex_live)
             p_arr[12] = float(self.q_psi_scale_live)
             p_arr[13] = float(self.q_v_scale_live)
