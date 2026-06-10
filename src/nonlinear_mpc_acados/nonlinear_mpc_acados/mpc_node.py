@@ -544,7 +544,8 @@ class MPCNode(Node):
             float(self.get_parameter('a_lat_safe_live').value),
             float(self.get_parameter('dyn_mu').value),
             float(self.get_parameter('ellipse_frac').value))
-        if clamped:
+        if clamped and not getattr(self, '_grip_track_warned', False):
+            self._grip_track_warned = True
             self.get_logger().warn(
                 f"[grip] a_lat_safe_live > μgη → track ref_v 는 {eff:.2f} 로 clamp")
         return eff

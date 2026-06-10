@@ -59,7 +59,8 @@ class TestBrakeProfileHonesty(unittest.TestCase):
             ds = math.hypot(wp[j].x_m - wp[i].x_m, wp[j].y_m - wp[i].y_m)
             if v[i % len(v)] > v[j % len(v)]:   # braking segment
                 a_req = (v[i % len(v)] ** 2 - v[j % len(v)] ** 2) / (2.0 * max(ds, 1e-6))
-                self.assertLessEqual(a_req, 3.0 + 0.15,
+                # backward-pass 구성상 정확히 ≤3.0 (부동소수 오차만 허용)
+                self.assertLessEqual(a_req, 3.0 + 1e-6,
                                      f"i={i}: implied brake {a_req:.2f} > 3.0")
 
 
