@@ -234,6 +234,13 @@ class MPCNode(Node):
         # dyn_tire_model: 'linear' (안전·빠름) / 'tanh' (saturation) / 'pacejka' (정확·불안정 가능)
         self.declare_parameter('use_dynamic', False)
         self.declare_parameter('dyn_tire_model', 'linear')
+        # ── 그립 정직화 (2026-06-10) ──
+        # dyn_mu: 모델 타이어 μ. sim_params.yaml 의 mu(또는 실차 노면)와 일치시켜야
+        # 모델이 정직 — 저그립 실험은 dyn_mu:=0.6. codegen-time 상수 (mu 가 codegen
+        # 디렉토리 태그에 키잉되므로 전환 시 수동 rm 불필요).
+        self.declare_parameter('dyn_mu', 1.0489)
+        # ellipse_frac: friction ellipse headroom η. a_lim = μ·g·η.
+        self.declare_parameter('ellipse_frac', 0.95)
         # acados Levenberg-Marquardt regularization for the dynamic model.
         # Higher = better-conditioned QP (fewer ACADOS_MINSTEP / QP_Failure)
         # and more consistent cycle-to-cycle predictions, but over-damped if
@@ -1058,6 +1065,10 @@ class MPCNode(Node):
         }
 
         self.mpc.set_initial_params(param, vheid, is_ot)
+        # 그립 정직화 — set_track_data(κ_eq/bf)·setup_MPC(ellipse/codegen tag) 둘 다
+        # dyn_mu 를 소비하므로 track 빌드 전에 push (push 순서 의존).
+        self.mpc.dyn_mu = float(self.get_parameter('dyn_mu').value)
+        self.mpc.ellipse_frac = float(self.get_parameter('ellipse_frac').value)
         self.mpc.set_track_data(
             self._track.center_lut_x, self._track.center_lut_y,
             self._track.center_lut_dx, self._track.center_lut_dy,

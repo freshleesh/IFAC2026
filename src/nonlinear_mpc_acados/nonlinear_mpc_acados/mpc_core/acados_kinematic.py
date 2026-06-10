@@ -23,6 +23,7 @@ import numpy as np
 import casadi as ca
 import scipy.linalg
 from ._ros_compat import NullLogger, monotonic_now, yaw_to_quat
+from .model_policy import A_MIN_DYN, clamp_a_lat_to_grip
 
 from acados_template import AcadosOcp, AcadosOcpSolver, AcadosModel
 
@@ -109,6 +110,7 @@ class MPC:
         self.dyn_lr   = 0.17145   # CG to rear axle [m]         (sim: lr)
         self.dyn_h_cg = 0.074     # CG height [m] (load transfer) (sim: h)
         self.dyn_mu   = 1.0489    # friction coefficient        (sim: mu)
+        self.ellipse_frac = 0.95  # friction ellipse headroom η (a_lim = μ·g·η)
         # Linear tire stiffness — sim-matched (f110-simulator params.yaml).
         # F_y = μ · C_S · F_z · α (linear in slip angle).
         # F1Tenth realistic; dynamic effects are inherently small at
@@ -1251,7 +1253,7 @@ class MPC:
         # 라며 -8.26 출력 → 다음 cycle vx 음수 예측 → Pacejka 망가짐
         # → ACADOS_MINSTEP 캐스케이드. -3.0 이면 충분히 감속 가능하고
         # 솔버가 미친 brake 못 함.
-        a_min_dyn = -3.0
+        a_min_dyn = A_MIN_DYN   # 솔버 제동한계 — model_policy 단일소스 (ref_v a_long 과 동기)
         a_max_dyn =  4.0   # 7.51 → 4.0 (Agent R-round3 Fix 2). F1TENTH RWD @ vx≈0
                            # grip ~4 m/s². 7.51 (sim max_accel) 은 saturated 되어
                            # solver 가 "instant fix" 권장 → traj 예측 unrealistic →

@@ -205,11 +205,24 @@ def _build(context: LaunchContext, *_args, **_kwargs):
             if v in ("false", "0", "no"):
                 return False
             return None  # unset → don't override
+        def _flt(name):
+            """Float override: empty string → None (yaml fallback). Else float."""
+            v = LaunchConfiguration(name).perform(context).strip()
+            if not v:
+                return None
+            try:
+                return float(v)
+            except ValueError:
+                return None
         _model_overrides = {}
         for _k in ("use_dynamic", "use_lmpc"):
             _v = _tri(_k)
             if _v is not None:
                 _model_overrides[_k] = _v
+        # dyn_mu float override (empty → yaml 1.0489 survives; e.g. dyn_mu:=0.6 → float 0.6)
+        _dyn_mu_v = _flt("dyn_mu")
+        if _dyn_mu_v is not None:
+            _model_overrides["dyn_mu"] = _dyn_mu_v
 
         # mpc_disable=true 면 mpc_node 비활성 → mux 가 pp_fallback 사용 (PP baseline 측정용).
         mpc_disable_str = LaunchConfiguration("mpc_disable").perform(context).lower()
@@ -342,5 +355,7 @@ def generate_launch_description() -> LaunchDescription:
                               description="override yaml: true=dynamic 8-state, false=kinematic 5-state. empty=use yaml"),
         DeclareLaunchArgument("use_lmpc", default_value="",
                               description="override yaml: true/false. (kinematic auto-forces off). empty=use yaml"),
+        DeclareLaunchArgument("dyn_mu", default_value="",
+                              description="모델 타이어 μ override (빈값=yaml). sim mu와 일치시킬 것"),
         OpaqueFunction(function=_build),
     ])
