@@ -55,6 +55,9 @@ BO_DIR.mkdir(parents=True, exist_ok=True)
 # 각 줄에 ts/max_speed 포함 → 여러 run 구분 가능. tail -f 로 실시간 추적.
 PEAKS_PATH = BO_DIR / 'bo_q_peaks.jsonl'
 EVAL_SCRIPT = Path(__file__).parent / 'eval_run_quality.py'
+# 2026-06-10 mu 정직화: --dyn_mu 지정 시 매 trial launch 에 dyn_mu:=<v> 전달
+# (codegen-time 상수 — mu-키잉된 codegen 디렉토리로 자동 분리됨).
+DYN_MU: float | None = None
 
 # B (VPMPCC simplify, 2026-05-26): 13D bucket + D_apex → 5D single weights.
 # VPMPCC paper 의 search space (Table II): q_cte, q_lag, q_v, q_p (=γ), q_drate.
@@ -193,7 +196,8 @@ def run_one_sim(map_name: str, n_laps: int, wall_timeout: int, stuck_timeout: in
            f'source ~/IFAC2026_SH/install/local_setup.bash && '
            f'export CYCLONEDDS_URI=file://$HOME/cyclonedds.xml && '
            f'rm -rf /tmp/acados_codegen_evompcc* /tmp/acados_ocp_evompcc* && '
-           f'ros2 launch stack_master full_sim.launch.py mode:=mpcc map:={map_name}']
+           f'ros2 launch stack_master full_sim.launch.py mode:=mpcc map:={map_name}'
+           + (f' dyn_mu:={DYN_MU}' if DYN_MU is not None else '')]
     # stderr 를 file 로 redirect (debug 용 — startup fail 원인 파악).
     log_path = f'/tmp/bo_trial_sim.log'
     log_fh = open(log_path, 'w')
@@ -461,9 +465,16 @@ def main():
     p.add_argument('--isotropic', action='store_true',
                    help='GP kernel 을 isotropic (single lengthscale) 로. '
                         '20-trial 등 데이터 적을 때 ARD 가 noise 만 학습할 위험 ↓.')
+    p.add_argument('--dyn_mu', type=float, default=None,
+                   help='모델 그립 mu — 매 trial launch 에 dyn_mu:=<v> 전달 (예: 0.6)')
     p.add_argument('--x0', default=None,
                    help=f'warm start ({DIM} float JSON list 또는 CSV).')
     args = p.parse_args()
+
+    global DYN_MU
+    DYN_MU = args.dyn_mu
+    if DYN_MU is not None:
+        print(f'  dyn_mu: {DYN_MU} (매 trial launch 에 전달)')
 
     # map list 결정 — --maps 우선, 없으면 단일 --map.
     if args.maps:
