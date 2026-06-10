@@ -1130,11 +1130,18 @@ class MPC:
         # Dynamic: a_lat = vx · r (true lateral acceleration). Both
         # are computed in the model branch above into `a_lat_expr`.
         a_lat = a_lat_expr
+        # ---- (4) friction ellipse (2026-06-10 spec) ----
+        # (a_x/a_lim)² + (a_lat/a_lim)² ≤ 1, a_lim = μ·g·η. u[0]=a_x 는 unified
+        # 입력 레이아웃에서 양 모드 공통. 제동·가속 중 가용 a_lat 이 자동 감소
+        # (combined-slip). 고그립(μ=1.0489)에선 a_lim≈9.8 → 거의 안 물림 = 기존
+        # 동작 보존; 저그립(μ=0.6)에선 a_lim≈5.6 = 실질 한계.
+        _a_lim = max(1e-3, float(self.dyn_mu) * 9.81 * float(self.ellipse_frac))
+        h_ellipse = (u[0] / _a_lim) ** 2 + (a_lat / _a_lim) ** 2
         if self._lmpc_joint and alpha_sym is not None:
-            # B3: α simplex Σα=1 as a 5th h-row (hard eq, NOT slacked).
-            model_ac.con_h_expr = ca.vertcat(h_obs, h_corridor_top, h_corridor_bot, a_lat, ca.sum1(alpha_sym))
+            # B3: α simplex Σα=1 — 마지막 h-row (hard eq, NOT slacked).
+            model_ac.con_h_expr = ca.vertcat(h_obs, h_corridor_top, h_corridor_bot, a_lat, h_ellipse, ca.sum1(alpha_sym))
         else:
-            model_ac.con_h_expr = ca.vertcat(h_obs, h_corridor_top, h_corridor_bot, a_lat)
+            model_ac.con_h_expr = ca.vertcat(h_obs, h_corridor_top, h_corridor_bot, a_lat, h_ellipse)
 
         # ---- Compose model ----
         # B4' error-dynamics regression: add affine velocity correction to the
@@ -1317,17 +1324,18 @@ class MPC:
         #   flat region; the steer-output EMA filter further damps any wobble.
         a_lat_max = max(8.0, float(self.a_lat_safe_eff()) + 1.0)
         self._log.info(f"[MPC-acados] a_lat hard cap = {a_lat_max:.2f} (a_lat_safe={a_lat_max - 1.0:.2f} + 1.0 backstop)")
-        # h order: [h_obs, h_corridor_top, h_corridor_bot, a_lat, (Σα if joint)]
+        # h order: [h_obs, corr_top, corr_bot, a_lat, ellipse, (Σα if joint)]
+        # ellipse 행: 0 ≤ h ≤ 1 (h 는 제곱합이라 하한 0 은 자연 충족 — 무해).
         if self._lmpc_joint:
-            ocp.constraints.lh = np.array([0.0, 0.0, 0.0, -a_lat_max, 1.0])  # Σα=1 eq
-            ocp.constraints.uh = np.array([1e15, 1e15, 1e15, a_lat_max, 1.0])
+            ocp.constraints.lh = np.array([0.0, 0.0, 0.0, -a_lat_max, 0.0, 1.0])  # Σα=1 eq
+            ocp.constraints.uh = np.array([1e15, 1e15, 1e15, a_lat_max, 1.0, 1.0])
         else:
-            ocp.constraints.lh = np.array([0.0, 0.0, 0.0, -a_lat_max])
-            ocp.constraints.uh = np.array([1e15, 1e15, 1e15, a_lat_max])
-        # Slack on all four — corridor and obstacle and a_lat can be
+            ocp.constraints.lh = np.array([0.0, 0.0, 0.0, -a_lat_max, 0.0])
+            ocp.constraints.uh = np.array([1e15, 1e15, 1e15, a_lat_max, 1.0])
+        # Slack on first five — corridor, obstacle, a_lat, ellipse can be
         # transiently violated. Slack absorbs without triggering cascade.
-        ocp.constraints.idxsh = np.array([0, 1, 2, 3])
-        ns = 4
+        ocp.constraints.idxsh = np.array([0, 1, 2, 3, 4])   # ellipse(4) 포함, Σα 비slack
+        ns = 5
         ocp.constraints.lsh = np.zeros(ns)
         ocp.constraints.ush = np.zeros(ns)
         # Per-constraint slack tuning — second reduction. Quadratic Zl was
@@ -1341,12 +1349,13 @@ class MPC:
         #   idx 0 (h_obs):       zl=40,  Zl=30   (was 30/80)
         #   idx 1,2 (corridor):  zl=20,  Zl=15   (was 15/30)
         #   idx 3 (a_lat):       zl=50,  Zl=15   (was 50/30)
+        #   idx 4 (ellipse):     zl=50,  Zl=15   (a_lat 행과 동일 — spec §2)
         # (2026-06-02 corridor 6배 강화 시도 → 역효과 5.1접촉/랩: 강한 corridor
         #  push 가 반대편 클립 유발. 원복.)
-        ocp.cost.zl = np.array([40.0, 20.0, 20.0, 50.0])
-        ocp.cost.zu = np.array([40.0, 20.0, 20.0, 50.0])
-        ocp.cost.Zl = np.array([30.0, 15.0, 15.0, 15.0])
-        ocp.cost.Zu = np.array([30.0, 15.0, 15.0, 15.0])
+        ocp.cost.zl = np.array([40.0, 20.0, 20.0, 50.0, 50.0])
+        ocp.cost.zu = np.array([40.0, 20.0, 20.0, 50.0, 50.0])
+        ocp.cost.Zl = np.array([30.0, 15.0, 15.0, 15.0, 15.0])
+        ocp.cost.Zu = np.array([30.0, 15.0, 15.0, 15.0, 15.0])
 
         # ---- Initial parameter values (overridden every cycle) ----
         ocp.parameter_values = np.zeros(n_p_total)
