@@ -50,6 +50,7 @@ from rclpy.parameter import Parameter
 from rclpy.qos import QoSProfile, QoSDurabilityPolicy, QoSReliabilityPolicy
 
 from .track_loader import TrackData, build_track_from_wpnts, find_current_arc_length, load_track
+from .mpc_core.model_policy import A_MIN_DYN, clamp_a_lat_to_grip
 # 2026-05-28 #18 LMPC integration
 from .mpc_core.lmpc.lap_database import LapDatabase
 from .mpc_core.lmpc.safe_set import SafeSetLookup
@@ -536,6 +537,17 @@ class MPCNode(Node):
             raise FileNotFoundError(f"MPC weights JSON not found: {json_path}")
         with open(json_path) as f:
             return json.load(f)
+
+    def _a_lat_eff_for_track(self) -> float:
+        """track ref_v 용 a_lat — μgη clamp (BO 가 뭘 요청하든 물리 그립 상한)."""
+        eff, clamped = clamp_a_lat_to_grip(
+            float(self.get_parameter('a_lat_safe_live').value),
+            float(self.get_parameter('dyn_mu').value),
+            float(self.get_parameter('ellipse_frac').value))
+        if clamped:
+            self.get_logger().warn(
+                f"[grip] a_lat_safe_live > μgη → track ref_v 는 {eff:.2f} 로 clamp")
+        return eff
 
     def _build_param_dict(self, bo: dict) -> dict:
         """Match `getPreDefinedParas()` from the ROS1 node — keys mpc_core consumes."""
@@ -1031,7 +1043,8 @@ class MPCNode(Node):
                 inflation_factor=inflation, extend_part=extend_part,
                 default_v=float(self.get_parameter('max_speed').value),
                 corridor_half_width=corridor_half,
-                a_lat_max=float(self.get_parameter('a_lat_safe_live').value),
+                a_lat_max=self._a_lat_eff_for_track(),
+                a_long_max=abs(A_MIN_DYN),
                 corridor_v_floor=float(self.get_parameter('corridor_v_floor').value),
                 corridor_v_tight=float(self.get_parameter('corridor_v_tight_width').value),
                 corridor_v_wide=float(self.get_parameter('corridor_v_wide_width').value))

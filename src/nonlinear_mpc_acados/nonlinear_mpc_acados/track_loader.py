@@ -40,6 +40,7 @@ class TrackData:
     left_lut_x: Any
     left_lut_y: Any
     lut_ref_v: Any
+    ref_v: np.ndarray = field(default=None)  # raw speed profile (only from build_track_from_wpnts)
     center_point_angles: np.ndarray = field(default=None)
     # Raw (un-inflated, un-extended) boundary lanes for RViz viz publishers
     # /center_path /right_path /left_path. center_lane (above) is extended
@@ -182,6 +183,7 @@ def build_track_from_wpnts(wpnts, vel_scale: float = 1.0,
                            default_v: float = 5.0,
                            corridor_half_width: float = 0.0,
                            a_lat_max: float = 6.0,
+                           a_long_max: float = 3.0,
                            corridor_v_floor: float = 0.0,
                            corridor_v_tight: float = 1.0,
                            corridor_v_wide: float = 1.6) -> TrackData:
@@ -275,7 +277,10 @@ def build_track_from_wpnts(wpnts, vel_scale: float = 1.0,
     # Applied only in the raceline/raw-corridor path (use_fixed_corridor=False);
     # the fixed-corridor centerline baseline is left exactly as before.
     if n >= 4 and not use_fixed_corridor:
-        a_long = float(a_lat_max)   # longitudinal accel/brake limit (g-g proxy)
+        # 제동 정직화 (2026-06-10): a_lat_max(=7.14) g-g proxy 는 솔버 제동한계
+        # (-3.0)보다 2.4× 낙관 → 코너 진입 과속의 직접 경로였음. 솔버와 동일한
+        # 종방향 한계를 명시적으로 받는다 (mpc_node 가 |A_MIN_DYN| 전달).
+        a_long = float(a_long_max)
         ds = np.empty(n, dtype=float)
         for i in range(n):
             j = (i + 1) % n
@@ -297,8 +302,10 @@ def build_track_from_wpnts(wpnts, vel_scale: float = 1.0,
     # Fixed-width corridor already represents the mpc cap → skip inflation
     # (otherwise the boundary would be pulled inside the user-set width).
     eff_inflation = 0.0 if use_fixed_corridor else inflation_factor
-    return _build_track(center_lane, center_deriv, right_lane, left_lane, ref_v,
-                        inflation_factor=eff_inflation, extend_part=extend_part)
+    td = _build_track(center_lane, center_deriv, right_lane, left_lane, ref_v,
+                      inflation_factor=eff_inflation, extend_part=extend_part)
+    td.ref_v = ref_v.copy()  # stash raw (post-brake-profile) array for tests & diagnostics
+    return td
 
 
 def find_current_arc_length(track: TrackData, car_pos: np.ndarray,
