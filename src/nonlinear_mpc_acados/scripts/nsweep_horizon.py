@@ -52,7 +52,7 @@ try:
     for n in N_LIST:
         set_n(n)
         # force acados regen for the new horizon
-        subprocess.run('rm -rf /tmp/acados_codegen_evompcc /tmp/acados_ocp_evompcc.json',
+        subprocess.run('rm -rf /tmp/acados_codegen_evompcc* /tmp/acados_ocp_evompcc*',
                        shell=True, check=False)
         print(f'\n--- N={n} ---', flush=True)
         res = run_one_sim(MAP, N_LAPS, WALL, STUCK)

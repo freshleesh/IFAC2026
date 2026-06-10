@@ -227,9 +227,10 @@ class MPCNode(Node):
         #   'polynomial' → BO 결과로 학습된 poly(v) → bucket 별 scale (실시간 deploy)
         self.declare_parameter('override_mode', 'off')
         self.declare_parameter('poly_path', '')   # polynomial JSON 경로 (override_mode='polynomial')
-        # ── Dynamic Pacejka 모드 (8-state, tire slip 모델링) ──
-        # use_dynamic=False (kinematic, 5-state): 빠르지만 high-speed grip 한계 무시
-        # use_dynamic=True  (dynamic, 8-state):   tire slip 정확, 표준 race MPC
+        # ── 모델 선택 (2026-06-10 unified 8-state layout — 양 모드 동일 구조) ──
+        # use_dynamic=False (kinematic f_kin, 8-state): tire slip 미모델 (고그립 차용)
+        # use_dynamic=True  (dynamic blended Pacejka, 8-state): tire slip 정확 (저그립 차용)
+        # 둘 다 [x,y,ψ,vx,vy,r,s,δ_prev] + u=[a_x,δ,p_v] → LMPC/BO/GP/B4' 모두 동일 동작
         # dyn_tire_model: 'linear' (안전·빠름) / 'tanh' (saturation) / 'pacejka' (정확·불안정 가능)
         self.declare_parameter('use_dynamic', False)
         self.declare_parameter('dyn_tire_model', 'linear')
@@ -692,7 +693,7 @@ class MPCNode(Node):
                 import traceback
                 self.get_logger().warn(f"[LMPC] raceline seed failed: {e}\n{traceback.format_exc()}")
 
-    def _lmpc_update_per_cycle(self, x0: np.ndarray, s_now: float, is_dyn: bool) -> None:
+    def _lmpc_update_per_cycle(self, x0: np.ndarray, s_now: float) -> None:
         """Every control cycle: (a) accumulate state into lap buffer, (b) SS query → set mpc attrs."""
         # Cleared each cycle; set only when a state is buffered for this cycle. The
         # post-solve lockstep append consumes it, so a raise / early-return / failed
@@ -711,19 +712,11 @@ class MPCNode(Node):
             self._lmpc_lap_buf['stuck_seconds_accum'] += float(self.get_parameter('dT').value)
 
         # (a) Accumulate this cycle's 8-state x0 (extended) + estimate e_c.
-        # x0 from _current_state_4 is (4 or 7)-dim — we need 8-state for LapDatabase
-        # (px, py, ψ, vx, vy, r, s, δ_prev). For accumulation we approximate
-        # missing dims with the previous best estimate from solver.
-        if is_dyn and x0.shape[0] >= 7:
-            state8 = np.zeros(8)
-            state8[0:7] = x0[0:7]
-            state8[7] = float(getattr(self.mpc, '_v_cmd_for_stuck', 0.0))   # δ_prev proxy
-        else:
-            # kinematic fallback — vy, r, s, δ_prev fill with 0
-            state8 = np.zeros(8)
-            state8[0] = float(x0[0]); state8[1] = float(x0[1])
-            state8[2] = float(x0[2])
-            state8[6] = float(s_now)
+        # x0 from _current_state_4 is 7-dim [x,y,ψ,vx,vy,r,s] (unified layout,
+        # both modes) — we need 8-state for LapDatabase (… + δ_prev).
+        state8 = np.zeros(8)
+        state8[0:7] = x0[0:7]
+        state8[7] = float(getattr(self.mpc, '_v_cmd_for_stuck', 0.0))   # δ_prev proxy
         # Defer the state/time append to the post-solve lockstep block (see the
         # input append in the control loop). Appending here pre-solve meant a
         # solve exception left a state with no paired input → every later
@@ -1080,12 +1073,29 @@ class MPCNode(Node):
         # LM regularization (read before setup_MPC so codegen picks it up).
         self.mpc.lm_dynamic = float(self.get_parameter('lm_dynamic').value)
         self.mpc.dyn_use_pacejka = (self.mpc.dyn_tire_model == 'pacejka')
+        # 2026-06-10 unified layout: kinematic mode builds the SAME 8-state
+        # layout (slot 3 = vx in both modes) → LMPC is allowed for both.
+        # effective_lmpc() stays the single policy point (re-gates if a future
+        # model layout diverges).
+        from .mpc_core.model_policy import effective_lmpc
+        _req_lmpc = bool(self.get_parameter('use_lmpc').value)
+        _eff_lmpc = effective_lmpc(self.mpc.use_dynamic, _req_lmpc)
+        if _req_lmpc and not _eff_lmpc:
+            self.get_logger().warn(
+                "[LMPC] use_lmpc=true but effective_lmpc() gated it OFF "
+                "(model layout incompatible with safe-set packing).")
+        # Reconcile the runtime LMPC bookkeeping gate too: _lmpc_use was set from
+        # the raw param in __init__ (before use_dynamic was known). Without this,
+        # kinematic mode would still record laps / run the SS query (slot 3 = s
+        # packed as vx) and poison the LapDatabase. _lmpc_use gates the per-cycle
+        # update (→ empty buffer → lap-end no-ops) and the query-state stash.
+        self._lmpc_use = _eff_lmpc
         # LMPC codegen flag (Step 4): when LMPC active, drop the terminal contour/yaw
         # W_e emphasis so the joint-α apex target — not centerline tracking — sets x_N.
-        self.mpc._lmpc_codegen = bool(self.get_parameter('use_lmpc').value)
+        self.mpc._lmpc_codegen = _eff_lmpc
         # Phase B3: joint-α LMPC (α as state + convex-α terminal). Tie activation
         # to use_lmpc so the OCP is built with the augmented state (nx=8+K).
-        self.mpc._lmpc_joint = bool(self.get_parameter('use_lmpc').value)
+        self.mpc._lmpc_joint = _eff_lmpc
         # R3: decouple max_speed — set progress target / κ-lookahead independently
         # of the hard cap BEFORE setup_MPC (codegen-time). 0 → derive from v_max.
         _st = float(self.get_parameter('speed_target').value)
@@ -1098,7 +1108,7 @@ class MPCNode(Node):
         # B4' error regression. Coupled to use_lmpc (it reuses the SS-neighbour
         # query). With use_lmpc off -> _err_regr off -> pure baseline f_expl.
         _use_err = bool(self.get_parameter('use_error_regression').value)
-        self.mpc._err_regr = _use_err and bool(self.get_parameter('use_lmpc').value)
+        self.mpc._err_regr = _use_err and _eff_lmpc
         if _use_err and self.mpc.use_gp_casadi:
             # e_corr and GP residual BOTH add to f_expl velocity rows -> double
             # correction. They are alternatives (B4' supersedes the GP residual).
@@ -1110,7 +1120,7 @@ class MPCNode(Node):
         # 명확하게 다시 announce.
         self.get_logger().info(
             f"[mpc] ACTUAL MODEL FOR CODEGEN = "
-            f"{'DYNAMIC 8-state, tire=' + self.mpc.dyn_tire_model if self.mpc.use_dynamic else 'KINEMATIC 5-state'}")
+            f"{'DYNAMIC 8-state, tire=' + self.mpc.dyn_tire_model if self.mpc.use_dynamic else 'KINEMATIC-UNIFIED 8-state (f_kin)'}")
 
         self.get_logger().info("calling mpc.setup_MPC() — first run codegens acados (~30s)…")
 
@@ -1122,8 +1132,8 @@ class MPCNode(Node):
         actual_dyn = bool(self.mpc.use_dynamic)
         if actual_n_states == 8 and actual_dyn:
             kind = "DYNAMIC ✓ (8-state Pacejka)"
-        elif actual_n_states == 5 and not actual_dyn:
-            kind = "KINEMATIC ✓ (5-state bicycle)"
+        elif actual_n_states == 8 and not actual_dyn:
+            kind = "KINEMATIC ✓ (8-state unified f_kin)"
         else:
             kind = f"UNEXPECTED (n_states={actual_n_states}, use_dynamic={actual_dyn})"
         self.get_logger().info(
@@ -1308,10 +1318,10 @@ class MPCNode(Node):
     # Control loop @ 40 Hz
     # ─────────────────────────────────────────────────────────────────
     def _current_state_4(self) -> np.ndarray | None:
-        """Assemble state for MPC solver. Length depends on use_dynamic:
-          kinematic: [x, y, psi, s]                    (4-dim, solver appends δ_prev → 5)
-          dynamic:   [x, y, psi, vx, vy, r, s]         (7-dim, solver appends δ_prev → 8)
-        Returns None if not ready."""
+        """Assemble state for MPC solver. 2026-06-10 unified 8-state layout:
+        ALWAYS [x, y, psi, vx, vy, r, s] (7-dim, solver appends δ_prev → 8),
+        in both kinematic and dynamic modes. vx/vy/r fall back to 0 when odom
+        is missing. Returns None if not ready."""
         if self._last_pose is None and self._last_odom is None:
             return None
         if self._last_pose is not None:
@@ -1327,15 +1337,15 @@ class MPCNode(Node):
         if self._track is not None:
             s, _ = find_current_arc_length(self._track, np.array([p.x, p.y]))
 
-        # dynamic 모드는 vx/vy/r 도 필요. odom 의 twist 에서 추출 (body frame).
-        use_dyn = bool(self.get_parameter('use_dynamic').value) if self.has_parameter('use_dynamic') else False
-        if use_dyn and self._last_odom is not None:
+        # unified 8-state: vx/vy/r 도 필요 (양 모드). odom 의 twist 에서
+        # 추출 (body frame). odom 없으면 0 폴백 (startup 직후 한정).
+        vx = vy = r = 0.0
+        if self._last_odom is not None:
             tw = self._last_odom.twist.twist
             vx = float(tw.linear.x)
             vy = float(tw.linear.y)
             r  = float(tw.angular.z)
-            return np.array([p.x, p.y, psi, vx, vy, r, s], dtype=float)
-        return np.array([p.x, p.y, psi, s], dtype=float)
+        return np.array([p.x, p.y, psi, vx, vy, r, s], dtype=float)
 
     def _load_ml_scaler(self) -> None:
         """C: TorchScript WeightScaleMLP 로드. mpc_node init 시 1회 호출.
@@ -1599,15 +1609,13 @@ class MPCNode(Node):
         x0 = self._current_state_4()
         if x0 is None:
             return
-        # s position differs by mode: kinematic 4-dim state [x,y,ψ,s] → s=x0[3].
-        #                              dynamic   7-dim state [x,y,ψ,vx,vy,r,s] → s=x0[6].
-        is_dyn = bool(self.get_parameter('use_dynamic').value) if self.has_parameter('use_dynamic') else False
-        s_now = float(x0[6] if is_dyn else x0[3])
+        # unified 7-dim state [x,y,ψ,vx,vy,r,s] (both modes) → s = x0[6].
+        s_now = float(x0[6])
         # B: κ-aware online weight adaptation (auto_tune=true 시 활성)
         self._adaptive_weight_update(s_now)
         # 2026-05-28 #18 LMPC: 매 cycle SS query → set mpc._lmpc_* attrs
         try:
-            self._lmpc_update_per_cycle(x0, s_now, is_dyn)
+            self._lmpc_update_per_cycle(x0, s_now)
         except Exception as _e:
             self.get_logger().warn(f"[LMPC] cycle update skipped: {_e}",
                                     throttle_duration_sec=2.0)
@@ -1618,12 +1626,13 @@ class MPCNode(Node):
         # solver 가 멈춘 걸 못 봐 탈출 못 함(s≈19 영구 wedge) + floor on/off 토글로
         # 입력 비일관(chatter). → `_has_moved`(차가 한 번이라도 실제로 움직였나, mpc
         # 의 stuck-detector latch)로 게이트: 출발 전(true standstill)만 floor, 그 후엔
-        # solver 가 진짜 속도를 봄. (검증 대기 — API 복구 후 build+sim.)
+        # solver 가 진짜 속도를 봄. unified layout: 양 모드 적용 (f_kin 은
+        # ill-conditioning 은 없지만 동일 거동 유지가 원칙).
         vx_floor = float(self.get_parameter('cold_start_vx_floor').value) \
             if self.has_parameter('cold_start_vx_floor') else 0.0
-        raw_vx = float(x0[3]) if (is_dyn and len(x0) > 3) else None
+        raw_vx = float(x0[3])
         x0_solve = x0
-        if (is_dyn and vx_floor > 0.0 and raw_vx is not None and raw_vx < vx_floor
+        if (vx_floor > 0.0 and raw_vx < vx_floor
                 and not getattr(self.mpc, '_has_moved', False)):
             x0_solve = x0.copy()
             x0_solve[3] = vx_floor
@@ -1705,12 +1714,10 @@ class MPCNode(Node):
         cmd = AckermannDriveStamped()
         cmd.header.stamp = self.get_clock().now().to_msg()
         cmd.header.frame_id = 'base_link'
-        # u_seq[0,0] 의 의미가 모드별로 다름:
-        #   kinematic: u[0] = v (속도, 직접 사용)
-        #   dynamic:   u[0] = a_x (가속도) — drive.speed 로 보내면 안 됨!
-        #              대신 traj[1, 3] = 예측된 다음-step vx 사용.
-        if is_dyn and traj is not None and traj.shape[0] > 1:
-            # dynamic: gym 의 PID 가 추종할 target vx.
+        # 2026-06-10 unified layout: u[0] = a_x in BOTH modes — drive.speed 로
+        # 보내면 안 됨! 대신 traj 의 예측 vx (state[3]) 사용.
+        if traj is not None and traj.shape[0] > 1:
+            # gym 의 PID 가 추종할 target vx (both modes).
             #
             # Agent R-round2 Fix 1: v_now + floor 를 solver v_max cap 안에 강제.
             # 이전 R1 (v_now + 1.0 무제한) 가 v=9.62 over-shoot → 첫 코너 진입에
@@ -1785,41 +1792,22 @@ class MPCNode(Node):
                     v_plan = max(v_plan, min(v_cap, v_now + 0.5))
                 cmd.drive.speed = max(0.0, min(v_cap, v_plan))
         else:
-            cmd.drive.speed = float(con_first[0])
+            # traj missing (defensive — solve() always returns one). u[0] is a_x
+            # in the unified layout, NOT a speed: never forward it as drive.speed.
+            cmd.drive.speed = 0.0
         cmd.drive.steering_angle = float(con_first[1])
-
-        # ── Unified stuck-recovery escalation (mode-agnostic) ──
-        # 2026-06-02 root-cause fix: the /initialpose teleport-escape lived ONLY
-        # inside the `if is_dyn:` branch above. In KINEMATIC mode the MPC core
-        # emits the reverse cmd (con_first[0] = -0.5) but NOTHING escalated to a
-        # teleport reset, so once the car touched a wall gym's in_collision latch
-        # froze integration forever (v_est=0 permanently, feas=Y) and every run
-        # died at the first wall contact (e.g. final s≈29). Manual /sim/initialpose
-        # was verified to clear the latch — so here we fire it automatically in
-        # kinematic mode too (the dynamic branch already does its own).
-        if (not is_dyn) and getattr(self.mpc, '_stuck_release_active', False):
-            self._stuck_release_total += 1
-            cmd.drive.steering_angle = self._recovery_steer(x0)
-            if (time.monotonic() - self._last_reset_t) > 1.0:
-                if bool(self.get_parameter('enable_sim_reset').value):
-                    self._publish_safe_reset(x0)
-                else:
-                    self.get_logger().warn(
-                        "[real] STUCK detected but enable_sim_reset=false — "
-                        "reverse cmd only (수동 e-stop 권장)",
-                        throttle_duration_sec=2.0)
-                self._last_reset_t = time.monotonic()
-                self._stuck_release_total = 0
+        # (2026-06-10 unified layout: the old kinematic-only stuck-escalation
+        # block was removed — the traj-based branch above, incl. its teleport
+        # escalation, now serves BOTH modes.)
 
         # ── Cold-start output speed floor (replaces old 3s PP warmup ramp) ──
         # 실측 vx 가 floor 미만이면 forward push 보장 (차가 가속해 floor 넘김).
         # 단 steering 은 t=0 부터 SOLVER (filtered) 출력 사용 → PP handoff 없이
         # MPCC 가 처음부터 조향. 위 vx-floor 덕에 정지에서도 solver 출력 정상.
-        # stuck-release(후진) 중이면 floor 적용 안 함.
+        # stuck-release(후진) 중이면 floor 적용 안 함. unified: 양 모드.
         startup_speed = float(self.get_parameter('startup_speed').value) \
             if self.has_parameter('startup_speed') else 0.0
-        if (is_dyn and vx_floor > 0.0 and raw_vx is not None
-                and raw_vx < vx_floor
+        if (vx_floor > 0.0 and raw_vx < vx_floor
                 and not getattr(self.mpc, '_stuck_release_active', False)):
             cmd.drive.speed = max(float(cmd.drive.speed), startup_speed)
 
@@ -1931,7 +1919,7 @@ class MPCNode(Node):
                 pass
         dbg = Float32MultiArray()
         dbg.data = [
-            float(con_first[0]),       # 0  v_cmd
+            float(con_first[0]),       # 0  a_x cmd (unified u[0]; was v_cmd pre-2026-06-10)
             float(con_first[1]),       # 1  steer_cmd
             v_actual,                  # 2  v_actual
             float(x0[0]),              # 3  car_x

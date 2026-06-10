@@ -27,6 +27,28 @@ from ._ros_compat import NullLogger, monotonic_now, yaw_to_quat
 from acados_template import AcadosOcp, AcadosOcpSolver, AcadosModel
 
 
+def codegen_paths(use_dynamic, lmpc_joint, nx_solver):
+    """Return (export_dir, json_path) keyed to the OCP structure.
+
+    Switching kinematic<->dynamic (2026-06-10 unified layout: BOTH nx=8 — the
+    dyn/kin tag alone separates f_kin vs blended-Pacejka codegens) or toggling
+    LMPC joint-α (nx 8<->18) changes the generated solver. A FIXED export dir
+    made acados re-use the previous codegen and silently run the WRONG model —
+    the recurring "stale codegen" trap. Keying the dir/json to (model, nx, lmpc)
+    makes that axis safe (and same config warm-reuses its build instead of
+    regenerating). Tags: dyn8 / kin8 / dyn18_lmpc / kin18_lmpc.
+
+    NOTE: only the model/nx/lmpc axis is keyed. Other codegen-time knobs —
+    N_horizon, dT, speed_target, lookahead_m, baked cost weights — are NOT in
+    the tag, so changing only those reuses the same dir. Callers that vary them
+    (BO/sweep harnesses) must still `rm -rf /tmp/acados_codegen_evompcc*`
+    between runs to force regeneration.
+    """
+    tag = f"{'dyn' if use_dynamic else 'kin'}{int(nx_solver)}{'_lmpc' if lmpc_joint else ''}"
+    return (f"/tmp/acados_codegen_evompcc_{tag}",
+            f"/tmp/acados_ocp_evompcc_{tag}.json")
+
+
 class MPC:
     """acados backend mirroring the IPOPT EVO-MPCC interface."""
 
@@ -379,7 +401,8 @@ class MPC:
                           "n_controls=3, LM=1.0, RTI 1-iter)",
                           self.dyn_tire_model)
         else:
-            self._log.info("[MPC-acados] MODEL = KINEMATIC (n_states=5, n_controls=3, LM=0.2)")
+            self._log.info("[MPC-acados] MODEL = KINEMATIC-UNIFIED 8-state (f_kin, "
+                          "n_states=8, n_controls=3 [a_x, δ, p_v], LM=0.2)")
         s_grid_ext = list(s_grid) + [L]
         abs_k_ext  = abs_k_fwd.tolist() + [abs_k_fwd[0]]
         self.abs_kappa_lut = ca.interpolant(
@@ -549,8 +572,16 @@ class MPC:
 
         # Smooth blend: w_std rises from 0 to 1 across vx ∈ [v_b−v_s, v_b+v_s]
         # (sim: w_std = 0.5·(1 + tanh((vx − v_b)/v_s)))
-        w_std  = 0.5 * (1.0 + ca.tanh((vx - self.dyn_v_b) / self.dyn_v_s))
-        f_expl = w_std * f_dyn + (1.0 - w_std) * f_kin
+        # 2026-06-10 unified layout: KINEMATIC mode = this same 8-state model
+        # with f_expl = f_kin at ALL speeds (w_std ≡ 0). Only the vehicle
+        # model changes between modes — state/input layout, costs, bounds,
+        # LMPC, GP/B4' residual hooks and BO search space stay IDENTICAL.
+        if self.use_dynamic:
+            w_std  = 0.5 * (1.0 + ca.tanh((vx - self.dyn_v_b) / self.dyn_v_s))
+            f_expl = w_std * f_dyn + (1.0 - w_std) * f_kin
+        else:
+            w_std  = ca.SX(0.0)
+            f_expl = f_kin   # pure kinematic single-track, 8-state
 
         # Real lateral acceleration (replaces v² tan(δ)/L kinematic form).
         a_lat_expr = vx * r_yaw
@@ -599,125 +630,92 @@ class MPC:
         # ([+0.22, +0.08, +0.22, +0.08, ...] alternating) that satisfy
         # the same average heading change with similar |δ|² total but
         # produce a visibly wavy prediction line.
-        # ── Branch on use_dynamic ────────────────────────────────────────
-        # Dynamic mode: 8 states [x, y, ψ, vx, vy, r, s, δ_prev], 3 inputs
-        #               [a_x, δ, p_v]. Pacejka tire forces with hybrid
-        #               kinematic blend at low vx.
-        # Kinematic mode (default): 5 states [x, y, ψ, s, δ_prev], 3 inputs
-        #               [v, δ, p_v]. Standard kinematic bicycle.
-        # `vx_for_cost` is the longitudinal-velocity symbol used by cost
-        # residuals (vx state in dynamic, v input in kinematic). Same for
-        # `a_lat_expr` (h-constraint) — vx·r vs v² tan(δ)/L.
-        if self.use_dynamic:
-            dyn = self._build_dynamic_model()
-            u          = dyn['u']
-            # B3: joint-α swaps in the augmented state x_aug=[x(8),α(K)].
-            if self._lmpc_joint:
-                x        = dyn['x_aug']
-                f_expl   = dyn['f_aug']
-                xdot     = dyn['xdot_aug']
-                alpha_sym = dyn['alpha_aug']
-                K_aug    = dyn['K_aug']
-                nx       = 8 + K_aug
-            else:
-                x        = dyn['x']
-                f_expl   = dyn['f_expl']
-                xdot     = dyn['xdot']
-                alpha_sym = None
-                nx       = 8
-            x_         = dyn['x_pos']
-            y_         = dyn['y_pos']
-            psi        = dyn['psi']
-            s          = dyn['s']
-            delta_prev = dyn['delta_prev']
-            delta      = dyn['delta']
-            p_v        = dyn['p_v']
-            vx_for_cost  = dyn['vx']
-            a_lat_expr   = dyn['a_lat_expr']
-            v_input_sym  = None              # no v input in dynamic
-            a_x_input    = dyn['a_x']
-            nu = 3
-            # ── Phase D (closed-form CasADi GP residual) ──────────────────
-            # Adds the offline-trained sparse-GP posterior MEAN (as a pure
-            # CasADi expression) to the dynamics ONLY. Independent of the
-            # l4acados `use_gp_residual` path (which rebuilds the OCP). The
-            # cost / W / p_sym are left UNTOUCHED — the GP is mapped through
-            # B_d to the velocity-state rows [vx, vy, r] = indices 3,4,5 of
-            # the 8-state vector [x, y, psi, vx, vy, r, s, delta_prev].
-            # Default OFF (self.use_gp_casadi); guarded so any failure falls
-            # back to the plain dynamic f_expl.
-            if getattr(self, 'use_gp_casadi', False) and getattr(self, '_err_regr', False):
-                self._log.warn(
-                    "[MPC-acados] use_gp_casadi AND _err_regr both set — skipping "
-                    "GP residual (e_corr error-regression takes precedence; both add "
-                    "to f_expl velocity rows = double correction).")
-            if getattr(self, 'use_gp_casadi', False) and not getattr(self, '_err_regr', False):
-                try:
-                    from .gp_casadi_residual import (
-                        load_gp_casadi_params, build_casadi_residual,
-                    )
-                    gp_ckpt = os.path.expanduser(
-                        getattr(self, 'gp_casadi_ckpt',
-                                '~/bo_results/gp_residual_realvy.pt'))
-                    gp_train = os.path.expanduser(
-                        getattr(self, 'gp_casadi_train_data',
-                                '~/bo_results/gp_train_data_realvy.pt'))
-                    gp_p = load_gp_casadi_params(gp_ckpt, gp_train)
-                    # SAME symbols already in scope (dynamic-model build).
-                    gp_z = ca.vertcat(dyn['vx'], dyn['vy'], dyn['r'],
-                                      dyn['delta'], dyn['a_x'])
-                    mu = build_casadi_residual(gp_z, gp_p)
-                    # B_d: 3 GP outputs -> state rows vx(3), vy(4), r(5).
-                    # Pad residual to f_expl width: 8 (plain) or 18 (joint-α
-                    # LMPC appends 10 α-states AFTER the 8 physical, so rows
-                    # 3/4/5 = vx/vy/r in both; α rows get 0 residual).
-                    _nx_full = f_expl.shape[0]
-                    f_expl = f_expl + ca.vertcat(
-                        0, 0, 0, mu[0], mu[1], mu[2], *([0] * (_nx_full - 6)))
-                    self._log.info(
-                        "[MPC-acados] Phase D CasADi-GP residual ACTIVE "
-                        "(M=%d inducing, ckpt=%s) — added to f_expl rows "
-                        "[vx,vy,r]", gp_p.M, gp_ckpt)
-                except Exception as _gp_e:
-                    self._log.warn(
-                        "[MPC-acados] Phase D CasADi-GP residual FAILED "
-                        "(%s) — falling back to plain dynamic f_expl", _gp_e)
+        # ── Unified 8-state layout (2026-06-10) ─────────────────────────
+        # BOTH modes: 8 states [x, y, ψ, vx, vy, r, s, δ_prev], 3 inputs
+        # [a_x, δ, p_v]. Only the vehicle model (f_expl) differs:
+        #   dynamic   : Pacejka/tanh tire forces, kinematic blend at low vx
+        #   kinematic : pure kinematic single-track (f_kin, no tire forces)
+        # Everything downstream — costs (incl. vterm + q_dv), bounds, LMPC
+        # safe-set (slot 3 = vx), joint-α, GP/B4' residual rows [3,4,5],
+        # warm-start, BO 9D search space — is shared with NO model branch.
+        dyn = self._build_dynamic_model()
+        u          = dyn['u']
+        # B3: joint-α swaps in the augmented state x_aug=[x(8),α(K)].
+        if self._lmpc_joint:
+            x        = dyn['x_aug']
+            f_expl   = dyn['f_aug']
+            xdot     = dyn['xdot_aug']
+            alpha_sym = dyn['alpha_aug']
+            K_aug    = dyn['K_aug']
+            nx       = 8 + K_aug
         else:
-            x_   = ca.SX.sym('x_')
-            y_   = ca.SX.sym('y_')
-            psi  = ca.SX.sym('psi')
-            s    = ca.SX.sym('s')
-            delta_prev = ca.SX.sym('delta_prev')
-            x = ca.vertcat(x_, y_, psi, s, delta_prev)
-            nx = x.size1()
-
-            # ---- Direct controls: v, delta, p (path velocity) ----
-            v     = ca.SX.sym('v')
-            delta = ca.SX.sym('delta')
-            p_v   = ca.SX.sym('p_v')
-            u = ca.vertcat(v, delta, p_v)
-            nu = u.size1()
-
-            xdot = ca.SX.sym('xdot', nx)
-
-            # ---- Kinematic bicycle (+ delta_prev tracker) ----
-            f_expl = ca.vertcat(
-                v * ca.cos(psi),
-                v * ca.sin(psi),
-                (v / self.L) * ca.tan(delta),
-                p_v,
-                (delta - delta_prev) / self.dT,   # δ_prev_dot tracks current δ
-            )
-            vx_for_cost  = v
-            a_lat_expr   = v * v * ca.tan(delta) / self.L
-            v_input_sym  = v
-            # kinematic: a_x 자체가 입력 아님 (v 가 직접 입력). longitudinal
-            # smoothness 는 dynamic 에서만. 0 으로 두면 q_dv 잔재 영향 없음.
-            a_x_input    = ca.SX(0.0)
+            x        = dyn['x']
+            f_expl   = dyn['f_expl']
+            xdot     = dyn['xdot']
+            alpha_sym = None
+            nx       = 8
+        x_         = dyn['x_pos']
+        y_         = dyn['y_pos']
+        psi        = dyn['psi']
+        s          = dyn['s']
+        delta_prev = dyn['delta_prev']
+        delta      = dyn['delta']
+        p_v        = dyn['p_v']
+        vx_for_cost  = dyn['vx']
+        a_lat_expr   = dyn['a_lat_expr']
+        a_x_input    = dyn['a_x']
+        nu = 3
+        # ── Phase D (closed-form CasADi GP residual) ──────────────────
+        # Adds the offline-trained sparse-GP posterior MEAN (as a pure
+        # CasADi expression) to the dynamics ONLY. Independent of the
+        # l4acados `use_gp_residual` path (which rebuilds the OCP). The
+        # cost / W / p_sym are left UNTOUCHED — the GP is mapped through
+        # B_d to the velocity-state rows [vx, vy, r] = indices 3,4,5 of
+        # the 8-state vector [x, y, psi, vx, vy, r, s, delta_prev].
+        # Works for BOTH models (unified layout) — train the GP per-model
+        # (kinematic GP learns kinematic-model residuals).
+        # Default OFF (self.use_gp_casadi); guarded so any failure falls
+        # back to the plain f_expl.
+        if getattr(self, 'use_gp_casadi', False) and getattr(self, '_err_regr', False):
+            self._log.warn(
+                "[MPC-acados] use_gp_casadi AND _err_regr both set — skipping "
+                "GP residual (e_corr error-regression takes precedence; both add "
+                "to f_expl velocity rows = double correction).")
+        if getattr(self, 'use_gp_casadi', False) and not getattr(self, '_err_regr', False):
+            try:
+                from .gp_casadi_residual import (
+                    load_gp_casadi_params, build_casadi_residual,
+                )
+                gp_ckpt = os.path.expanduser(
+                    getattr(self, 'gp_casadi_ckpt',
+                            '~/bo_results/gp_residual_realvy.pt'))
+                gp_train = os.path.expanduser(
+                    getattr(self, 'gp_casadi_train_data',
+                            '~/bo_results/gp_train_data_realvy.pt'))
+                gp_p = load_gp_casadi_params(gp_ckpt, gp_train)
+                # SAME symbols already in scope (unified-model build).
+                gp_z = ca.vertcat(dyn['vx'], dyn['vy'], dyn['r'],
+                                  dyn['delta'], dyn['a_x'])
+                mu = build_casadi_residual(gp_z, gp_p)
+                # B_d: 3 GP outputs -> state rows vx(3), vy(4), r(5).
+                # Pad residual to f_expl width: 8 (plain) or 18 (joint-α
+                # LMPC appends 10 α-states AFTER the 8 physical, so rows
+                # 3/4/5 = vx/vy/r in both; α rows get 0 residual).
+                _nx_full = f_expl.shape[0]
+                f_expl = f_expl + ca.vertcat(
+                    0, 0, 0, mu[0], mu[1], mu[2], *([0] * (_nx_full - 6)))
+                self._log.info(
+                    "[MPC-acados] Phase D CasADi-GP residual ACTIVE "
+                    "(M=%d inducing, ckpt=%s) — added to f_expl rows "
+                    "[vx,vy,r]", gp_p.M, gp_ckpt)
+            except Exception as _gp_e:
+                self._log.warn(
+                    "[MPC-acados] Phase D CasADi-GP residual FAILED "
+                    "(%s) — falling back to plain f_expl", _gp_e)
         # B3: split physical state dim (ROS interface) from solver state dim.
         # joint-α: solver carries nx=8+K but the ROS-facing physical state is 8.
         self._nx_solver = nx
-        self.n_states   = 8 if (self.use_dynamic and self._lmpc_joint) else nx
+        self.n_states   = 8
         self.n_controls = nu
 
         # ---- Per-cycle parameters (constant across all stages) ----
@@ -996,10 +994,9 @@ class MPC:
         W_lmpc_diag = ca.diag(ca.SX([1.0, 1.0, 1.5, 0.3]))   # px, py, ψ, vx
         # x_N 의 해당 4 dim: state = [x, y, psi, vx, vy, r, s, delta_prev]
         # 변수명은 우리 acados 스코프 기준 (x_, y_, psi, vx_for_cost).
-        # 2026-06-02 fix: kinematic 서 vx_for_cost = v (control). terminal cost 는
-        # control 의존 금지(acados) → kinematic 은 vx 슬롯을 상수 0 으로(lmpc anchor 의
-        # vx 항 제거; lmpc 는 dynamic 전용이라 무해). dynamic 은 vx(state) 그대로.
-        x_N_4 = ca.vertcat(x_, y_, psi, (vx_for_cost if self.use_dynamic else ca.SX(0.0)))
+        # 2026-06-10 unified layout: kinematic 도 8-state (vx = state[3]) →
+        # terminal cost 에 vx 사용 가능. 양 모드 동일.
+        x_N_4 = ca.vertcat(x_, y_, psi, vx_for_cost)
         # ── min-time terminal: proximity-weighted cost-to-go (NLS-compatible) ──
         # 2026-05-30: the single nearest-point attractor (ss[:,0], CONSTANT
         # Q_best) only TRACKED the nearest stored state (its corner speed
@@ -1027,11 +1024,11 @@ class MPC:
             cog + (lmpc_alpha_p + lmpc_reg_w_p) * d2_best + 1e-6
         )
 
-        if self.use_dynamic:
-            # analytic terminal cost-to-go: land horizon-end vx on the global optimal
-            # speed profile ref_v_expr(s_N). Removes N-dependency (brakes for corners
-            # beyond the horizon). Reuses BO-tunable q_v scale; baked terminal emphasis x3.
-            vterm_res = sqrt_q_v_scale * (vx_for_cost - ref_v_expr)
+        # analytic terminal cost-to-go: land horizon-end vx on the global optimal
+        # speed profile ref_v_expr(s_N). Removes N-dependency (brakes for corners
+        # beyond the horizon). Reuses BO-tunable q_v scale; baked terminal emphasis x3.
+        # 2026-06-10 unified layout: vx is a state in BOTH modes → vterm everywhere.
+        vterm_res = sqrt_q_v_scale * (vx_for_cost - ref_v_expr)
         if self._lmpc_joint and alpha_sym is not None:
             # ── B3 Step 2: convex-α terminal (Racing-LMPC racing_mpc.cpp:479-504) ──
             # x_N soft-anchored to the SS convex hull Σαⱼ·SSⱼ, and the cost-to-go
@@ -1044,16 +1041,10 @@ class MPC:
             _wanc = ca.sqrt(ca.SX([20.0, 20.0, 2.0, 2.0]))        # per-state hull-slack weight
             _anc  = _wl * (_wanc * (x_N_4 - _ssa))                # 4 soft-anchor residuals
             _cog  = _wl * ca.dot(lmpc_ss_Q, alpha_sym)            # cost-to-go (linear in ψ_e)
-            if self.use_dynamic:
-                y_expr_e = ca.vertcat(e_c, e_l, yaw_err, vterm_res,
-                                      _anc[0], _anc[1], _anc[2], _anc[3], _cog)
-            else:
-                y_expr_e = ca.vertcat(e_c, e_l, yaw_err,
-                                      _anc[0], _anc[1], _anc[2], _anc[3], _cog)
-        elif self.use_dynamic:
-            y_expr_e = ca.vertcat(e_c, e_l, yaw_err, vterm_res, lmpc_residual)
+            y_expr_e = ca.vertcat(e_c, e_l, yaw_err, vterm_res,
+                                  _anc[0], _anc[1], _anc[2], _anc[3], _cog)
         else:
-            y_expr_e = ca.vertcat(e_c, e_l, yaw_err, lmpc_residual)
+            y_expr_e = ca.vertcat(e_c, e_l, yaw_err, vterm_res, lmpc_residual)
 
         # ---- Constraints (h) — minimal set for stable SQP_RTI ----
         # 1) obstacle half-plane (replaces 2026-05-06 the non-convex annulus
@@ -1124,7 +1115,7 @@ class MPC:
         # blended dynamic f_expl. nx-wide via explicit rows [3,4,5]=[vx,vy,r] so
         # it composes with joint-α (nx=18) and plain (nx=8) alike. Gated: when
         # _err_regr is False the slots stay 0 → exact baseline f_expl.
-        if self._err_regr and self.use_dynamic:
+        if self._err_regr:
             f_expl = f_expl + ca.vertcat(
                 ca.SX.zeros(3), e_corr_sym[0], e_corr_sym[1], e_corr_sym[2],
                 ca.SX.zeros(f_expl.shape[0] - 6))
@@ -1179,12 +1170,9 @@ class MPC:
                                 # 이전엔 self.q_dv = 15 만 정의되고 cost 연결
                                 # 안 됨 → 9th residual 로 연결.
         ny   = 9   # 9 residuals (cte, lag, psi, v, dd, p, side, drate, dv)
-        # terminal: dynamic adds vx cost-to-go residual before lmpc_residual.
-        # B3 joint: lmpc_residual(1) → anchor(4)+cog(1) = +4.
-        if self._lmpc_joint:
-            ny_e = 9 if self.use_dynamic else 8
-        else:
-            ny_e = 5 if self.use_dynamic else 4
+        # terminal: vx cost-to-go residual (vterm) before lmpc_residual — BOTH modes
+        # (2026-06-10 unified layout). B3 joint: lmpc_residual(1) → anchor(4)+cog(1) = +4.
+        ny_e = 9 if self._lmpc_joint else 5
         # ---- Cost: CONVEX_OVER_NONLINEAR (Phase B0, 2026-06-04) ----
         # Migrated from NONLINEAR_LS. With ψ(r) = ½·rᵀWr and r = y_expr this
         # reproduces the LS cost EXACTLY (same Gauss-Newton Hessian), but the
@@ -1193,20 +1181,16 @@ class MPC:
         W_mat = np.diag([q_cte_def, q_lag_def, q_psi_def,
                          q_v_def, q_dd_def, q_p_def, q_side_def,
                          q_d_rate_def, q_dv_def])
-        # W_e: dynamic mode inserts vx terminal cost-to-go (q_v_def*3) before the
-        # LMPC residual (last entry 1.0, since residual already carries sqrt(lmpc_w)).
-        if self._lmpc_joint and self.use_dynamic:
+        # W_e: vx terminal cost-to-go (q_v_def*3) before the LMPC residual
+        # (last entry 1.0, since residual already carries sqrt(lmpc_w)).
+        # 2026-06-10 unified layout: same in both modes.
+        if self._lmpc_joint:
             # [ec×5, el×5, yaw×4, vterm×3, anchor×4 (√wt in residual→1), cog (linear→0)]
             W_e_diag = [q_cte_def * 5.0, q_lag_def * 5.0, q_psi_def * 4.0, q_v_def * 3.0,
                         1.0, 1.0, 1.0, 1.0, 0.0]
-        elif self._lmpc_joint:
-            W_e_diag = [q_cte_def * 5.0, q_lag_def * 5.0, q_psi_def * 4.0,
-                        1.0, 1.0, 1.0, 1.0, 0.0]
-        elif self.use_dynamic:
+        else:
             W_e_diag = [q_cte_def * 5.0, q_lag_def * 5.0,
                         q_psi_def * 4.0, q_v_def * 3.0, 1.0]
-        else:
-            W_e_diag = [q_cte_def * 5.0, q_lag_def * 5.0, q_psi_def * 4.0, 1.0]
         W_e_mat = np.diag(W_e_diag)
         ocp.cost.cost_type   = 'CONVEX_OVER_NONLINEAR'
         ocp.cost.cost_type_0 = 'CONVEX_OVER_NONLINEAR'
@@ -1253,40 +1237,39 @@ class MPC:
             ocp.constraints.x0 = np.zeros(nx)
 
         # ---- Input bounds ----
-        # Kinematic: u = [v, δ, p_v] — bounds on v, δ, p_v.
-        # Dynamic:   u = [a_x, δ, p_v] — bounds on accel/decel from sim
-        #            (max_accel=7.51, max_decel=8.26). v_max enforced as
-        #            a STATE bound on vx instead.
+        # 2026-06-10 unified layout: u = [a_x, δ, p_v] in BOTH modes — bounds on
+        # accel/decel from sim (max_accel=7.51, max_decel=8.26). v_max enforced
+        # as a STATE bound on vx instead.
         ocp.constraints.idxbu = np.array([0, 1, 2])
-        if self.use_dynamic:
-            # a_min 줄임: -8.26 → -3.0. 강한 brake (8m/s²) 는 실제로 거의
-            # 발생 안 하는데 솔버가 vx<1 singular 영역에서 "어떻게든 멈춰"
-            # 라며 -8.26 출력 → 다음 cycle vx 음수 예측 → Pacejka 망가짐
-            # → ACADOS_MINSTEP 캐스케이드. -3.0 이면 충분히 감속 가능하고
-            # 솔버가 미친 brake 못 함.
-            a_min_dyn = -3.0
-            a_max_dyn =  4.0   # 7.51 → 4.0 (Agent R-round3 Fix 2). F1TENTH RWD @ vx≈0
-                               # grip ~4 m/s². 7.51 (sim max_accel) 은 saturated 되어
-                               # solver 가 "instant fix" 권장 → traj 예측 unrealistic →
-                               # zigzag + over-shoot. 4 가 realistic, 차도 추종 가능.
-            ocp.constraints.lbu = np.array([a_min_dyn, self.theta_min, 0.0])
-            ocp.constraints.ubu = np.array([a_max_dyn, self.theta_max, self.p_max])
-            # vx lower bound 0: 절대 후진 안 함. -1.0 허용 시 tire model
-            # 의 vx<0 영역 (실제로는 vx²=0.01 이라도 sign(vx)·F 가 발산)
-            # 에서 솔버 폭주 가능. 0 으로 강제하면 reverse 자체 차단.
-            ocp.constraints.idxbx = np.array([3, 4, 5])
-            ocp.constraints.lbx   = np.array([0.0, -10.0, -20.0])
-            ocp.constraints.ubx   = np.array([self.v_max + 0.5, 10.0, 20.0])   # 작은 margin (0.5 m/s). v_max 까지 빡빡하게 강제하면 solver IPM 발산 → 12m teleport. 원래 +2 로 풀어줌.
-            if self._lmpc_joint:
-                # B3: α ∈ [0,1] state bound on the K augmented states (all stages).
-                _Ka = int(dyn['K_aug'])
-                self._lmpc_K_aug = _Ka   # needed for per-stage ubx padding below
-                ocp.constraints.idxbx = np.concatenate([ocp.constraints.idxbx, np.arange(8, 8 + _Ka)])
-                ocp.constraints.lbx   = np.concatenate([ocp.constraints.lbx, np.zeros(_Ka)])
-                ocp.constraints.ubx   = np.concatenate([ocp.constraints.ubx, np.ones(_Ka)])
-        else:
-            ocp.constraints.lbu = np.array([0.0, self.theta_min, 0.0])
-            ocp.constraints.ubu = np.array([self.v_max, self.theta_max, self.p_max])
+        # a_min 줄임: -8.26 → -3.0. 강한 brake (8m/s²) 는 실제로 거의
+        # 발생 안 하는데 솔버가 vx<1 singular 영역에서 "어떻게든 멈춰"
+        # 라며 -8.26 출력 → 다음 cycle vx 음수 예측 → Pacejka 망가짐
+        # → ACADOS_MINSTEP 캐스케이드. -3.0 이면 충분히 감속 가능하고
+        # 솔버가 미친 brake 못 함.
+        a_min_dyn = -3.0
+        a_max_dyn =  4.0   # 7.51 → 4.0 (Agent R-round3 Fix 2). F1TENTH RWD @ vx≈0
+                           # grip ~4 m/s². 7.51 (sim max_accel) 은 saturated 되어
+                           # solver 가 "instant fix" 권장 → traj 예측 unrealistic →
+                           # zigzag + over-shoot. 4 가 realistic, 차도 추종 가능.
+        ocp.constraints.lbu = np.array([a_min_dyn, self.theta_min, 0.0])
+        ocp.constraints.ubu = np.array([a_max_dyn, self.theta_max, self.p_max])
+        # Kept for the per-stage kinematic p_v grip cap in solve() — per-stage
+        # solver.set(k,"ubu",…) must pass the FULL bound vector, so remember
+        # the codegen-time values to copy-and-modify slot 2 only.
+        self._ubu_codegen = np.array([a_max_dyn, self.theta_max, self.p_max])
+        # vx lower bound 0: 절대 후진 안 함. -1.0 허용 시 tire model
+        # 의 vx<0 영역 (실제로는 vx²=0.01 이라도 sign(vx)·F 가 발산)
+        # 에서 솔버 폭주 가능. 0 으로 강제하면 reverse 자체 차단.
+        ocp.constraints.idxbx = np.array([3, 4, 5])
+        ocp.constraints.lbx   = np.array([0.0, -10.0, -20.0])
+        ocp.constraints.ubx   = np.array([self.v_max + 0.5, 10.0, 20.0])   # 작은 margin (0.5 m/s). v_max 까지 빡빡하게 강제하면 solver IPM 발산 → 12m teleport. 원래 +2 로 풀어줌.
+        if self._lmpc_joint:
+            # B3: α ∈ [0,1] state bound on the K augmented states (all stages).
+            _Ka = int(dyn['K_aug'])
+            self._lmpc_K_aug = _Ka   # needed for per-stage ubx padding below
+            ocp.constraints.idxbx = np.concatenate([ocp.constraints.idxbx, np.arange(8, 8 + _Ka)])
+            ocp.constraints.lbx   = np.concatenate([ocp.constraints.lbx, np.zeros(_Ka)])
+            ocp.constraints.ubx   = np.concatenate([ocp.constraints.ubx, np.ones(_Ka)])
 
         # ---- h bounds (only h_obs + a_lat now) ----
         # uh[0] HUGE: obstacle absence is encoded by setting obs_x/y to a
@@ -1390,13 +1373,17 @@ class MPC:
         # `lm_dynamic` ROS param (set onto self before setup_MPC) so it can be
         # swept / BO-tuned without code edits.
         _lm_dyn = float(getattr(self, 'lm_dynamic', 1.0))
+        # NOTE(2026-06-10 unified layout): kept mode-dependent ON PURPOSE — this
+        # is a NUMERIC conditioning knob, not an algorithmic difference. f_kin has
+        # no Pacejka slip derivatives, so it needs far less damping (0.2).
         ocp.solver_options.levenberg_marquardt = _lm_dyn if self.use_dynamic else 0.2
         self._log.info("[MPC-acados] levenberg_marquardt = %.3f (use_dynamic=%s)"
                        % (ocp.solver_options.levenberg_marquardt, self.use_dynamic))
 
-        # Codegen + build
-        ocp.code_export_directory = '/tmp/acados_codegen_evompcc'
-        json_path = '/tmp/acados_ocp_evompcc.json'
+        # Codegen + build — dir/json keyed to (model, nx) so kinematic<->dynamic
+        # <->LMPC toggles never reuse a stale codegen (see codegen_paths()).
+        ocp.code_export_directory, json_path = codegen_paths(
+            self.use_dynamic, self._lmpc_joint, self._nx_solver)
         self._log.info("[MPC-acados] generating solver (~30 s first time)...")
         self.solver = AcadosOcpSolver(ocp, json_file=json_path)
         # GP residual wrap (gp_residual_wrapper.wrap_solver_with_gp) needs the
@@ -1444,13 +1431,12 @@ class MPC:
 
     def get_path_constraints_points(self, prev_soln):
         """Sample left/right boundary at each predicted stage's s.
-        s 는 layout 에 따라 다른 컬럼:
-          kinematic (n_states=5): col 3
-          dynamic   (n_states=8): col 6 (vx/vy/r 가 3/4/5 자리)
+        2026-06-10 unified layout: BOTH modes are 8-state → s = col 6
+        (vx/vy/r 가 3/4/5 자리).
         """
         right_points = np.zeros((self.N, 2))
         left_points = np.zeros((self.N, 2))
-        idx_s = 6 if self.use_dynamic else 3
+        idx_s = 6
         for k in range(1, self.N + 1):
             sk = float(prev_soln[k, idx_s]) % self.path_length
             right_points[k - 1, :] = np.array([self.right_lut_x(sk),
@@ -1538,30 +1524,24 @@ class MPC:
     # Solve
     # ------------------------------------------------------------------
     def solve(self, initial_state, obstacles):
-        """initial_state: numpy length 4 from ROS node = [x, y, psi, s].
-        We extend internally to 5: [x, y, psi, s, delta_prev] where
-        delta_prev = the steer command we sent last cycle (initialised to 0).
+        """initial_state: numpy length 7 from ROS node = [x, y, psi, vx, vy, r, s].
+        We extend internally to 8: append delta_prev = the steer command we
+        sent last cycle (initialised to 0). 2026-06-10 unified layout: SAME
+        in both kinematic and dynamic modes.
         """
         L = float(self.path_length)
 
         # Augment state with the previous applied δ for steer-rate cost.
-        # Kinematic: node sends 4 → expand to 5 (append δ_prev).
-        # Dynamic:   node sends 7 → expand to 8 (append δ_prev).
-        # Either way, target = self.n_states; append δ_prev to fill.
+        # Node sends 7 → expand to 8 (append δ_prev). target = self.n_states.
         if len(initial_state) == self.n_states - 1:
             last_delta = float(getattr(self, '_last_delta_applied', 0.0))
             initial_state = np.append(np.asarray(initial_state, dtype=float),
                                        last_delta)
 
-        # State-vector index helpers — shared between kinematic (5) and
-        # dynamic (8) layouts. x_pos/y_pos/psi at slots 0/1/2 in both.
-        # s and δ_prev shift in dynamic since vx/vy/r occupy 3/4/5.
-        if self.use_dynamic:
-            IDX_S = 6
-            IDX_DELTA_PREV = 7
-        else:
-            IDX_S = 3
-            IDX_DELTA_PREV = 4
+        # State-vector index helpers — unified 8-state layout in BOTH modes:
+        # [x, y, ψ, vx, vy, r, s, δ_prev].
+        IDX_S = 6
+        IDX_DELTA_PREV = 7
 
         # ---- Unwrap sensor s into solver-internal monotonic coordinate ----
         # Node passes current_s ∈ [0, L). We track lap_count internally and
@@ -1629,61 +1609,34 @@ class MPC:
             except Exception:
                 seed_v = max(self.v_max * 0.4, 1.0)
             self.u0 = np.zeros((self.N, self.n_controls))
-            if self.use_dynamic:
-                # Dynamic warm-start: u = [a_x, δ, p_v]. Hold a_x = 0
-                # (no acceleration during warm-start) so vx stays at the
-                # car's current velocity. Skip slip dynamics — vy, r
-                # propagated from initial state via simple kinematic
-                # surrogate so X0 stays well-conditioned.
-                self.u0[:, 0] = 0.0      # a_x
-                # Dynamic warm-start: keep it MINIMAL. a_x=0 means vx
-                # stays at initial. No ramp = no input bound risk.
-                # Solver's first iter then finds the correct a_x. p_v
-                # set to seed_v so s grows during warm-start.
-                self.u0[:, 0] = 0.0      # a_x (no acceleration in seed)
-                self.u0[:, 1] = 0.0      # delta
-                self.u0[:, 2] = seed_v   # p_v (input, can be set free)
-                self.X0[0, :self.n_states] = initial_state
-                if self._lmpc_joint:
-                    self.X0[0, self.n_states:] = 1.0 / max(1, self._nx_solver - self.n_states)  # uniform α seed
-                for k in range(self.N):
-                    xk = self.X0[k, :]
-                    uk = self.u0[k, :]
-                    delta_, p_ = uk[1], uk[2]
-                    psi_ = xk[2]
-                    vx_  = xk[3]            # vx stays constant in seed
-                    delta_prev_ = xk[7]
-                    dx_dt   = vx_ * np.cos(psi_)
-                    dy_dt   = vx_ * np.sin(psi_)
-                    dpsi_dt = (vx_ / self.L) * np.tan(delta_)
-                    ds_dt   = p_
-                    ddprev  = (delta_ - delta_prev_) / self.dT
-                    self.X0[k + 1, :self.n_states] = xk[:self.n_states] + self.dT * np.array(
-                        [dx_dt, dy_dt, dpsi_dt, 0.0, 0.0, 0.0,
-                         ds_dt, ddprev])
-                    self.X0[k + 1, self.n_states:] = self.X0[k, self.n_states:]  # α constant over horizon
-            else:
-                self.u0[:, 0] = seed_v   # v
-                self.u0[:, 1] = 0.0      # delta
-                self.u0[:, 2] = seed_v   # p
-                self.X0[0, :self.n_states] = initial_state
-                if self._lmpc_joint:
-                    self.X0[0, self.n_states:] = 1.0 / max(1, self._nx_solver - self.n_states)  # uniform α seed
-                for k in range(self.N):
-                    xk = self.X0[k, :]
-                    uk = self.u0[k, :]
-                    v_, delta_, p_ = uk[0], uk[1], uk[2]
-                    psi_ = xk[2]
-                    delta_prev_ = xk[4]
-                    # Euler 1-step (matches integrator's coarse warm-start need)
-                    dx_dt   = v_ * np.cos(psi_)
-                    dy_dt   = v_ * np.sin(psi_)
-                    dpsi_dt = (v_ / self.L) * np.tan(delta_)
-                    ds_dt   = p_
-                    ddprev  = (delta_ - delta_prev_) / self.dT
-                    self.X0[k + 1, :self.n_states] = xk[:self.n_states] + self.dT * np.array(
-                        [dx_dt, dy_dt, dpsi_dt, ds_dt, ddprev])
-                    self.X0[k + 1, self.n_states:] = self.X0[k, self.n_states:]  # α constant
+            # Warm-start (unified 8-state, both modes): u = [a_x, δ, p_v].
+            # Hold a_x = 0 (no acceleration during warm-start) so vx stays
+            # at the car's current velocity. No ramp = no input bound risk.
+            # Solver's first iter then finds the correct a_x. p_v set to
+            # seed_v so s grows during warm-start. Skip slip dynamics —
+            # vy, r held constant so X0 stays well-conditioned.
+            self.u0[:, 0] = 0.0      # a_x (no acceleration in seed)
+            self.u0[:, 1] = 0.0      # delta
+            self.u0[:, 2] = seed_v   # p_v (input, can be set free)
+            self.X0[0, :self.n_states] = initial_state
+            if self._lmpc_joint:
+                self.X0[0, self.n_states:] = 1.0 / max(1, self._nx_solver - self.n_states)  # uniform α seed
+            for k in range(self.N):
+                xk = self.X0[k, :]
+                uk = self.u0[k, :]
+                delta_, p_ = uk[1], uk[2]
+                psi_ = xk[2]
+                vx_  = xk[3]            # vx stays constant in seed
+                delta_prev_ = xk[7]
+                dx_dt   = vx_ * np.cos(psi_)
+                dy_dt   = vx_ * np.sin(psi_)
+                dpsi_dt = (vx_ / self.L) * np.tan(delta_)
+                ds_dt   = p_
+                ddprev  = (delta_ - delta_prev_) / self.dT
+                self.X0[k + 1, :self.n_states] = xk[:self.n_states] + self.dT * np.array(
+                    [dx_dt, dy_dt, dpsi_dt, 0.0, 0.0, 0.0,
+                     ds_dt, ddprev])
+                self.X0[k + 1, self.n_states:] = self.X0[k, self.n_states:]  # α constant over horizon
             for k in range(self.N + 1):
                 self.solver.set(k, "x", self.X0[k, :])
             for k in range(self.N):
@@ -1858,28 +1811,40 @@ class MPC:
                 # floor 1.0: κ-스파이크나 cold warm-start 에서 v→0 stall 방지
                 # (가장 타이트한 코너도 √(6/0.84)=2.67 라 floor 는 평소 불활성).
                 _vcap = min(float(self.v_max), max(_vcap, 1.0))
-                if self.use_dynamic:
-                    # dynamic: vx 는 STATE idx 3. HARD ubx[vx] cap 은 vx 가
-                    # 못 따라잡으면(a_min=-3 제동한계) QP infeasible → MINSTEP
-                    # 28→95 폭증(2026-06-03 측정). 대신 GENEROUS margin(×1.6)
-                    # 으로 극단 과속만 막고, 코너속도는 soft ref_v+a_lat 가 담당.
-                    # 이래야 dynamic 의 slip-aware 추종을 살리면서 MINSTEP 안 늘림.
-                    # k<N only: the terminal node has no state box (nbx_e=0), so
-                    # setting ubx there throws (was 61×/run log spam at k=N).
-                    if 1 <= k < self.N:
-                        _vcap_dyn = min(float(self.v_max) + 0.5, _vcap * 1.6)
-                        # joint-α: idxbx was extended to [3,4,5, 8..8+Ka], so the
-                        # per-stage ubx MUST match that length or acados throws a
-                        # dimension error (previously swallowed by the bare except →
-                        # the per-stage corner speed cap was silently dead the entire
-                        # time joint-α LMPC was on). Pad with the α upper bounds (1.0).
-                        _ub = [_vcap_dyn, 10.0, 20.0]
-                        if self._lmpc_joint:
-                            _ub = _ub + [1.0] * int(getattr(self, '_lmpc_K_aug', 10))
-                        self.solver.set(k, "ubx", np.array(_ub))
-                elif k < self.N:
-                    self.solver.set(k, "ubu",
-                                    np.array([_vcap, self.theta_max, self.p_max]))
+                # unified 8-state (both modes): vx 는 STATE idx 3. HARD ubx[vx]
+                # cap 은 vx 가 못 따라잡으면(a_min=-3 제동한계) QP infeasible →
+                # MINSTEP 28→95 폭증(2026-06-03 측정). 대신 GENEROUS margin(×1.6)
+                # 으로 극단 과속만 막고, 코너속도는 soft ref_v+a_lat 가 담당.
+                # 이래야 slip-aware 추종을 살리면서 MINSTEP 안 늘림.
+                # k<N only: the terminal node has no state box (nbx_e=0), so
+                # setting ubx there throws (was 61×/run log spam at k=N).
+                if 1 <= k < self.N:
+                    _vcap_dyn = min(float(self.v_max) + 0.5, _vcap * 1.6)
+                    # joint-α: idxbx was extended to [3,4,5, 8..8+Ka], so the
+                    # per-stage ubx MUST match that length or acados throws a
+                    # dimension error (previously swallowed by the bare except →
+                    # the per-stage corner speed cap was silently dead the entire
+                    # time joint-α LMPC was on). Pad with the α upper bounds (1.0).
+                    _ub = [_vcap_dyn, 10.0, 20.0]
+                    if self._lmpc_joint:
+                        _ub = _ub + [1.0] * int(getattr(self, '_lmpc_K_aug', 10))
+                    self.solver.set(k, "ubx", np.array(_ub))
+                # ── kinematic-only p_v grip cap (mode-dependent NUMERIC knob,
+                # same family as the LM damping — NOT an algorithmic difference;
+                # constraint STRUCTURE stays identical in both modes). f_kin has
+                # no tire physics, so soft ref_v + slacked a_lat lose to the
+                # progress reward at corner entry (2026-06-02 diagnosis; 2026-06-10
+                # final2 bring-up: deterministic crash at the same 3 corners every
+                # lap). The old 5-state kin capped the speed INPUT hard at ×1.0;
+                # in the unified layout the speed-intent input is p_v (u[2]) —
+                # cap it to the κ-grip speed. INPUT bound → always feasible
+                # (a hard ubx[vx] ×1.0 measurably spiked MINSTEP 28→95), and the
+                # ×1.6 ubx stays untouched in both modes. Dynamic mode skips
+                # this: the tire model self-limits, validated clean at ×1.6.
+                if (not self.use_dynamic) and k < self.N:
+                    _ubu = self._ubu_codegen.copy()
+                    _ubu[2] = min(_ubu[2], _vcap)
+                    self.solver.set(k, "ubu", _ubu)
             except Exception as _e:
                 # Was `pass` — that hid the joint-α ubx dimension bug for weeks.
                 # Log (throttled) so a per-stage constraint failure is visible.
@@ -2000,14 +1965,11 @@ class MPC:
                 if _nxs > self.n_states:
                     traj[:, self.n_states:] = 1.0 / max(1, _nxs - self.n_states)
                 u_seq = np.zeros((self.N, self.n_controls))
-                if self.use_dynamic:
-                    # u[0] = a_x in dynamic — set to small positive accel
-                    # to keep the car coasting forward. p_v = seed_v.
-                    u_seq[:, 0] = 0.5
-                    # Also seed predicted vx so the output speed is sensible.
-                    traj[:, 3] = seed_v
-                else:
-                    u_seq[:, 0] = seed_v   # v (kinematic input)
+                # u[0] = a_x (unified, both modes) — small positive accel to
+                # keep the car coasting forward. p_v = seed_v.
+                u_seq[:, 0] = 0.5
+                # Also seed predicted vx so the output speed is sensible.
+                traj[:, 3] = seed_v
                 u_seq[:, 2] = seed_v
         except Exception as e:
             self._log.warn_throttle(2.0, "[MPC-acados] solver exception %s — reset", str(e))
@@ -2115,11 +2077,8 @@ class MPC:
                     "[MPC] STUCK release n=%d (v_est=%.2f, last_vcmd=%.2f) — reversing",
                     self._stuck_release_remaining, v_est, v_cmd_prev)
                 u_seq = np.zeros((self.N, self.n_controls))
-                if self.use_dynamic:
-                    u_seq[:, 0] = -1.5     # reverse a_x — back away from wall
-                    traj[:, 3] = -0.5      # reverse vx in trajectory
-                else:
-                    u_seq[:, 0] = -0.5     # kinematic: reverse v directly
+                u_seq[:, 0] = -1.5     # reverse a_x — back away from wall (unified)
+                traj[:, 3] = -0.5      # reverse vx in trajectory
                 self._stuck_release_active = True
                 # Steer EMA reset so old zigzag steer doesn't persist into release
                 if hasattr(self, '_steer_filt'):
@@ -2138,24 +2097,17 @@ class MPC:
                 except Exception:
                     seed_v = v_floor
                 u_seq = np.zeros((self.N, self.n_controls))
-                if self.use_dynamic:
-                    u_seq[:, 0] = 1.5      # a_x — stronger accel (was 0.5)
-                    traj[:, 3] = seed_v    # set predicted vx for output
-                else:
-                    u_seq[:, 0] = seed_v   # v (kinematic input)
+                u_seq[:, 0] = 1.5          # a_x — stronger accel (unified)
+                traj[:, 3] = seed_v        # set predicted vx for output
                 u_seq[:, 1] = 0.0          # delta
                 u_seq[:, 2] = seed_v       # p_v
             self.WARM_START = False
         # Stash this cycle's commanded v for next-cycle stuck-check.
-        # Kinematic: u[0] = v (input velocity).
-        # Dynamic: ROS node sends traj[-1, 3] (horizon-end vx) as cmd.drive.speed,
-        # so the stuck detector must compare actual v against THAT value, not
+        # Unified: ROS node sends a traj-derived vx as cmd.drive.speed, so the
+        # stuck detector must compare actual v against THAT value, not
         # traj[1, 3] (which at vx≈1.7 + 0.04·0.5 ≈ 1.73 is always < 2.0 so the
         # detector never fires — Agent R2 fix 2026-05-26).
-        if self.use_dynamic:
-            self._v_cmd_for_stuck = float(traj[-1, 3]) if traj.shape[0] > 1 else 0.0
-        else:
-            self._v_cmd_for_stuck = float(u_seq[0, 0])
+        self._v_cmd_for_stuck = float(traj[-1, 3]) if traj.shape[0] > 1 else 0.0
 
         # Steer-output EMA filter — corrects cycle-to-cycle steer trembling
         # observed at curves/hairpin (65% of cycles had steer sign flips:
@@ -2170,7 +2122,7 @@ class MPC:
         # Agent R-round3 Fix 3: adaptive α — vx<1.5 (Pacejka linear singularity 영역)
         # 에서 cost surface 가 δ 에 대해 거의 flat → solver 가 ±0.15 zigzag pick.
         # 그 영역만 α 줄여 heavy smoothing. vx 충분 (≥1.5) 이면 alpha_steer_live 그대로.
-        vx_now = float(initial_state[3]) if self.use_dynamic else 1.5
+        vx_now = float(initial_state[3])   # unified: vx = state[3] in both modes
         scale = min(1.0, max(0.2, vx_now / 1.5))    # vx=0 → 0.2, vx≥1.5 → 1.0
         alpha = self.alpha_steer_live * scale
         new_steer = float(u_seq[0, 1])
@@ -2227,7 +2179,7 @@ class MPC:
         # normalized, where center_i is the centerline point at the same s.
         L = float(self.path_length)
         margin = float(self.R_car_live)
-        IDX_S_LOCAL = 6 if self.use_dynamic else 3
+        IDX_S_LOCAL = 6   # unified 8-state layout (both modes)
         shifted = []
         for k in range(traj.shape[0] - 1):
             sk = float(traj[k + 1, IDX_S_LOCAL]) % L

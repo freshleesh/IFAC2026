@@ -1,4 +1,4 @@
-mu: 1.0489  # surface friction coefficient
+mu: 0.6  # 실차 저그립 매칭 (2026-06-09). 분리실험(2026-06-10) 완료 후 복원됨.
 C_Sf: 4.718 # Cornering stiffness coefficient, front
 C_Sr: 5.4562 # Cornering stiffness coefficient, rear
 lf: 0.15875 # Distance from center of gravity to front axle

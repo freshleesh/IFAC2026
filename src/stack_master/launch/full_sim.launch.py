@@ -196,6 +196,21 @@ def _build(context: LaunchContext, *_args, **_kwargs):
             ld_extra + ":" + os.environ.get("LD_LIBRARY_PATH", ""),
         ))
 
+        # Optional model toggles — override the yaml WITHOUT editing it (avoids the
+        # config-clobber regression class). Empty default → keep ddrx_unified_params.
+        def _tri(name):
+            v = LaunchConfiguration(name).perform(context).strip().lower()
+            if v in ("true", "1", "yes"):
+                return True
+            if v in ("false", "0", "no"):
+                return False
+            return None  # unset → don't override
+        _model_overrides = {}
+        for _k in ("use_dynamic", "use_lmpc"):
+            _v = _tri(_k)
+            if _v is not None:
+                _model_overrides[_k] = _v
+
         # mpc_disable=true 면 mpc_node 비활성 → mux 가 pp_fallback 사용 (PP baseline 측정용).
         mpc_disable_str = LaunchConfiguration("mpc_disable").perform(context).lower()
         if mpc_disable_str not in ("true", "1", "yes"):
@@ -221,6 +236,8 @@ def _build(context: LaunchContext, *_args, **_kwargs):
                             LaunchConfiguration("enable_sim_reset").perform(context).lower()
                             in ("true", "1", "yes")
                         ),
+                        # use_dynamic / use_lmpc launch-arg overrides (empty → yaml).
+                        **_model_overrides,
                     },
                 ],
                 output="screen",
@@ -321,5 +338,9 @@ def generate_launch_description() -> LaunchDescription:
                               description="true → STUCK 시 /initialpose teleport-rescue. false → 실차/검증 (teleport off)"),
         DeclareLaunchArgument("gym_mu_scale", default_value="1.0",
                               description="B4' known-mismatch: scale gym TRUE tire friction (1.0 = off)"),
+        DeclareLaunchArgument("use_dynamic", default_value="",
+                              description="override yaml: true=dynamic 8-state, false=kinematic 5-state. empty=use yaml"),
+        DeclareLaunchArgument("use_lmpc", default_value="",
+                              description="override yaml: true/false. (kinematic auto-forces off). empty=use yaml"),
         OpaqueFunction(function=_build),
     ])

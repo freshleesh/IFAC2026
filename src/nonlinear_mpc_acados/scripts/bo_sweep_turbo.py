@@ -192,7 +192,7 @@ def run_one_sim(map_name: str, n_laps: int, wall_timeout: int, stuck_timeout: in
            f'source /opt/ros/jazzy/setup.bash && '
            f'source ~/IFAC2026_SH/install/local_setup.bash && '
            f'export CYCLONEDDS_URI=file://$HOME/cyclonedds.xml && '
-           f'rm -rf /tmp/acados_codegen_evompcc && '
+           f'rm -rf /tmp/acados_codegen_evompcc* /tmp/acados_ocp_evompcc* && '
            f'ros2 launch stack_master full_sim.launch.py mode:=mpcc map:={map_name}']
     # stderr 를 file 로 redirect (debug 용 — startup fail 원인 파악).
     log_path = f'/tmp/bo_trial_sim.log'
