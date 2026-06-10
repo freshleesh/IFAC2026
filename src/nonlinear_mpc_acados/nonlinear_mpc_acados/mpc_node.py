@@ -657,7 +657,8 @@ class MPCNode(Node):
         if self._lmpc_seed_raceline and self._track is not None:
             try:
                 v_max_now = float(getattr(self.mpc, 'v_max', 5.0))
-                a_lat = float(getattr(self.mpc, 'a_lat_safe_live', 9.0))
+                _eff_fn = getattr(self.mpc, 'a_lat_safe_eff', None)  # μgη clamp (5번째 소비 지점)
+                a_lat = float(_eff_fn()) if _eff_fn else float(getattr(self.mpc, 'a_lat_safe_live', 9.0))
                 tr = self._track
                 xy = psi = s_arr = v_arr = None
                 rl_json = str(self.get_parameter('lmpc_raceline_json').value)
