@@ -1771,7 +1771,7 @@ class MPCNode(Node):
                     if bool(self.get_parameter('enable_sim_reset').value):
                         self._publish_safe_reset(x0)
                     else:
-                        self.get_logger().warn_throttle(2.0,
+                        self._mpc_log.warn_throttle(2.0,
                             "[real] STUCK detected but enable_sim_reset=false — "
                             "publishing reverse cmd only (수동 e-stop 권장)")
                     self._last_reset_t = time.monotonic()
