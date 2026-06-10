@@ -1,4 +1,8 @@
-# 설계: mu 정직화 + friction ellipse 제약 (2026-06-10)
+# 설계: mu 정직화 + friction ellipse + 제동 정직화 (2026-06-10)
+
+> 2026-06-10 갱신: 분리실험(dynamic+final2+sim mu=1.0489, 27랩 stuck 0)으로
+> final2 3코너 stuck = 맵 아닌 **저그립 처리 문제**로 확정 — 이 스펙이 정답 경로.
+> 사용자 승인으로 **제동 정직화(§3b) 추가**. δ-rate 하드 제약은 다음 사이클.
 
 ## 배경 / 문제
 
@@ -68,6 +72,21 @@ GP residual 연결도 다음 사이클 (물리 정직화 후 남는 잔차만 GP
 위에 세워지지 않음. BO a_lat 탐색 범위는 변경 없음 (상한이 μ에 자연히
 묶임).
 
+## 3b. 제동 정직화 (ref_v 프로필)
+
+ref_v forward-backward 제동 프로파일이 가정하는 감속이 솔버 실제 한계와
+불일치 — 코너 진입 과속 → stuck/넓은 코너링의 직접 경로:
+
+1. `track_loader.py:277` `a_long = float(a_lat_max)` (=7.14) →
+   **`a_long = abs(a_min_dyn)` (=3.0)** 으로 교체. a_min_dyn 값을
+   `build_track_from_wpnts(...)` 인자로 전달 (기본 3.0, mpc_node가
+   솔버 설정값과 동일 소스로 주입).
+2. brake-aware κ_eq의 `bf=0.7` 고정 → **`bf = abs(a_min_dyn) / a_lat_safe`**
+   로 유도식과 일관화 (a_lat_safe는 §3 clamp 적용 후 값).
+
+효과: ref_v가 "그 속도에서 실제로 멈출 수 있는" 프로필이 됨. 전반 속도
+프로필이 보수화되므로 랩타임 소폭 후퇴 가능 — BO 게이트에서 회복 확인.
+
 ## 4. 검증 계획 (성공 기준: 랩타임 개선까지)
 
 | 게이트 | 조건 | 통과 기준 |
@@ -82,7 +101,8 @@ GP residual 연결도 다음 사이클 (물리 정직화 후 남는 잔차만 GP
 ## 범위 제외
 
 GP residual 연결(CasADi 경로), force-공간 per-axle ellipse, 종가속
-하중이동, vy/r 상태추정 필터, 장애물 의사결정 — 전부 다음 사이클.
+하중이동, vy/r 상태추정 필터, 장애물 의사결정, **δ-rate 하드 제약**
+— 전부 다음 사이클.
 
 ## 영향 파일
 

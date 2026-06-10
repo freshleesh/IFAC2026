@@ -217,7 +217,8 @@ def build_track_from_wpnts(wpnts, vel_scale: float = 1.0,
     use_fixed_corridor = corridor_half_width > 1e-3
     for i, w in enumerate(wpnts):
         x, y = w.x_m, w.y_m
-        psi = w.psi_centerline_rad if abs(w.psi_centerline_rad) > 1e-9 else w.psi_rad
+        psi_c = getattr(w, 'psi_centerline_rad', 0.0)  # optional field; absent on car's Wpnt
+        psi = psi_c if abs(psi_c) > 1e-9 else w.psi_rad
         c, s = np.cos(psi), np.sin(psi)
         center_lane[i] = (x, y)
         center_deriv[i] = (c, s)
