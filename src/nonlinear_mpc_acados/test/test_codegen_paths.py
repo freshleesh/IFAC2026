@@ -46,6 +46,21 @@ class TestCodegenPaths(unittest.TestCase):
         self.assertTrue(export_dir.startswith("/tmp/"), "export dir under /tmp")
         self.assertTrue(json_path.endswith(".json"), "json path ends in .json")
 
+    def test_mu_keys_the_codegen(self):
+        # dyn_mu 는 tanh 타이어/ellipse 에 codegen-time 으로 박힌다 —
+        # mu 0.6 vs 1.0489 가 같은 dir 을 재사용하면 stale 모델.
+        lo = codegen_paths(use_dynamic=True, lmpc_joint=False, nx_solver=8,
+                           dyn_mu=0.6)
+        hi = codegen_paths(use_dynamic=True, lmpc_joint=False, nx_solver=8,
+                           dyn_mu=1.0489)
+        self.assertNotEqual(lo[0], hi[0], "mu must key the export dir")
+        self.assertNotEqual(lo[1], hi[1], "mu must key the json")
+
+    def test_mu_default_keeps_legacy_tag(self):
+        # mu 미지정(레거시 호출) → 기존 태그 그대로 (경로 호환).
+        legacy = codegen_paths(use_dynamic=True, lmpc_joint=False, nx_solver=8)
+        self.assertEqual(legacy[0], "/tmp/acados_codegen_evompcc_dyn8")
+
 
 if __name__ == "__main__":
     unittest.main()

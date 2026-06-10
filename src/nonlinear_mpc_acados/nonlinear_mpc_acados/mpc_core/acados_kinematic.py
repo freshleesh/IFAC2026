@@ -27,7 +27,7 @@ from ._ros_compat import NullLogger, monotonic_now, yaw_to_quat
 from acados_template import AcadosOcp, AcadosOcpSolver, AcadosModel
 
 
-def codegen_paths(use_dynamic, lmpc_joint, nx_solver):
+def codegen_paths(use_dynamic, lmpc_joint, nx_solver, dyn_mu=None):
     """Return (export_dir, json_path) keyed to the OCP structure.
 
     Switching kinematic<->dynamic (2026-06-10 unified layout: BOTH nx=8 — the
@@ -43,8 +43,13 @@ def codegen_paths(use_dynamic, lmpc_joint, nx_solver):
     the tag, so changing only those reuses the same dir. Callers that vary them
     (BO/sweep harnesses) must still `rm -rf /tmp/acados_codegen_evompcc*`
     between runs to force regeneration.
+    dyn_mu IS keyed (2026-06-10).
     """
     tag = f"{'dyn' if use_dynamic else 'kin'}{int(nx_solver)}{'_lmpc' if lmpc_joint else ''}"
+    if dyn_mu is not None:
+        # μ is baked into the tanh tire + friction-ellipse codegen — key it
+        # so switching dyn_mu can never reuse a stale build (mu0p600 etc.).
+        tag += f"_mu{float(dyn_mu):.3f}".replace('.', 'p')
     return (f"/tmp/acados_codegen_evompcc_{tag}",
             f"/tmp/acados_ocp_evompcc_{tag}.json")
 
@@ -1383,7 +1388,8 @@ class MPC:
         # Codegen + build — dir/json keyed to (model, nx) so kinematic<->dynamic
         # <->LMPC toggles never reuse a stale codegen (see codegen_paths()).
         ocp.code_export_directory, json_path = codegen_paths(
-            self.use_dynamic, self._lmpc_joint, self._nx_solver)
+            self.use_dynamic, self._lmpc_joint, self._nx_solver,
+            dyn_mu=float(self.dyn_mu))
         self._log.info("[MPC-acados] generating solver (~30 s first time)...")
         self.solver = AcadosOcpSolver(ocp, json_file=json_path)
         # GP residual wrap (gp_residual_wrapper.wrap_solver_with_gp) needs the
