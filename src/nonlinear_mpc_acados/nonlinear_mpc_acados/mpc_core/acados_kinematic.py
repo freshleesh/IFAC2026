@@ -23,7 +23,7 @@ import numpy as np
 import casadi as ca
 import scipy.linalg
 from ._ros_compat import NullLogger, monotonic_now, yaw_to_quat
-from .model_policy import A_MIN_DYN, clamp_a_lat_to_grip
+from .model_policy import A_MIN_DYN, clamp_a_lat_to_grip, grip_a_lat_limit
 
 from acados_template import AcadosOcp, AcadosOcpSolver, AcadosModel
 
@@ -1135,7 +1135,7 @@ class MPC:
         # 입력 레이아웃에서 양 모드 공통. 제동·가속 중 가용 a_lat 이 자동 감소
         # (combined-slip). 고그립(μ=1.0489)에선 a_lim≈9.8 → 거의 안 물림 = 기존
         # 동작 보존; 저그립(μ=0.6)에선 a_lim≈5.6 = 실질 한계.
-        _a_lim = max(1e-3, float(self.dyn_mu) * 9.81 * float(self.ellipse_frac))
+        _a_lim = max(1e-3, grip_a_lat_limit(self.dyn_mu, self.ellipse_frac))
         h_ellipse = (u[0] / _a_lim) ** 2 + (a_lat / _a_lim) ** 2
         if self._lmpc_joint and alpha_sym is not None:
             # B3: α simplex Σα=1 — 마지막 h-row (hard eq, NOT slacked).
