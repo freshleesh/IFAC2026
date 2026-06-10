@@ -1316,7 +1316,7 @@ class MPC:
         #   true backstop (just above the soft cap) without re-entering that
         #   flat region; the steer-output EMA filter further damps any wobble.
         a_lat_max = max(8.0, float(self.a_lat_safe_eff()) + 1.0)
-        self._log.info(f"[MPC-acados] a_lat hard cap = {a_lat_max:.2f} (a_lat_safe={float(self.a_lat_safe_eff()):.2f} + 1.0 backstop)")
+        self._log.info(f"[MPC-acados] a_lat hard cap = {a_lat_max:.2f} (a_lat_safe={a_lat_max - 1.0:.2f} + 1.0 backstop)")
         # h order: [h_obs, h_corridor_top, h_corridor_bot, a_lat, (Σα if joint)]
         if self._lmpc_joint:
             ocp.constraints.lh = np.array([0.0, 0.0, 0.0, -a_lat_max, 1.0])  # Σα=1 eq
@@ -1814,6 +1814,7 @@ class MPC:
         # Per-stage parameter array
         # X0[k, IDX_S] is unbounded (solver-internal monotonic s), so always
         # wrap with % L for spline lookups (corridor / track boundary).
+        _alat_eff = float(self.a_lat_safe_eff())   # 사이클당 1회 — stage 루프 불변
         for k in range(self.N + 1):
             sk = float(self.X0[k, IDX_S]) % L
             try:
@@ -1834,7 +1835,7 @@ class MPC:
             # 로 직접 처리 → u[0] lbu=0 이므로 이 cap 과 무간섭.
             try:
                 _absk = float(self.abs_kappa_lut(sk))
-                _vcap = math.sqrt(float(self.a_lat_safe_eff()) / (_absk + 1e-3))
+                _vcap = math.sqrt(_alat_eff / (_absk + 1e-3))
                 # floor 1.0: κ-스파이크나 cold warm-start 에서 v→0 stall 방지
                 # (가장 타이트한 코너도 √(6/0.84)=2.67 라 floor 는 평소 불활성).
                 _vcap = min(float(self.v_max), max(_vcap, 1.0))
@@ -1893,7 +1894,7 @@ class MPC:
             p_arr[7]  = float(self.R_safe_live)
             p_arr[8]  = float(self.q_lag_scale_live)
             p_arr[9]  = e_c_obs_val
-            p_arr[10] = float(self.a_lat_safe_eff())
+            p_arr[10] = _alat_eff
             p_arr[11] = float(self.D_apex_live)
             p_arr[12] = float(self.q_psi_scale_live)
             p_arr[13] = float(self.q_v_scale_live)
