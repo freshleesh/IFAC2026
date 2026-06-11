@@ -1923,7 +1923,15 @@ class MPC:
                 # padding Q = 1e6 (reviewer: exp(-β·1e6) ≈ 0 자연 무시)
                 p_arr[58:68] = 1e6
             # 68..71 — LMPC scalars (default OFF)
-            p_arr[68] = float(getattr(self, 'lmpc_w_live', 0.0))      # OFF default
+            # 2026-06-11: LMPC term cost gated OFF while committed to an
+            # obstacle. Safe set 랩들은 장애물 없이 기록된 라인 — cost-to-go 가
+            # 터미널 상태를 장애물 관통 라인으로 끌어당겨 half-plane 회피와
+            # 싸운다 (관측: LMPC on + 회피 중 wedge/stuck). side_pref!=0 인
+            # 동안만 0; 통과 후 release 되면 원래 weight 복귀.
+            _lmpc_w = float(getattr(self, 'lmpc_w_live', 0.0))
+            if side_pref != 0:
+                _lmpc_w = 0.0
+            p_arr[68] = _lmpc_w
             p_arr[69] = float(getattr(self, 'lmpc_alpha_live', 1.0))
             p_arr[70] = float(getattr(self, 'lmpc_beta_live', 0.05))  # reviewer 권장
             p_arr[71] = float(getattr(self, 'lmpc_reg_w_live', 0.001))
@@ -2091,6 +2099,25 @@ class MPC:
             # Remember where we wedged so the reverse can stop as soon as the
             # car has backed away STUCK_REVERSE_DIST (early-exit below).
             self._stuck_origin = (float(initial_state[0]), float(initial_state[1]))
+            # 2026-06-11 failure-driven side flip: STUCK while committed to an
+            # obstacle (and near it) = the cached side choice FAILED. Without
+            # this, _side_history replays the same losing side every lap
+            # (관측: 같은 장애물에서 매 랩 100% stuck→reverse 반복). Flip the
+            # cached side and release — the commit logic re-engages next cycle
+            # with the opposite side, so the car retries the other way within
+            # the same pass.
+            if getattr(self, '_committed_obs', None) is not None:
+                cox, coy, cs_obs, cside, ce_c = self._committed_obs
+                d_obs = math.hypot(initial_state[0] - cox,
+                                   initial_state[1] - coy)
+                if d_obs < 5.0:
+                    key = (round(cox, 1), round(coy, 1))
+                    self._side_history[key] = -cside
+                    self._committed_obs = None
+                    self.WARM_START = False
+                    self._log.warn(
+                        "[MPC] STUCK during avoidance (d_obs=%.1f m) — "
+                        "flip side %+d→%+d for obs %s", d_obs, cside, -cside, key)
         # Early-exit the forced reverse: once the car has separated from the
         # wedge point by STUCK_REVERSE_DIST, end the release immediately rather
         # than running the full 20-cycle countdown. Without this the car kept
