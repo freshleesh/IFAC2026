@@ -34,7 +34,11 @@ mpc_node:
     # 풀-스티어 (±0.4) 가 over-shoot 의 직접 원인. 0.4 → 0.3 으로 cap.
     # 헤어핀 통과 가능한 최소값: arctan(L / R_min) 기준 L=0.307, R_min≈0.7
     # → 0.4 rad. 그러나 mpc 가 미리 조향하므로 0.3 으로도 충분.
-    mpc_max_steering: 0.45
+    # 2026-06-11 조향 정직화: sim plant s_max=0.4189 (sim_params.yaml) 인데 0.45
+    # 로 계획 → 풀락 헤어핀에서 유령 조향 8% (계획 R 0.68m vs 실제 0.74m) = wide.
+    # plant 한계와 일치시킴. 실차는 VESC servo 매핑상 ±한계가 [-0.396, +0.428]
+    # (gain -1.2135, offset 0.52, servo 0..1) → 실차 배포 시 0.39 권장.
+    mpc_max_steering: 0.4189
     # Cold-start / low-speed conditioning (2026-05-29, MPPI init_vel 기법).
     # cold_start_vx_floor: solver 에 넘기는 x0 의 vx 하한 (dynamic 저속 ill-cond
     #   회피 → 저속 steer chatter 제거 + 정지 출발). 0 = 비활성 (기존 PP-start 동작).
