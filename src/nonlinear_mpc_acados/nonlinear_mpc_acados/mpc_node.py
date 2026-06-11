@@ -383,6 +383,14 @@ class MPCNode(Node):
                                  self._clicked_point_cb, 4)
         self.create_subscription(PoseArray, '/external_obstacles',
                                  self._external_obs_cb, 1)
+        # ── mux 제어권 추적 (2026-06-11) ─────────────────────────────
+        # 실차 버그: 조이 수동 전환 중에도 MPC는 계속 solve → STUCK 오감지·
+        # warm-start stale·_last_sensor_s 점프(lap_count 꼬임). 수동→자동
+        # 복귀 시 teleport 와 동일한 latch 리셋을 수행.
+        self._mux_mpcc_active: bool | None = None   # None=신호 미수신(구버전 mux 호환)
+        self._mux_inactive_since: float | None = None
+        self.create_subscription(Bool, '/mux/mpcc_active',
+                                 self._mux_active_cb, 1)
 
         # ── State cache (most-recent message snapshots) ─────────────
         self._last_odom: Odometry | None = None
@@ -1288,20 +1296,46 @@ class MPCNode(Node):
             p0 = self._last_odom.pose.pose.position
             jump = ((p1.x - p0.x) ** 2 + (p1.y - p0.y) ** 2) ** 0.5
             if jump > 1.0:
-                self.get_logger().warn(
-                    f"[mpc] teleport 감지 ({jump:.2f}m jump) — warm-start reset")
-                self.mpc.WARM_START = False
-                # 일부 internal state 도 클리어 (있으면).
-                # _pos_for_v 는 (x,y,t) 3-tuple — solve() 가 unpack → None 로 reset.
-                # _last_sensor_s 도 None reset 으로 lap_count 누적 안 해야 함.
-                NONE_RESET = {'_last_sensor_s', '_pos_for_v', '_last_sensor_yaw'}
-                for attr in ('_last_sensor_s', '_pos_for_v', '_v_cmd_for_stuck',
-                             '_stuck_count', '_last_delta_applied'):
-                    if hasattr(self.mpc, attr):
-                        setattr(self.mpc, attr, None if attr in NONE_RESET else 0.0)
-                # startup ramp 다시 활성화 (정지에서 출발 안정화)
-                self._startup_t = time.monotonic()
+                self._reset_mpc_latches(f'teleport 감지 ({jump:.2f}m jump)')
         self._last_odom = msg
+
+    def _reset_mpc_latches(self, reason: str) -> None:
+        """Teleport·수동(조이)→자동 복귀 등 '연속 주행 가정이 깨진' 시점의 공통 리셋.
+
+        warm-start(옛 traj 풀-스티어 spin 방지) + s-tracking(_last_sensor_s 점프로
+        lap_count 꼬임 방지) + STUCK latch(수동 정차를 STUCK 으로 오감지한 잔여
+        release/카운터) + startup ramp 재가동.
+        """
+        if getattr(self, 'mpc', None) is None:
+            return
+        self.get_logger().warn(f"[mpc] {reason} — warm-start/latch reset")
+        self.mpc.WARM_START = False
+        # _pos_for_v 는 (x,y,t) 3-tuple — solve() 가 unpack → None 로 reset.
+        # _last_sensor_s 도 None reset 으로 lap_count 누적 안 해야 함.
+        NONE_RESET = {'_last_sensor_s', '_pos_for_v', '_last_sensor_yaw'}
+        for attr in ('_last_sensor_s', '_pos_for_v', '_last_sensor_yaw',
+                     '_v_cmd_for_stuck', '_stuck_count', '_last_delta_applied',
+                     '_stuck_release_remaining', '_stuck_release_total'):
+            if hasattr(self.mpc, attr):
+                setattr(self.mpc, attr, None if attr in NONE_RESET else 0.0)
+        if hasattr(self.mpc, '_has_moved'):
+            self.mpc._has_moved = False
+        # startup ramp 다시 활성화 (정지에서 출발 안정화)
+        self._startup_t = time.monotonic()
+
+    def _mux_active_cb(self, msg: Bool) -> None:
+        # simple_mux 가 매 사이클 publish 하는 제어권 신호. 수동(조이) 구간이
+        # 1초 이상 지속된 뒤 MPCC 로 복귀하면 teleport 와 동일한 latch 리셋.
+        now = time.monotonic()
+        active = bool(msg.data)
+        if self._mux_mpcc_active is True and not active:
+            self._mux_inactive_since = now
+        elif active and self._mux_mpcc_active is False:
+            dur = now - (self._mux_inactive_since or now)
+            if dur > 1.0:
+                self._reset_mpc_latches(f'mux 제어권 복귀 (수동 {dur:.1f}s)')
+            self._mux_inactive_since = None
+        self._mux_mpcc_active = active
 
     def _pose_cb(self, msg: PoseStamped):
         self._last_pose = msg
