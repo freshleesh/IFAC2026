@@ -549,14 +549,20 @@ class GymBridge(Node):
     def drive_timer_callback(self):
         import time as _t
         _t0 = _t.perf_counter()
-        # Map update DISABLED in sim timer (2026-05-18).
-        # f110_gym 0.2.1 의 update_map_from_array 가 no-op 이라 dynamic obstacle 은
-        # 어차피 LiDAR 충돌맵에 안 잡힘. /map publish 도 GridFilter 가 시작 시 1번만
-        # 받으면 되므로 매 cycle redraw + publish 가 헛수고 → 100-200ms 스파이크 원인.
-        # 시작 시 base map 한 번 publish 된 것만 사용. 이후 update 차단.
-        # if self.map_needs_update:
-        #     self._update_gym_map()
-        self.map_needs_update = False  # 영구 비활성
+        # Map update RE-ENABLED, event-gated (2026-06-11).
+        # 2026-05-18 비활성 사유 두 가지가 모두 해소됨:
+        #  (1) "update_map_from_array 가 no-op" — 당시 PyPI 0.2.1 기준. 현재
+        #      import 되는 f110_gym (creating_autonomous 소스) 은 ScanSimulator2D.
+        #      set_map_from_array 정식 구현 보유 → 장애물이 LiDAR scan 에 잡힘.
+        #      (이게 막혀 있으면 scan 기반 장애물 인식 노드를 sim 검증 불가.)
+        #  (2) 매 cycle redraw 스파이크 — map_needs_update 는 장애물 변경시에만
+        #      True (클릭=단발). 0.5s 스로틀로 dynamic obstacle 연속 갱신도 2Hz 상한.
+        if self.map_needs_update:
+            _now_mu = _t.monotonic()
+            if _now_mu - getattr(self, '_last_gym_map_update_t', 0.0) > 0.5:
+                self._update_gym_map()
+                self._last_gym_map_update_t = _now_mu
+                self.map_needs_update = False
         _t1 = _t.perf_counter()
 
         # Always step the simulation to generate new scan noise

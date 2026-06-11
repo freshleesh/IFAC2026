@@ -42,6 +42,7 @@ setup(
             'mpc_debug_logger = nonlinear_mpc_acados.mpc_debug_logger:main',
             'ftg_fallback_node = nonlinear_mpc_acados.ftg_fallback_node:main',
             'pp_fallback_node = nonlinear_mpc_acados.pp_fallback_node:main',
+            'scan_obstacle_detector = nonlinear_mpc_acados.scan_obstacle_detector:main',
         ],
     },
 )
