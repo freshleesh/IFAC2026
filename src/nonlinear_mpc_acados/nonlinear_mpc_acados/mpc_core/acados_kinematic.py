@@ -23,7 +23,8 @@ import numpy as np
 import casadi as ca
 import scipy.linalg
 from ._ros_compat import NullLogger, monotonic_now, yaw_to_quat
-from .model_policy import A_MIN_DYN, clamp_a_lat_to_grip, grip_a_lat_limit
+from .model_policy import (A_MIN_DYN, clamp_a_lat_to_grip, decide_side_window,
+                           grip_a_lat_limit)
 
 from acados_template import AcadosOcp, AcadosOcpSolver, AcadosModel
 
@@ -1531,30 +1532,33 @@ class MPC:
                 best = [d, ox, oy]
         return best
 
-    def decide_side_pref(self, obstacle_pos, left_points, right_points, margin=0.1):
-        """Same rules as the IPOPT version (user-defined)."""
-        x_o, y_o = obstacle_pos[0], obstacle_pos[1]
-        if x_o > 1e5 and y_o > 1e5:
-            return 0
-        dist_L = np.sqrt((left_points[:, 0] - x_o) ** 2 + (left_points[:, 1] - y_o) ** 2)
-        dist_R = np.sqrt((right_points[:, 0] - x_o) ** 2 + (right_points[:, 1] - y_o) ** 2)
-        top2_L = np.sort(dist_L)[:2] if len(dist_L) >= 2 else dist_L
-        top2_R = np.sort(dist_R)[:2] if len(dist_R) >= 2 else dist_R
-        mean_L = float(np.mean(top2_L))
-        mean_R = float(np.mean(top2_R))
-        W_CAR_SAFE = 0.21
-        left_blocked  = mean_L < W_CAR_SAFE
-        right_blocked = mean_R < W_CAR_SAFE
-        if left_blocked and not right_blocked:
-            return -1
-        if right_blocked and not left_blocked:
-            return +1
-        if left_blocked and right_blocked:
-            return -1
-        diff = mean_L - mean_R
-        if abs(diff) <= margin:
-            return -1   # tie → right
-        return +1 if diff > 0 else -1
+    def decide_side_pref(self, s_obs, e_c_obs,
+                         win_back=1.0, win_fwd=2.0, ds=0.25, margin=0.1):
+        """Window-aware side decision (2026-06-11). Replaces the
+        single-point top-2 boundary-distance compare whose centerline tie
+        always returned -1 ("always avoids down" bug). Samples the labeled
+        left/right corridor room along s ∈ [s_obs−win_back, s_obs+win_fwd]
+        — the detour tube the car actually drives — and lets
+        decide_side_window pick the side whose bottleneck (then mean room)
+        is larger. Failure-driven flip (_side_history) stays as the rare
+        fallback for what the map can't predict. One-shot per obstacle
+        commit, so the ~13×6 LUT evals are negligible.
+        """
+        L = float(self.path_length)
+        n = max(2, int(round((win_back + win_fwd) / ds)) + 1)
+        w_l = np.empty(n)
+        w_r = np.empty(n)
+        for i in range(n):
+            sk = (float(s_obs) - win_back + i * ds) % L
+            cx = float(self.center_lut_x(sk)); cy = float(self.center_lut_y(sk))
+            dxt = float(self.center_lut_dx(sk)); dyt = float(self.center_lut_dy(sk))
+            nrm = math.hypot(dxt, dyt) + 1e-9
+            sin_t, cos_t = dyt / nrm, dxt / nrm
+            w_l[i] = (sin_t * (float(self.left_lut_x(sk)) - cx)
+                      - cos_t * (float(self.left_lut_y(sk)) - cy))
+            w_r[i] = (sin_t * (float(self.right_lut_x(sk)) - cx)
+                      - cos_t * (float(self.right_lut_y(sk)) - cy))
+        return decide_side_window(e_c_obs, w_l, w_r, margin=margin)
 
     # ------------------------------------------------------------------
     # Solve
@@ -1701,7 +1705,6 @@ class MPC:
         # corridor sample distances change), and the half-plane direction
         # would suddenly reverse → prediction "bursts" the other way.
         # Stored: (ox, oy, s_obs, side_pref, e_c_obs).
-        right_pts, left_pts = self.get_path_constraints_points(self.X0)
         sel_is_real = sel[1] < 1e5
         if not hasattr(self, '_committed_obs'):
             self._committed_obs = None
@@ -1763,8 +1766,7 @@ class MPC:
                     sp_new = self._side_history[key]
                     self._log.info("[MPC] reusing cached side=%+d for obs at %s", sp_new, key)
                 else:
-                    sp_new = self.decide_side_pref(
-                        [sel[1], sel[2]], left_pts, right_pts)
+                    sp_new = self.decide_side_pref(s_obs_new, e_c_obs_new)
                     if sp_new != 0:
                         self._side_history[key] = sp_new
                 if sp_new != 0:
