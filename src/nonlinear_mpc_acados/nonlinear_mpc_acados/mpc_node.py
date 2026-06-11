@@ -1920,28 +1920,45 @@ class MPCNode(Node):
         except Exception:
             pass
 
-        # MarkerArray twin — sphere markers in centerline-style. Magenta.
+        # MarkerArray twin — 속도 색상 LINE_STRIP (2026-06-11, 구 sphere 대체).
+        # 파랑(0)→초록(½v_max)→빨강(v_max) per-vertex 색으로 예측궤적의 속도
+        # 프로파일이 rviz에서 한눈에 보임. 끝점은 흰 구로 horizon 끝 표시.
         markers = MarkerArray()
-        # DELETEALL first so leftover spheres from previous longer horizon
+        # DELETEALL first so leftover markers from previous runs/horizons
         # don't linger (defensive; horizon size is fixed but cheap to guard).
         clear = Marker()
         clear.header = path.header
         clear.action = Marker.DELETEALL
         markers.markers.append(clear)
+        line = Marker()
+        line.header = path.header
+        line.ns = 'mpc_traj'
+        line.id = 0
+        line.type = Marker.LINE_STRIP
+        line.action = Marker.ADD
+        line.pose.orientation.w = 1.0
+        line.scale.x = 0.06  # line width
+        vmax = max(1.0, float(getattr(self.mpc, 'v_max', 8.0)))
         for k in range(traj.shape[0]):
-            m = Marker()
-            m.header = path.header
-            m.ns = 'mpc_traj'
-            m.id = int(k)
-            m.type = Marker.SPHERE
-            m.action = Marker.ADD
-            m.pose.position.x = float(traj[k, 0])
-            m.pose.position.y = float(traj[k, 1])
-            m.pose.position.z = 0.0
-            m.pose.orientation.w = 1.0
-            m.scale.x = m.scale.y = m.scale.z = 0.07
-            m.color.r, m.color.g, m.color.b, m.color.a = 1.0, 0.0, 1.0, 1.0
-            markers.markers.append(m)
+            line.points.append(Point(x=float(traj[k, 0]), y=float(traj[k, 1]),
+                                     z=0.05))
+            h = min(1.0, max(0.0, float(traj[k, 3]) / vmax))  # vx = state idx 3
+            line.colors.append(ColorRGBA(r=h, g=1.0 - abs(2.0 * h - 1.0),
+                                         b=1.0 - h, a=1.0))
+        markers.markers.append(line)
+        end = Marker()
+        end.header = path.header
+        end.ns = 'mpc_traj'
+        end.id = 1
+        end.type = Marker.SPHERE
+        end.action = Marker.ADD
+        end.pose.position.x = float(traj[-1, 0])
+        end.pose.position.y = float(traj[-1, 1])
+        end.pose.position.z = 0.05
+        end.pose.orientation.w = 1.0
+        end.scale.x = end.scale.y = end.scale.z = 0.12
+        end.color.r = end.color.g = end.color.b = end.color.a = 1.0
+        markers.markers.append(end)
         self.mpc_traj_markers_pub.publish(markers)
 
         # MPC prediction (raw state + inputs per stage) → osuf1_common/MPCTrajectory
