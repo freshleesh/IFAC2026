@@ -152,7 +152,12 @@ mpc_node:
     lmpc_seed_from_raceline: true    # cold-start raceline seed (LMPC용)
     # Failed lap filter (reviewer #4-A — bad lap 이 SS 오염 막음)
     lmpc_max_resets: 0    # 2026-06-08: teleport된 랩은 safe-set 거부 (코드 기본과 일치). 이전 3은 수정을 무효화했음
-    lmpc_max_abs_ec_m: 100.0
+    # 2026-06-12 LMPC accept ec-cap: 100.0(사실상 off) → 0.25. 관측된 양성
+    # 피드백 루프 차단 — accept가 n_resets만 보던 동안 고-ec 랩(0.31m+)이
+    # safe set에 들어가 terminal set을 라인 밖으로 끌어냄 (ec 0.16→0.42m
+    # 단조 드리프트, lap 22.16→23.6s, lap29부터 s=62.44 stuck 4회;
+    # LMPC-off 40랩은 flat 22.5-22.8s/0 stuck — 2026-06-11 A/B 확정).
+    lmpc_max_abs_ec_m: 0.25
     lmpc_max_lap_time_ratio: 3.0
     lmpc_max_stuck_seconds: 5.0
     lmpc_buffer_per_bucket: 10
