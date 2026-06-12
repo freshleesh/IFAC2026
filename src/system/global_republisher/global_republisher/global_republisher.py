@@ -184,16 +184,17 @@ class GlobalRepublisher(Node):
     def _resolve_path(self, map_path: str, map_name: str) -> str:
         if map_path:
             return map_path
-        # 레포 루트의 maps/ 해석 — Ubuntu: 레포 == colcon ws (ws/maps),
-        # Mac mini 실차: 레포가 ws/src/IFAC2026_SH 로 클론됨.
+        # canonical map storage: stack_master/maps (src side) —
+        # Ubuntu: 레포 == colcon ws / Mac mini 실차: 레포가 ws/src/IFAC2026_SH 로 클론됨.
         ws = os.path.normpath(os.path.join(next(
             p for p in os.environ.get('AMENT_PREFIX_PATH', '').split(':')
             if os.path.basename(p) == 'global_republisher'), '..', '..'))
-        maps_root = next(
-            (os.path.join(r, 'maps') for r in (ws, os.path.join(ws, 'src', 'IFAC2026_SH'))
-             if os.path.isdir(os.path.join(r, 'maps'))),
-            os.path.join(ws, 'maps'))
-        return os.path.join(maps_root, map_name, 'global_waypoints.json')
+        sm = os.path.join('src', 'system', 'stack_master')
+        repo = next(
+            (r for r in (ws, os.path.join(ws, 'src', 'IFAC2026_SH'))
+             if os.path.isdir(os.path.join(r, sm))),
+            ws)
+        return os.path.join(repo, sm, 'maps', map_name, 'global_waypoints.json')
 
     # ---------- 외부 발행 캡처 콜백 (모두 self._data 의 필드 갱신) ----------
 

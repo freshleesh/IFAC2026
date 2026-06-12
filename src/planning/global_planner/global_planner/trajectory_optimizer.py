@@ -80,16 +80,17 @@ class TrajectoryOptimizer(Node):
             self.get_logger().error('map_name parameter is required!')
             return
 
-        # 레포 루트의 maps/ 해석 — Ubuntu: 레포 == colcon ws (ws/maps),
-        # Mac mini 실차: 레포가 ws/src/IFAC2026_SH 로 클론됨.
+        # canonical map storage: stack_master/maps (src side) —
+        # Ubuntu: 레포 == colcon ws / Mac mini 실차: 레포가 ws/src/IFAC2026_SH 로 클론됨.
         _ws = os.path.normpath(os.path.join(next(
             p for p in os.environ.get('AMENT_PREFIX_PATH', '').split(':')
             if os.path.basename(p) == 'global_planner'), '..', '..'))
-        _maps_root = next(
-            (os.path.join(r, 'maps') for r in (_ws, os.path.join(_ws, 'src', 'IFAC2026_SH'))
-             if os.path.isdir(os.path.join(r, 'maps'))),
-            os.path.join(_ws, 'maps'))
-        self.map_dir = os.path.join(_maps_root, self.map_name)
+        _sm = os.path.join('src', 'system', 'stack_master')
+        _repo = next(
+            (r for r in (_ws, os.path.join(_ws, 'src', 'IFAC2026_SH'))
+             if os.path.isdir(os.path.join(r, _sm))),
+            _ws)
+        self.map_dir = os.path.join(_repo, _sm, 'maps', self.map_name)
         self.get_logger().info(f'map_dir: {self.map_dir}')
 
         self.pars = self._load_pars()

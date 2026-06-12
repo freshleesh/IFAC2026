@@ -1,4 +1,4 @@
-# IFAC2026_SH — ROS2 Jazzy Migration
+# IFAC2026 — ROS2 Jazzy Migration
 
 `ICRA2026_HJ` (ROS1 Noetic) 코드베이스의 **state_machine + 관련 노드** 를 ROS2 Jazzy 로
 단계적으로 포팅한 워크스페이스. SH 단독 작업.

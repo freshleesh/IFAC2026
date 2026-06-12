@@ -53,12 +53,13 @@ class DynamicObstaclePublisher(Node):
         self.max_amplitude_limit = 0.5  # Max lateral offset in meters
         self.prev_d_perturbation = 0.0
 
-        # ===== Map directory (canonical: fast_livo2/map/<name>) =====
-        # __file__: /Users/mini/ros2_ws/src/IFAC2026_SH/src/obstacle_publisher/obstacle_publisher/dynamic_obstacle_publisher.py
-        # → up 5 dirnames = /Users/mini/ros2_ws/src
-        ws_src = os.path.dirname(os.path.dirname(os.path.dirname(
-            os.path.dirname(os.path.dirname(os.path.realpath(__file__))))))
-        self.map_dir = os.path.join(ws_src, 'fast_livo2', 'map', self.map_name)
+        # ===== Map directory (canonical: stack_master/maps/<name>) =====
+        # install/share 의 stack_master maps 디렉토리. setup.py 의 data_files
+        # glob 으로 빌드 시 복사. 실차 runtime 데이터 (cloudGlobal.pcd 등) 도
+        # 동일 src 경로에 모임 — 단일 소스.
+        from ament_index_python.packages import get_package_share_directory
+        self.map_dir = os.path.join(
+            get_package_share_directory('stack_master'), 'maps', self.map_name)
 
         # ===== Obstacle state =====
         self.current_s = self.starting_s

@@ -1,7 +1,7 @@
 /**:
   ros__parameters:
     prior_map:
-      pcd_path: "/Users/mini/ros2_ws/src/IFAC2026_SH/src/slam/fast_livo2/map/my_seat/cloudGlobal.pcd"
+      pcd_path: "/Users/mini/ros2_ws/src/IFAC2026_SH/src/system/stack_master/maps/my_seat/cloudGlobal.pcd"
       voxel_size: 0.3
       world_frame: "camera_init"
     input:

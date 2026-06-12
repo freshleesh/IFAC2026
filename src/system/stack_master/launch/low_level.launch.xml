@@ -42,8 +42,10 @@
   <!-- gym_bridge: virtual /scan + odometry, optional TF -->
   <group if="$(var sim)">
     <arg name="map"       description="Map name (required when sim=true)"/>
-    <arg name="maps_root" default="$(find-pkg-share stack_master)/maps"
-         description="Absolute path to unified maps directory (IFAC2026_SH/maps)"/>
+    <!-- canonical map storage (src side). 기본값은 Mac mini 레이아웃;
+         full_sim.launch.py 가 머신별로 해석한 절대경로를 넘겨 override. -->
+    <arg name="maps_root" default="$(env HOME)/ros2_ws/src/IFAC2026_SH/src/system/stack_master/maps"
+         description="Absolute path to stack_master/maps (src side)"/>
 
     <let name="map_path" value="$(var maps_root)/$(var map)/$(var map)"/>
     <include file="$(find-pkg-share f1tenth_gym_ros)/launch/gym_bridge_launch.py">
