@@ -1845,9 +1845,27 @@ class MPCNode(Node):
                 # earlier traj[-1] (horizon-end) ignored the brake → plowed into
                 # apex → wedge. (Note: a prior "min kills accel" theory was a
                 # red herring — the slowness was a leftover max_speed=3 config.)
-                n_near = min(5, traj.shape[0])           # steps 1..4 ≈ 0.16 s
-                v_plan = float(np.min(traj[1:n_near, 3])) if n_near > 1 \
-                    else float(traj[-1, 3])
+                # ── 2026-06-12 직선 저속 수정: 플랜트 P-제어 역모델 preview ──
+                # gym PID 는 accl = kp·(v_cmd − v_now), 가속 kp = 10·a_max/v_max
+                # = 10·9.51/20 ≈ 4.76 /s (dynamic_models.pid). 이전 near-min
+                # (steps 1..4 ≈ 0.16 s) 은 가속 중 v_cmd ≈ v_now+0.16 → 전달
+                # 가속 4.76×0.16 ≈ 0.76 m/s² = 계획 a_x(4.0)의 19%. CSV 실측:
+                # 직선 ref_v 4.87 인데 v_actual 2.88 천장 (mpc_20260611_131959).
+                # 수정: 가속 구간은 PID 시정수 1/kp ≈ 0.21 s 만큼 미리보기한
+                # 계획속도 traj[τ] 를 명령 → 플랜트가 계획 a_x 를 실제로 냄.
+                # 브레이크 정직성 유지: preview 창 안에 v_now 아래로 내려가는
+                # 스테이지가 하나라도 있으면 그 MIN 을 즉시 명령 (옛 traj[-1]
+                # horizon-끝 방식이 브레이크 무시 → apex 돌진/wedge 했던 버그
+                # 의 재발 방지 — min-가드가 그 오류를 막는다).
+                n_prev = min(7, traj.shape[0])           # steps 1..6 ≈ 0.24 s ≈ 1/kp
+                if n_prev > 1:
+                    v_brk = float(np.min(traj[1:n_prev, 3]))
+                    if v_brk < v_now - 0.05:             # 감속 계획 → 즉시 브레이크
+                        v_plan = v_brk
+                    else:                                # 가속/유지 → τ-preview 속도
+                        v_plan = float(traj[n_prev - 1, 3])
+                else:
+                    v_plan = float(traj[-1, 3])
                 if v_now < 0.5:                          # launch-from-rest assist
                     v_plan = max(v_plan, min(v_cap, v_now + 0.5))
                 cmd.drive.speed = max(0.0, min(v_cap, v_plan))
