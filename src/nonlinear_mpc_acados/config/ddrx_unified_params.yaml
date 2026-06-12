@@ -136,7 +136,13 @@ mpc_node:
     # historical states) + regularization. lap-by-lap value function 학습으로
     # tire-model mismatch (gym ST vs MPCC Pacejka) 를 자동 보상.
     # use_lmpc=false (default) — LMPC term cost weight = 0, 기존 동작 동일.
-    use_lmpc: true            # B-mode(BO 18.62, 무drift)가 sustained 최선. softmin LMPC는 초반 18.48 더 빠르나 drift 잔존(full Rosolia 하드제약 필요).
+    # 2026-06-12 OFF 확정: ec-cap(0.25)으로 SS 오염을 완전 차단했는데도(40랩 중
+    # accept 2개뿐) ec 드리프트 0.22→0.47m 재현 + lap28부터 stuck 21회 붕괴
+    # (LMPC-off 동일조건 28랩은 ec 0.25-0.28 flat·0 stuck). → 드리프트 원인은
+    # lap acceptance가 아니라 per-cycle 경로: horizon-end SS query 피드백
+    # (mpc_node._lmpc_update_per_cycle, q_state=직전 solve의 x_N — 앵커 없는
+    # 양성 피드백 의심). 해당 루프 수정 전까지 LMPC ON 금지.
+    use_lmpc: false
     use_error_regression: false  # B4' 실험(2026-06-05): error dynamics regression ON (e_corr=SS이웃 잔차 회귀/dt). 검증 후 false 로 되돌릴 것.
     err_regr_bandwidth: 2.0       # B4' Epanechnikov bandwidth = 이 값 × max(SS이웃거리) (적응형, 스케일불변)
     lmpc_w: 0.05                # softmin term 가중 (acados W_e 의 lmpc residual entry 1.0 × lmpc_w)
