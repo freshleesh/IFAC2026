@@ -1,0 +1,7 @@
+global_republisher:
+  ros__parameters:
+    # 전체 속도 스케일 (vx_mps에 곱해짐)
+    # 1.0 = optimizer 원본 속도, 0.7 = 70%
+    speed_scale: 1.0
+
+    publish_rate_hz: 0.5

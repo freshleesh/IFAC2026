@@ -1,0 +1,28 @@
+pp:
+  ros__parameters:
+    wheelbase:        0.33    # [m]
+    max_steering_rad: 0.4     # [rad]
+    max_speed_mps:    8.0     # [m/s]
+    speed_scale:      1.0     # multiplier on reference vx_mps
+    control_rate_hz:  50.0
+    drive_topic:      /vesc/high_level/ackermann_cmd
+
+    # ── adaptive lookahead ─────────────────────────────────
+    # ld = clip(k_v * v / (1 + k_k * |κ|), ld_min, ld_max)
+    ld_min:  0.4              # [m] minimum lookahead
+    ld_max:  2.5              # [m] maximum lookahead
+    k_v:     0.5              # speed → lookahead gain
+    k_k:     2.0              # curvature → lookahead reduction
+
+    # ── multi-point blend ──────────────────────────────────
+    # window_m = k_window * v,  sample n_targets points in [ld, ld+window_m]
+    k_window:  0.05           # [s]  window = k_window × v
+    n_targets: 3              # number of blend waypoints
+
+    # ── feedforward ───────────────────────────────────────
+    # steer += k_ff * atan(wheelbase * κ)
+    # 0.0 = off,  1.0 = full kinematic feedforward
+    k_ff:    0.5
+
+    # ── acceleration ramp ─────────────────────────────────
+    max_accel: 3.0            # [m/s²]  hard braking always unlimited

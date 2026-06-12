@@ -41,10 +41,11 @@
   <!-- ========== SIMULATOR ========== -->
   <!-- gym_bridge: virtual /scan + odometry, optional TF -->
   <group if="$(var sim)">
-    <arg name="map"                     description="Map name (required when sim=true)"/>
+    <arg name="map"       description="Map name (required when sim=true)"/>
+    <arg name="maps_root" default="$(find-pkg-share stack_master)/maps"
+         description="Absolute path to unified maps directory (IFAC2026_SH/maps)"/>
 
-    <let name="maps_dir" value="$(find-pkg-share stack_master)/maps"/>
-    <let name="map_path" value="$(var maps_dir)/$(var map)/$(var map)"/>
+    <let name="map_path" value="$(var maps_root)/$(var map)/$(var map)"/>
     <include file="$(find-pkg-share f1tenth_gym_ros)/launch/gym_bridge_launch.py">
       <arg name="map_yaml_path"  value="$(var map_path).yaml"/>
     </include>

@@ -4,6 +4,10 @@ import os
 
 package_name = "stack_master"
 
+# Unified maps root: IFAC2026_SH/maps/ — relative path from this package's source dir.
+# colcon runs setup.py with CWD = src/system/stack_master/, so 3 levels up = IFAC2026_SH/.
+_maps_root = os.path.join('..', '..', '..', 'maps')
+
 setup(
     name=package_name,
     version="0.1.0",
@@ -20,7 +24,7 @@ setup(
          glob("config/SIM/veh_dyn_info/*.csv")),
         *[
             (os.path.join("share", package_name, "maps", os.path.basename(d)), glob(os.path.join(d, "*")))
-            for d in glob("maps/*") if os.path.isdir(d)
+            for d in glob(os.path.join(_maps_root, '*')) if os.path.isdir(d)
         ],
     ],
     install_requires=["setuptools"],

@@ -3,19 +3,15 @@
 Trajectory Optimizer Node for 2-stage pattern (IQP → SP).
 
 Reads maps/{map_name}/centerline.csv produced by centerline_extractor and
-computes two optimised racelines:
-  - global_waypoints.csv  IQP minimum-curvature racing line
-  - shortest_path.csv     Shortest-path overtaking line
+computes two optimised racelines. Outputs global_waypoints.json consumed by
+global_republisher.
 
 Vehicle + algorithm parameters come from planner/config/racecar.ini.
-ROS parameters (4 only):
-  map_name          str   map folder name under stack_master/maps/
+ROS parameters:
+  map_name          str   map folder name under IFAC2026_SH/maps/
   safety_width_iqp  float vehicle safety width for IQP [m]  (overrides ini width_opt)
   safety_width_sp   float vehicle safety width for SP  [m]  (overrides ini width_opt)
   enable_check_traj bool  run post-optimisation sanity checks
-
-Output CSV format (7 cols, compatible with waypoint_publisher):
-  x_m, y_m, w_tr_right_m, w_tr_left_m, psi_rad, kappa_radpm, vx_mps
 """
 
 import configparser
@@ -84,10 +80,16 @@ class TrajectoryOptimizer(Node):
             self.get_logger().error('map_name parameter is required!')
             return
 
+        # 레포 루트의 maps/ 해석 — Ubuntu: 레포 == colcon ws (ws/maps),
+        # Mac mini 실차: 레포가 ws/src/IFAC2026_SH 로 클론됨.
         _ws = os.path.normpath(os.path.join(next(
             p for p in os.environ.get('AMENT_PREFIX_PATH', '').split(':')
             if os.path.basename(p) == 'global_planner'), '..', '..'))
-        self.map_dir = os.path.join(_ws, 'src', 'stack_master', 'maps', self.map_name)
+        _maps_root = next(
+            (os.path.join(r, 'maps') for r in (_ws, os.path.join(_ws, 'src', 'IFAC2026_SH'))
+             if os.path.isdir(os.path.join(r, 'maps'))),
+            os.path.join(_ws, 'maps'))
+        self.map_dir = os.path.join(_maps_root, self.map_name)
         self.get_logger().info(f'map_dir: {self.map_dir}')
 
         self.pars = self._load_pars()
@@ -132,6 +134,12 @@ class TrajectoryOptimizer(Node):
         pars['optim_opts_mincurv']['width_opt']  = self.safety_width_iqp
         pars['optim_opts_sp']['width_opt']       = self.safety_width_sp
         pars['optim_opts_mintime']['width_opt']  = self.safety_width_mintime
+
+        # min_track_width는 racecar.ini 값을 그대로 사용한다.
+        # 이전에는 safety_width_iqp로 올렸으나, 실제 트랙이 좁은 구간에서
+        # prep_track이 인위적으로 확장된 가상 트랙에서 IQP를 풀어
+        # 실제 돌출 벽에 경로가 붙는 문제가 발생했다.
+        # → min_track_width 강제 조정 제거. IQP가 실제 폭 기준으로 최적화.
 
         # wheelbase combined (required by opt_mintime)
         vp = pars['vehicle_params_mintime']
@@ -203,10 +211,8 @@ class TrajectoryOptimizer(Node):
         self.get_logger().info('=== Running shortest_path ===')
         traj_sp, lap_sp = self._run_sp(reftrack_iqp, normvec_iqp)
 
-        json_path = os.path.join(self.map_dir, 'global_waypoints.json')
-        self._save_json(traj_iqp, traj_sp, lap_iqp, lap_sp, json_path,
-                        bound_r=bound_r, bound_l=bound_l)
-        self.get_logger().info(f'JSON saved: {json_path}')
+        self._save_json(traj_iqp, traj_sp, lap_iqp,
+                        reftrack_interp, psi_interp, kappa_interp, spline_lengths_interp)
 
         if self.enable_check_traj and bound_r is not None:
             self._run_check('SP', traj_sp, bound_r, bound_l, self.safety_width_sp)
@@ -227,9 +233,6 @@ class TrajectoryOptimizer(Node):
             traj_mt, lap_mt = self._run_mintime(
                 reftrack_mt, normvec_mt, a_mt,
                 coeffs_x_mt, coeffs_y_mt)
-            mt_json = os.path.join(self.map_dir, 'mintime_waypoints.json')
-            self._save_json(traj_mt, traj_sp, lap_mt, lap_sp, mt_json)
-            self.get_logger().info(f'opt_mintime JSON saved: {mt_json}')
             if self.enable_check_traj and bound_r is not None:
                 self._run_check('MinTime', traj_mt, bound_r, bound_l, self.safety_width_mintime)
 
@@ -525,105 +528,122 @@ class TrajectoryOptimizer(Node):
             raise ValueError(f'Centerline too short: {len(rows)} points')
         return np.array(rows)
 
-    @staticmethod
-    def _save_trajectory(traj: np.ndarray, csv_path: str):
-        """Save traj [s, x, y, psi, kappa, vx, ax] → 7-column CSV for waypoint_publisher."""
-        header = ['x_m', 'y_m', 'w_tr_right_m', 'w_tr_left_m',
-                  'psi_rad', 'kappa_radpm', 'vx_mps']
-        with open(csv_path, 'w', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow(header)
-            for row in traj:
-                writer.writerow([
-                    f'{row[1]:.6f}',  # x_m
-                    f'{row[2]:.6f}',  # y_m
-                    '0.0',            # w_tr_right_m  (recomputed by waypoint_publisher)
-                    '0.0',            # w_tr_left_m
-                    f'{row[3]:.6f}',  # psi_rad
-                    f'{row[4]:.6f}',  # kappa_radpm
-                    f'{row[5]:.6f}',  # vx_mps
-                ])
+    # ─────────────────────────────────────────────────────────────────────────
+    # JSON output (global_waypoints.json — consumed by global_republisher)
+    # ─────────────────────────────────────────────────────────────────────────
+    def _save_json(self, traj_iqp: np.ndarray, traj_sp: np.ndarray, lap_iqp: float,
+                   reftrack_interp: np.ndarray, psi_interp: np.ndarray,
+                   kappa_interp: np.ndarray, spline_lengths: np.ndarray):
+        import math
+        import json as _json
 
-    @staticmethod
-    def _save_json(traj_iqp: np.ndarray, traj_sp: np.ndarray,
-                   lap_iqp: float, lap_sp: float, json_path: str,
-                   bound_r: Optional[np.ndarray] = None,
-                   bound_l: Optional[np.ndarray] = None):
-        """Save IQP + SP trajectories as global_waypoints.json.
-        traj columns: [s_m, x_m, y_m, psi_rad, kappa_radpm, vx_mps, ax_mps2]
-        """
-        def _marker(i, x, y, r, g, b, scale=0.08):
-            return {
-                'header': {'frame_id': 'map', 'stamp': {'sec': 0, 'nanosec': 0}},
-                'ns': '', 'id': int(i), 'type': 2, 'action': 0,
-                'pose': {
-                    'position': {'x': float(x), 'y': float(y), 'z': 0.0},
-                    'orientation': {'x': 0.0, 'y': 0.0, 'z': 0.0, 'w': 1.0},
-                },
-                'scale': {'x': scale, 'y': scale, 'z': scale},
-                'color': {'r': float(r), 'g': float(g), 'b': float(b), 'a': 1.0},
-            }
+        def _psi_ros(p):
+            return (float(p) + math.pi / 2 + math.pi) % (2 * math.pi) - math.pi
 
-        def _traj_to_markers(traj, r, g, b):
-            return {'markers': [_marker(i, row[1], row[2], r, g, b)
-                                 for i, row in enumerate(traj)]}
-
-        def _bounds_to_markers(bound_r, bound_l):
-            markers = []
-            for i, pt in enumerate(bound_r):
-                markers.append(_marker(i, pt[0], pt[1], 1.0, 0.0, 0.0, scale=0.06))
-            offset = len(bound_r)
-            for i, pt in enumerate(bound_l):
-                markers.append(_marker(offset + i, pt[0], pt[1], 0.0, 0.0, 1.0, scale=0.06))
-            return {'markers': markers}
+        def _header():
+            return {'stamp': {'sec': 0, 'nanosec': 0}, 'frame_id': 'map'}
 
         def _traj_to_wpnts(traj):
-            return {'wpnts': [
+            return {
+                'header': _header(),
+                'wpnts': [
+                    {
+                        'id': i, 's_m': float(r[0]), 'd_m': 0.0,
+                        'x_m': float(r[1]), 'y_m': float(r[2]),
+                        'd_right': 0.0, 'd_left': 0.0,
+                        'psi_rad': _psi_ros(r[3]),
+                        'kappa_radpm': float(r[4]),
+                        'vx_mps': float(r[5]), 'ax_mps2': float(r[6]),
+                    }
+                    for i, r in enumerate(traj)
+                ],
+            }
+
+        def _vel_markers(traj, ns, col_r, col_g, col_b):
+            markers = []
+            for i, r in enumerate(traj):
+                h = max(float(r[5]) * 0.1317, 0.01)
+                markers.append({
+                    'header': _header(), 'ns': ns, 'id': i, 'type': 3, 'action': 0,
+                    'pose': {
+                        'position': {'x': float(r[1]), 'y': float(r[2]), 'z': h / 2.0},
+                        'orientation': {'x': 0.0, 'y': 0.0, 'z': 0.0, 'w': 1.0},
+                    },
+                    'scale': {'x': 0.1, 'y': 0.1, 'z': h},
+                    'color': {'r': col_r, 'g': col_g, 'b': col_b, 'a': 0.8},
+                    'lifetime': {'sec': 0, 'nanosec': 0}, 'frame_locked': False,
+                    'points': [], 'colors': [], 'text': '',
+                    'mesh_resource': '', 'mesh_use_embedded_materials': False,
+                })
+            return {'markers': markers}
+
+        def _sphere_markers(xys, ns, col_r, col_g, col_b, scale=0.1):
+            return [
                 {
-                    'id':          int(i),
-                    's_m':         float(row[0]),
-                    'd_m':         0.0,
-                    'x_m':         float(row[1]),
-                    'y_m':         float(row[2]),
-                    'd_right':     0.5,
-                    'd_left':      0.5,
-                    'psi_rad':     float(row[3]),
-                    'kappa_radpm': float(row[4]),
-                    'vx_mps':      float(row[5]),
-                    'ax_mps2':     float(row[6]),
+                    'header': _header(), 'ns': ns, 'id': i, 'type': 2, 'action': 0,
+                    'pose': {
+                        'position': {'x': float(xy[0]), 'y': float(xy[1]), 'z': 0.0},
+                        'orientation': {'x': 0.0, 'y': 0.0, 'z': 0.0, 'w': 1.0},
+                    },
+                    'scale': {'x': scale, 'y': scale, 'z': scale},
+                    'color': {'r': col_r, 'g': col_g, 'b': col_b, 'a': 0.8},
+                    'lifetime': {'sec': 0, 'nanosec': 0}, 'frame_locked': False,
+                    'points': [], 'colors': [], 'text': '',
+                    'mesh_resource': '', 'mesh_use_embedded_materials': False,
                 }
-                for i, row in enumerate(traj)
-            ]}
+                for i, xy in enumerate(xys)
+            ]
 
-        v_max_iqp = float(np.max(traj_iqp[:, 5]))
-        v_max_sp  = float(np.max(traj_sp[:, 5]))
+        # Centerline waypoints from prep_track reftrack (N points = N spline segments)
+        # s_vals[i] = arc length to start of spline i
+        s_vals = np.concatenate([[0.0], np.cumsum(spline_lengths)])
+        cl_wpnts = [
+            {
+                'id': i, 's_m': float(s_vals[i]), 'd_m': 0.0,
+                'x_m': float(row[0]), 'y_m': float(row[1]),
+                'd_right': float(row[2]), 'd_left': float(row[3]),
+                'psi_rad': _psi_ros(psi_interp[i]),
+                'kappa_radpm': float(kappa_interp[i]),
+                'vx_mps': 0.0, 'ax_mps2': 0.0,
+            }
+            for i, row in enumerate(reftrack_interp)
+        ]
 
-        trackbounds = (
-            _bounds_to_markers(bound_r, bound_l)
-            if bound_r is not None and bound_l is not None
-            else {'markers': []}
-        )
+        # Trackbounds markers from boundary CSVs
+        tb_markers = []
+        mid = 0
+        for side_path, (cr, cg, cb) in [
+            (os.path.join(self.map_dir, 'boundary_right.csv'), (0.0, 1.0, 0.0)),
+            (os.path.join(self.map_dir, 'boundary_left.csv'),  (1.0, 0.0, 1.0)),
+        ]:
+            if os.path.exists(side_path):
+                pts = np.loadtxt(side_path, delimiter=',', skiprows=1)
+                for pt in pts:
+                    m = _sphere_markers([[pt[0], pt[1]]], 'trackbounds', cr, cg, cb)[0]
+                    m['id'] = mid
+                    tb_markers.append(m)
+                    mid += 1
 
         data = {
-            'map_info_str': {'data': (
-                f'IQP estimated lap time: {lap_iqp:.4f}s; '
-                f'IQP maximum speed: {v_max_iqp:.4f}m/s; '
-                f'SP estimated lap time: {lap_sp:.4f}s; '
-                f'SP maximum speed: {v_max_sp:.4f}m/s; '
-            )},
-            'est_lap_time':            {'data': float(lap_sp)},
-            'centerline_markers':      _traj_to_markers(traj_iqp, 0.0, 0.0, 1.0),
-            'centerline_waypoints':    _traj_to_wpnts(traj_iqp),
-            'global_traj_markers_iqp': _traj_to_markers(traj_iqp, 0.0, 1.0, 0.0),
+            'map_info_str': {'data': self.map_name},
+            'est_lap_time': {'data': float(lap_iqp)},
+            'centerline_markers': {
+                'markers': _sphere_markers(
+                    [[w['x_m'], w['y_m']] for w in cl_wpnts],
+                    'centerline', 0.0, 1.0, 1.0, 0.05)
+            },
+            'centerline_waypoints': {'header': _header(), 'wpnts': cl_wpnts},
+            'global_traj_markers_iqp': _vel_markers(traj_iqp, 'iqp', 1.0, 0.0, 0.0),
             'global_traj_wpnts_iqp':   _traj_to_wpnts(traj_iqp),
-            'global_traj_markers_sp':  _traj_to_markers(traj_sp, 1.0, 1.0, 0.0),
+            'global_traj_markers_sp':  _vel_markers(traj_sp, 'sp', 0.0, 0.0, 1.0),
             'global_traj_wpnts_sp':    _traj_to_wpnts(traj_sp),
-            'trackbounds_markers':     trackbounds,
+            'trackbounds_markers':     {'markers': tb_markers},
         }
 
+        json_path = os.path.join(self.map_dir, 'global_waypoints.json')
         with open(json_path, 'w') as f:
-            json.dump(data, f, indent=2)
-
+            _json.dump(data, f)
+        self.get_logger().info(f'JSON saved: {json_path}')
 
     # ─────────────────────────────────────────────────────────────────────────
     # check_traj

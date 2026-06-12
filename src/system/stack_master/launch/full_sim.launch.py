@@ -11,7 +11,7 @@
        mac   mux in = /vesc/high_level/.../input/nav_1       / out = /ackermann_cmd)
 
 LaunchArgs:
-  map (f): 맵 이름 — stack_master/maps/<name>/{<name>.{png,yaml}, global_waypoints.json}
+  map (f): 맵 이름 — IFAC2026_SH/maps/<name>/{<name>.{png,yaml}, global_waypoints.json}
   racecar_version (SIM): 차량 설정 이름
   mode (timetrial | overtake | mpcc): 운영 모드
     - timetrial: GB_TRACK 만, 추월 분기 비활성 (n_obstacles=0). 검증된 기본 모드.
@@ -60,28 +60,39 @@ def _build(context: LaunchContext, *_args, **_kwargs):
     force_gbtrack = (mode == "timetrial") or is_mpcc
     ot_planner = "spliner" if mode == "overtake" else ""
 
+    # Ubuntu: repo == colcon ws / Mac mini: repo cloned into ws/src/IFAC2026_SH
     _sm_install = get_package_share_directory("stack_master")
     _ws = os.path.normpath(os.path.join(_sm_install, '..', '..', '..', '..'))
-    sm_share = os.path.join(_ws, 'src', 'system', 'stack_master')
+    _repo = next(
+        (r for r in (_ws, os.path.join(_ws, 'src', 'IFAC2026_SH'))
+         if os.path.isdir(os.path.join(r, 'maps'))),
+        _ws)
+    sm_share = os.path.join(_repo, 'src', 'system', 'stack_master')
     controller_yaml = os.path.join(
         get_package_share_directory("controller"), "config", "sim_controller_params.yaml"
     )
 
+    _maps_root = os.path.join(_repo, 'maps')
+
     # ── low_level ──
     low_level = IncludeLaunchDescription(
         AnyLaunchDescriptionSource(os.path.join(sm_share, "launch", "low_level.launch.xml")),
-        launch_arguments={"sim": "true", "map": map_name}.items(),
+        launch_arguments={"sim": "true", "map": map_name, "maps_root": _maps_root}.items(),
     )
 
     # ── global_republisher ──
+    _sm_share_dir = get_package_share_directory("stack_master")
     global_repub = Node(
         package="global_republisher",
         executable="global_republisher",
         name="global_republisher",
-        parameters=[{
-            "map": map_name,
-            "map_path": os.path.join(get_package_share_directory("stack_master"), 'maps', map_name, "global_waypoints.json"),
-        }],
+        parameters=[
+            os.path.join(_sm_share_dir, "config", "global_republisher.yaml"),
+            {
+                "map": map_name,
+                "map_path": os.path.join(_maps_root, map_name, "global_waypoints.json"),
+            },
+        ],
         output="screen",
     )
 
@@ -179,14 +190,14 @@ def _build(context: LaunchContext, *_args, **_kwargs):
         # ── simple_pp (minimal pure-pursuit, vx_mps 그대로) ────────────
         # 기존 controller_manager (L1 + lat_err/accel_lim 후처리) 가 vx_mps 를
         # 깎는 문제 디버깅용 교체. middle_level_mac 과 동일 노드/파라미터.
-        stanley_yaml = os.path.join(
-            get_package_share_directory("controller"), "config", "stanley_params.yaml"
+        friction_circle_yaml = os.path.join(
+            get_package_share_directory("controller"), "config", "friction_circle.yaml"
         )
         controller_node = TimerAction(period=7.0, actions=[Node(
             package="controller",
-            executable="stanley",
-            name="stanley",
-            parameters=[stanley_yaml],
+            executable="fc_node",
+            name="friction_circle_controller",
+            parameters=[friction_circle_yaml],
             output="screen",
         )])
         actions.append(controller_node)

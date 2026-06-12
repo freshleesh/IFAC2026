@@ -498,16 +498,18 @@ class InitMixin:
 
     def _resolve_stack_master_path(self, *parts) -> str:
         """stack_master 경로 해결 — 우선순위:
-        1) src/stack_master/ (이번 ws, generated 파일 포함)
+        1) src/system/stack_master/ (이번 ws, generated 파일 포함)
+           Ubuntu: 레포 == colcon ws / Mac mini: 레포가 ws/src/IFAC2026_SH 로 클론됨
         2) ament share/stack_master/ (install)
         3) src fallback (파일 없어도 이 ws 경로 반환)
         """
         ws = os.path.normpath(os.path.join(next(
             p for p in os.environ.get('AMENT_PREFIX_PATH', '').split(':')
             if os.path.basename(p) == 'state_machine'), '..', '..'))
-        src_path = os.path.join(ws, 'src', 'stack_master', *parts)
-        if os.path.exists(src_path):
-            return src_path
+        for repo in (ws, os.path.join(ws, 'src', 'IFAC2026_SH')):
+            src_path = os.path.join(repo, 'src', 'system', 'stack_master', *parts)
+            if os.path.exists(src_path):
+                return src_path
         try:
             from ament_index_python.packages import get_package_share_directory
             share = get_package_share_directory("stack_master")

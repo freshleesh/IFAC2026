@@ -49,10 +49,16 @@ class CenterlineExtractor(Node):
             self.get_logger().error('map_name parameter is required!')
             return
 
+        # 레포 루트의 maps/ 해석 — Ubuntu: 레포 == colcon ws (ws/maps),
+        # Mac mini 실차: 레포가 ws/src/IFAC2026_SH 로 클론됨.
         _ws = os.path.normpath(os.path.join(next(
             p for p in os.environ.get('AMENT_PREFIX_PATH', '').split(':')
             if os.path.basename(p) == 'global_planner'), '..', '..'))
-        self.map_dir = os.path.join(_ws, 'src', 'stack_master', 'maps', self.map_name)
+        _maps_root = next(
+            (os.path.join(r, 'maps') for r in (_ws, os.path.join(_ws, 'src', 'IFAC2026_SH'))
+             if os.path.isdir(os.path.join(r, 'maps'))),
+            os.path.join(_ws, 'maps'))
+        self.map_dir = os.path.join(_maps_root, self.map_name)
         self.get_logger().info(f'[CenterlineExtractor] map_dir: {self.map_dir}')
 
         # Publishers (TRANSIENT_LOCAL for latched behavior)
@@ -111,7 +117,15 @@ class CenterlineExtractor(Node):
         map_origin_y = map_data['origin'][1]
         occupied_thresh = map_data.get('occupied_thresh', 0.65)
 
-        img_path = os.path.join(self.map_dir, map_data['image'])
+        # [맵이름]_modi.png가 있으면 우선 사용: 경로 생성용으로 수정한 이미지를
+        # 파일명 교체 없이 쓰기 위함 (yaml의 image:는 로컬라이제이션용 원본 유지)
+        modi_path = os.path.join(self.map_dir, f'{self.map_name}_modi.png')
+        use_modi = os.path.exists(modi_path)
+        if use_modi:
+            img_path = modi_path
+            self.get_logger().info(f'[CenterlineExtractor] Using modified map image: {modi_path}')
+        else:
+            img_path = os.path.join(self.map_dir, map_data['image'])
         img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
         if img is None:
             self.get_logger().error(f'Failed to load map image: {img_path}')
@@ -174,10 +188,32 @@ class CenterlineExtractor(Node):
             self.get_logger().info('[CenterlineExtractor] Centerline direction: CCW')
 
         # 9. Extract wall boundaries (inner/outer contours from binary image)
+        # _modi 이미지의 벽 → 센터라인 폭(w_tr) 계산용 (optimizer가 따르는 가짜 벽 제약)
         bound_right_m, bound_left_m = self._extract_wall_boundaries(
             opening, centerline_meter, map_resolution,
             map_origin_x, map_origin_y)
-        
+
+        # boundary CSV(런타임 d_left/d_right, 회피 스플라인 클램핑, check_traj 검증)는
+        # 반드시 실제 벽 기준이어야 함 → _modi 사용 시 원본 이미지에서 별도 추출
+        if use_modi:
+            orig_img = cv2.imread(os.path.join(self.map_dir, map_data['image']),
+                                  cv2.IMREAD_GRAYSCALE)
+            if orig_img is None:
+                self.get_logger().error(
+                    f'Failed to load original map image: {map_data["image"]}')
+                return False
+            orig_img = cv2.flip(orig_img, 0)
+            orig_bw = np.where(orig_img > threshold, 255, 0).astype(np.uint8)
+            opening_orig = cv2.morphologyEx(orig_bw, cv2.MORPH_OPEN, kernel, iterations=1)
+            bound_right_real, bound_left_real = self._extract_wall_boundaries(
+                opening_orig, centerline_meter, map_resolution,
+                map_origin_x, map_origin_y)
+            self.get_logger().info(
+                '[CenterlineExtractor] Boundary CSVs from ORIGINAL image '
+                '(widths from _modi image)')
+        else:
+            bound_right_real, bound_left_real = bound_right_m, bound_left_m
+
         # 10. Track width from distance transform
         if bound_right_m is not None and bound_left_m is not None:
             w_right, w_left = self._compute_track_widths_from_bounds(
@@ -208,16 +244,16 @@ class CenterlineExtractor(Node):
         self._write_csv(centerline_complete, csv_path)
         self.get_logger().info(f'[CenterlineExtractor] CSV saved: {csv_path}')
 
-        if bound_right_m is not None:
-            self._write_boundary_csv(bound_right_m, os.path.join(self.map_dir, 'boundary_right.csv'))
-            self._write_boundary_csv(bound_left_m, os.path.join(self.map_dir, 'boundary_left.csv'))
+        if bound_right_real is not None:
+            self._write_boundary_csv(bound_right_real, os.path.join(self.map_dir, 'boundary_right.csv'))
+            self._write_boundary_csv(bound_left_real, os.path.join(self.map_dir, 'boundary_left.csv'))
             self.get_logger().info(f'[CenterlineExtractor] Boundary CSVs saved')
 
-        # 13. Create ROS markers
+        # 13. Create ROS markers (실제 벽 기준)
         self._centerline_markers = self._create_centerline_markers(centerline_meter)
-        if bound_right_m is not None:
+        if bound_right_real is not None:
             self._track_bounds_markers = self._create_track_bounds_markers(
-                bound_right_m, bound_left_m)
+                bound_right_real, bound_left_real)
         else:
             self._track_bounds_markers = MarkerArray()
 
@@ -225,9 +261,9 @@ class CenterlineExtractor(Node):
         self.centerline_pub.publish(self._centerline_markers)
         self.track_bounds_pub.publish(self._track_bounds_markers)
 
-        # 14. Matplotlib visualization
+        # 14. Matplotlib visualization (실제 벽 기준)
         self._visualize(opening, skeleton, centerline_smooth,
-                        centerline_meter, bound_right_m, bound_left_m)
+                        centerline_meter, bound_right_real, bound_left_real)
 
         return True
 
@@ -344,28 +380,78 @@ class CenterlineExtractor(Node):
                                         bound_left_m: np.ndarray
                                         ) -> tuple:
         """
-        Compute w_right and w_left for each centerline point separately.
-        distance to each boundary, not symmetric distance transform.
-        """
+        Compute w_right and w_left by projecting boundary points onto the
+        track normal direction at each centerline point.
 
-        bound_r_interp = CenterlineExtractor._interpolate_2d(bound_right_m, step=0.05)
-        bound_l_interp = CenterlineExtractor._interpolate_2d(bound_left_m, step=0.05)
+        Previous implementation used raw Euclidean nearest-neighbour distance
+        and computed bound_r/l_interp but never used them.  Both bugs are fixed
+        here:
+          - bound_r/l_interp (dense re-sample) is now the source for projection.
+          - Width is measured along the perpendicular (normal) axis, so a corner
+            wall that is ahead/behind the current position is not mistaken for
+            the lateral clearance beside the current position.  This prevents
+            the track from appearing narrower than it is at the entry/exit of
+            straight sections, which was pushing the optimised path toward one
+            wall.
+        """
+        # Dense-resample boundaries so the projection has fine resolution.
+        bound_r = CenterlineExtractor._interpolate_2d(bound_right_m, step=0.05)
+        bound_l = CenterlineExtractor._interpolate_2d(bound_left_m, step=0.05)
 
         n = len(centerline_meter)
         w_right = np.zeros(n)
-        w_left = np.zeros(n)
-        
+        w_left  = np.zeros(n)
+
         for i in range(n):
-            cl_pt = centerline_meter[i]
-            
-            # Distance to right boundary
-            dists_r = np.linalg.norm(bound_right_m - cl_pt, axis=1)
-            w_right[i] = np.min(dists_r)
-            
-            # Distance to left boundary
-            dists_l = np.linalg.norm(bound_left_m - cl_pt, axis=1)
-            w_left[i] = np.min(dists_l)
-        
+            cl_pt  = centerline_meter[i]
+            prev_i = (i - 1) % n
+            next_i = (i + 1) % n
+
+            # Unit tangent from the two neighbours
+            tangent = centerline_meter[next_i] - centerline_meter[prev_i]
+            t_len   = np.linalg.norm(tangent)
+            tangent = tangent / t_len if t_len > 1e-6 else np.array([1.0, 0.0])
+
+            # Rightward unit normal (rotate tangent 90° clockwise)
+            normal_r = np.array([tangent[1], -tangent[0]])
+
+            # Vectors from the current point to every boundary sample
+            vecs_r = bound_r - cl_pt
+            vecs_l = bound_l - cl_pt
+
+            # Project onto normal and tangent axes
+            proj_n_r =  vecs_r @ normal_r   # >0 → point is to the right
+            proj_n_l = -(vecs_l @ normal_r)  # >0 → point is to the left
+            proj_t_r = np.abs(vecs_r @ tangent)
+            proj_t_l = np.abs(vecs_l @ tangent)
+
+            # Only accept boundary points that are on the correct lateral side
+            # AND within a 2 m tangential window (ignores walls ahead/behind).
+            # min_lateral excludes near-tangential points whose proj_n ≈ 0:
+            # these are boundary points that are almost directly ahead/behind
+            # (not beside) the current position, causing falsely-zero width.
+            window = 2.0
+            min_lateral = 0.05  # [m]
+            mask_r = (proj_n_r > min_lateral) & (proj_t_r < window)
+            mask_l = (proj_n_l > min_lateral) & (proj_t_l < window)
+
+            # Normal-projection distance; fall back to Euclidean if no points pass the mask.
+            w_right[i] = proj_n_r[mask_r].min() if mask_r.any() else np.linalg.norm(vecs_r, axis=1).min()
+            w_left[i]  = proj_n_l[mask_l].min() if mask_l.any() else np.linalg.norm(vecs_l, axis=1).min()
+
+        # Median filter: smooths out spikes from map artifacts or corrupted
+        # boundary sections (e.g., collapsed inner wall touching the centerline).
+        # size=15 covers ~0.75 m of track at typical centerline density.
+        from scipy.ndimage import median_filter
+        w_right = median_filter(w_right.astype(float), size=15, mode='wrap')
+        w_left  = median_filter(w_left.astype(float),  size=15, mode='wrap')
+
+        # Hard floor: prevents zero-width values that make the IQP infeasible.
+        # Corrupted map sections may still produce suboptimal paths, but the
+        # optimizer can at least run. Remap with corrected parameters for proper widths.
+        w_right = np.maximum(w_right, 0.15)
+        w_left  = np.maximum(w_left,  0.15)
+
         return w_right, w_left
 
     @staticmethod

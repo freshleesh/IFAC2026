@@ -30,6 +30,9 @@ setup(
             "stanley_plot = controller.stanley_plot:main",
             "gap_follow_node = controller.gapfollow:main",
             "wall_follow_node = controller.wallfollow:main",
+            "lqr = controller.lqr:main",
+            'fc_node = controller.friction_circle_controller:main',
+            'friction_test = controller.friction_test:main',
         ],
     },
 )

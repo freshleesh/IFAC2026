@@ -12,7 +12,7 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
-        ('share/' + package_name + '/launch', ['launch/create_path.launch.xml']),
+        ('share/' + package_name + '/launch', ['launch/create_path.launch.py']),
         ('share/' + package_name + '/config', glob('config/*.ini')),
         ('share/' + package_name + '/config/inputs/veh_dyn_info', 
         glob('config/inputs/veh_dyn_info/*.csv')),
@@ -32,7 +32,6 @@ setup(
         'console_scripts': [
             'centerline_extractor = global_planner.centerline_extractor:main',
             'trajectory_optimizer = global_planner.trajectory_optimizer:main',
-            'waypoint_publisher = global_planner.waypoint_publisher:main',
         ],
     },
 )

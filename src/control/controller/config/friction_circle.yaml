@@ -1,0 +1,58 @@
+friction_circle_controller:
+  ros__parameters:
+
+    # ── Vehicle physics ────────────────────────────────────────────────────────
+    wheelbase_L:        0.33    # [m]  measure axle-to-axle and update
+    delta_max:          0.41    # [rad] max steering angle
+    v_min:              0.5     # [m/s]
+    v_max:              10.0     # [m/s] track / car limit
+    v_min_for_steer:    0.5     # [m/s] below this: fall back to pure-PP
+                                #       (centripetal v²·κ → 0; v_safe clamp handles 0.5→0)
+
+    # ── Friction circle — PRIMARY TUNING KNOB ─────────────────────────────────
+    # a_total_max = μ·g.  Start at 6.0 (μ≈0.6 indoor).
+    # Tune procedure:
+    #   1. Drive constant-radius circles at increasing speed.
+    #   2. v_slip²/R ≈ a_lat_max → set a_total_max to that value.
+    #   3. Log /fc_debug: verify a_long_budget → 0 in fast corners (auto-decel).
+    #   4. Too aggressive → lower 0.5 per run. Understeer remains → raise.
+    a_total_max:        6.7     # [m/s²]  μ·g. 실측값: ay_max CCW=6.68 m/s² (2026-06-10)
+
+    # Asymmetric ellipse (optional, activate when lat/long limits differ clearly)
+    use_ellipse:        false
+    a_lat_max:          5.0     # [m/s²]  only used if use_ellipse: true
+    a_long_max:         4.0     # [m/s²]  only used if use_ellipse: true
+
+    # ── Braking budget ────────────────────────────────────────────────────────
+    # AWD: 가속/제동 모두 4바퀴 → a_brake_max = a_total_max 이 물리적으로 올바름.
+    # RWD였다면 a_brake_max > a_total_max (브레이킹은 4바퀴, 구동은 2바퀴).
+    # 실측 전까지 a_total_max와 동일하게 유지. 실측 후 함께 조정.
+    a_brake_max:        5.5     # [m/s²]  실측값: a_brake=5.49 m/s² (2026-06-10, 4 m/s 기준)
+
+    # ── Control timing ─────────────────────────────────────────────────────────
+    control_rate_hz:    50.0    # dt_ctrl = 1/rate = 0.02 s
+
+    # ── Speed command horizon ──────────────────────────────────────────────────
+    # v_cmd(accel) = min(v_ref, vx + a_long_budget × t_cmd_horizon)
+    # Single-step (dt=0.02 s) → vx+0.1 → VESC PID barely responds → slow accel.
+    # 0.5 s → vx+2.5 on straight → VESC accelerates at full budget rate.
+    # Raise toward 1.0 for more aggressive acceleration; lower if corner instability.
+    t_cmd_horizon:      1.0     # [s]
+
+    # ── PP adaptive lookahead ──────────────────────────────────────────────────
+    # ld = clip(k_v·v / (1 + k_k·|κ|), ld_min, ld_max)
+    ld_min:             0.6     # [m]
+    ld_max:             1.5     # [m]
+    k_v:                0.3     # [s]  speed → lookahead gain
+    k_k:                2.0     # [m/rad] curvature → lookahead damping
+
+    # Multi-waypoint blended target
+    # window_m = k_window·v  →  n_targets waypoints averaged in [ld, ld+window_m]
+    k_window:           0.1     # [s]
+    n_targets:          3
+
+    # ── Speed-adaptive feedforward ─────────────────────────────────────────────
+    # k_ff_eff = k_ff_low + (k_ff - k_ff_low) · clip(v / v_ff_sat, 0, 1)
+    k_ff:               0.40    # [-]  high-speed gain  (v ≥ v_ff_sat)
+    k_ff_low:           0.00    # [-]  low-speed gain   (v = 0)
+    v_ff_sat:           4.0     # [m/s]
