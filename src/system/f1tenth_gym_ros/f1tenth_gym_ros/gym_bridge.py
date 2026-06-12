@@ -175,7 +175,13 @@ class GymBridge(Node):
             self.obs, _, self.done, _ = self.env.reset(
                 poses=np.array([[sx, sy, stheta], [sx1, sy1, stheta1]]))
             self.ego_scan = list(self.obs['scans'][0])
-            self.opp_scan = list(self.obs['scans'][1])
+            # F110_SKIP_NON_EGO_SCAN may have nulled the opp's scan slot.
+            # We still keep a (zero-filled) buffer so legacy code that
+            # touches self.opp_scan doesn't NPE; it's never published when
+            # publish_opp_scan=False anyway.
+            opp_scan_raw = self.obs['scans'][1]
+            num_beams = int(self.get_parameter('scan_beams').value)
+            self.opp_scan = list(opp_scan_raw) if opp_scan_raw is not None else [0.0] * num_beams
 
             opp_scan_topic = self.get_parameter('opp_scan_topic').value
             opp_odom_topic = self.opp_namespace + '/' + \
@@ -192,11 +198,36 @@ class GymBridge(Node):
                 poses=np.array([[sx, sy, stheta]]))
             self.ego_scan = list(self.obs['scans'][0])
 
-        # sim physical step timer
+        # sim physical step timer. Period is a ROS param so launches on
+        # lower-power hosts (Mac mini M4) can drop the rate from 100→50 Hz
+        # to free CPU; default keeps the original 100 Hz behaviour so
+        # existing launches are unaffected. The node is constructed with
+        # automatically_declare_parameters_from_overrides=True so we must
+        # only declare params that aren't already overridden from YAML.
         cb_group1= ReentrantCallbackGroup()
-        self.drive_timer = self.create_timer(0.01, self.drive_timer_callback, callback_group=cb_group1)
-        # topic publishing timer
-        self.timer = self.create_timer(0.01, self.timer_callback, callback_group=cb_group1)
+        if not self.has_parameter('sim_step_period'):
+            self.declare_parameter('sim_step_period', 0.01)
+        if not self.has_parameter('pub_period'):
+            self.declare_parameter('pub_period', 0.01)
+        # combined_callback: when True, run env.step + publish in a single
+        # callback. Halves the per-cycle executor overhead and guarantees
+        # publishes use the freshest obs (no torn state between drive_timer
+        # and timer_callback). Opt-in so existing two-timer launches keep
+        # their behaviour. Period taken from sim_step_period.
+        if not self.has_parameter('combined_callback'):
+            self.declare_parameter('combined_callback', False)
+        sim_step_period = float(self.get_parameter('sim_step_period').value)
+        pub_period = float(self.get_parameter('pub_period').value)
+        combined_callback = bool(self.get_parameter('combined_callback').value)
+        if combined_callback:
+            self.combined_timer = self.create_timer(
+                sim_step_period, self._combined_callback, callback_group=cb_group1)
+            self.get_logger().info(
+                f'[GymBridge] combined sim+publish callback @ {1.0/sim_step_period:.0f} Hz')
+        else:
+            self.drive_timer = self.create_timer(sim_step_period, self.drive_timer_callback, callback_group=cb_group1)
+            # topic publishing timer
+            self.timer = self.create_timer(pub_period, self.timer_callback, callback_group=cb_group1)
 
         # transform broadcaster
         self.br = TransformBroadcaster(self)
@@ -208,9 +239,17 @@ class GymBridge(Node):
         self.fake_vesc_odom_pub = self.create_publisher(Odometry, '/vesc/odom', 10)
         self.ego_pose_pub = self.create_publisher(PoseStamped, ego_pose_topic, 10)
         self.ego_drive_published = False
+        # publish_opp_scan: skip the opp's LaserScan publish path. f110_gym
+        # still ray-casts both agents internally, but we save the 1080-float
+        # serialization + DDS write per cycle when no node subscribes (e.g.
+        # opponent_predictor uses ego's /scan, not opp's).
+        if not self.has_parameter('publish_opp_scan'):
+            self.declare_parameter('publish_opp_scan', True)
+        self.publish_opp_scan = bool(self.get_parameter('publish_opp_scan').value)
         if num_agents == 2:
-            self.opp_scan_pub = self.create_publisher(
-                LaserScan, opp_scan_topic, 10)
+            if self.publish_opp_scan:
+                self.opp_scan_pub = self.create_publisher(
+                    LaserScan, opp_scan_topic, 10)
             self.ego_opp_odom_pub = self.create_publisher(
                 Odometry, ego_opp_odom_topic, 10)
             self.opp_odom_pub = self.create_publisher(
@@ -276,6 +315,13 @@ class GymBridge(Node):
             depth=1,
             durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self.map_pub = self.create_publisher(OccupancyGrid, '/map', map_qos)
+
+        # Collision visualization — f110_gym already does GJK between
+        # agent vertices; we just publish a red sphere at the colliding
+        # car's center so RViz shows it. Per-tick + idempotent (DELETEALL
+        # clears stale markers when nothing's colliding).
+        self.collision_marker_pub = self.create_publisher(
+            MarkerArray, '/sim/collision_markers', 10)
 
         # Obstacle subscribers
         self.static_obs_sub = self.create_subscription(
@@ -529,6 +575,13 @@ class GymBridge(Node):
         self.ts = self.get_clock().now().to_msg()
         self._update_sim_state()
 
+    def _combined_callback(self):
+        """Sim step + publish in one callback. ~half the executor overhead
+        of separate drive_timer + timer_callback, and the publish always
+        sees the freshest obs. Activated by combined_callback=True param."""
+        self.drive_timer_callback()
+        self.timer_callback()
+
     def timer_callback(self):
         # pub scans
         scan = LaserScan()
@@ -543,7 +596,7 @@ class GymBridge(Node):
         scan.intensities = self.ego_scan  # Use range as intensity for rainbow coloring
         self.ego_scan_pub.publish(scan)
 
-        if self.has_opp:
+        if self.has_opp and self.publish_opp_scan:
             opp_scan = LaserScan()
             opp_scan.header.stamp = self.ts
             opp_scan.header.frame_id = self.opp_namespace + '/laser'
@@ -555,6 +608,9 @@ class GymBridge(Node):
             opp_scan.ranges = self.opp_scan
             self.opp_scan_pub.publish(opp_scan)
 
+        # pub collision markers (f110_gym GJK result)
+        self._publish_collision_markers()
+
         # pub tf
         self._publish_odom(self.ts)
         self._publish_transforms(self.ts)
@@ -562,8 +618,22 @@ class GymBridge(Node):
 
     def _update_sim_state(self):
         self.ego_scan = list(self.obs['scans'][0])
+        # Pull f110_gym's collision flags out of obs so timer_callback can
+        # publish viz markers. f110_gym already does GJK between agent
+        # vertices in Simulator.check_collision(); we just expose it.
+        try:
+            collisions = self.obs.get('collisions', None)
+            if collisions is not None:
+                self.ego_collision = bool(collisions[0])
+                if self.has_opp:
+                    self.opp_collision = bool(collisions[1])
+        except (TypeError, IndexError, KeyError):
+            pass
         if self.has_opp:
-            self.opp_scan = list(self.obs['scans'][1])
+            # F110_SKIP_NON_EGO_SCAN may have nulled opp's scan slot.
+            opp_scan_raw = self.obs['scans'][1]
+            if opp_scan_raw is not None:
+                self.opp_scan = list(opp_scan_raw)
             self.opp_pose[0] = self.obs['poses_x'][1]
             self.opp_pose[1] = self.obs['poses_y'][1]
             self.opp_pose[2] = self.obs['poses_theta'][1]
@@ -577,6 +647,44 @@ class GymBridge(Node):
         self.ego_speed[0] = self.obs['linear_vels_x'][0]
         self.ego_speed[1] = self.obs['linear_vels_y'][0]
         self.ego_speed[2] = self.obs['ang_vels_z'][0]
+
+    def _publish_collision_markers(self):
+        """Publish a red sphere over each colliding car. Sends DELETEALL
+        first so stale markers from the previous tick disappear when the
+        cars are clear. Pure viz — does not affect dynamics."""
+        markers = MarkerArray()
+        clear = Marker()
+        clear.action = Marker.DELETEALL
+        clear.header.frame_id = 'map'
+        clear.header.stamp = self.ts
+        markers.markers.append(clear)
+
+        def _bump(idx, x, y, name):
+            m = Marker()
+            m.header.frame_id = 'map'
+            m.header.stamp = self.ts
+            m.ns = 'sim_collision'
+            m.id = idx
+            m.type = Marker.SPHERE
+            m.action = Marker.ADD
+            m.pose.position.x = float(x)
+            m.pose.position.y = float(y)
+            m.pose.position.z = 0.3
+            m.pose.orientation.w = 1.0
+            m.scale.x = m.scale.y = m.scale.z = 0.5
+            m.color.r = 1.0
+            m.color.g = 0.1
+            m.color.b = 0.0
+            m.color.a = 0.9
+            m.text = name
+            markers.markers.append(m)
+
+        if self.ego_collision:
+            _bump(0, self.ego_pose[0], self.ego_pose[1], 'ego')
+        if self.has_opp and self.opp_collision:
+            _bump(1, self.opp_pose[0], self.opp_pose[1], 'opp')
+
+        self.collision_marker_pub.publish(markers)
 
     def _publish_odom(self, ts):
         ego_odom = Odometry()

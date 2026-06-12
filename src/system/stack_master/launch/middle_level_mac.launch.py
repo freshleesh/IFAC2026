@@ -1,6 +1,6 @@
 """fast_livo localization + PP 자동주행 통합 launch (middle level).
 
-map argument 하나로 모든 데이터 로드 — 기본값 my_seat. fast_livo2/map/<map>/
+map argument 하나로 모든 데이터 로드 — 기본값 my_seat. stack_master/maps/<map>/
 디렉터리에 prior_map(.pcd/.fmap) + global_waypoints.json 이 같이 들어있는 구조.
 
 low_level_mac 포함, 한 줄로 모든 체인 기동:
@@ -28,7 +28,7 @@ low_level_mac 포함, 한 줄로 모든 체인 기동:
   - cb 후 ros_fix_install 동작 (conda env/lib symlink, rpath, xattr strip)
   - VESC USB 연결, livox/camera 정상
   - <map> prior map (cloudGlobal.pcd, prior_map.fmap, global_waypoints.json)
-    가 fast_livo2/map/<map>/ 에 존재
+    가 stack_master/maps/<map>/ 에 존재
 
 사용:
   ros2 launch stack_master middle_level_mac.launch.py
@@ -45,8 +45,8 @@ from __future__ import annotations
 import os
 
 from ament_index_python.packages import get_package_share_directory
-from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
+from launch import LaunchContext, LaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction, TimerAction
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
@@ -61,6 +61,14 @@ def generate_launch_description() -> LaunchDescription:
     rviz_low_arg     = DeclareLaunchArgument("use_rviz_low_level", default_value="false")
     rviz_livo_arg    = DeclareLaunchArgument("use_rviz_livo", default_value="true")
     joy_arg          = DeclareLaunchArgument("use_joy", default_value="true")
+    controller_arg   = DeclareLaunchArgument("controller", default_value="simple_pp",
+                                             description="simple_pp | mppi — drop-in 교체")
+    mppi_params_arg  = DeclareLaunchArgument("mppi_params_file", default_value="",
+                                             description="mppi yaml. 빈 문자열이면 params_real_mac.yaml.")
+    mppi_wpt_arg     = DeclareLaunchArgument("mppi_wpt_path", default_value="",
+                                             description="mppi raceline csv 절대경로. 빈 문자열이면 houston_main5.csv (실차 첫 통합용 기본 — 실제 사용시 map 에 맞게 override).")
+    mppi_wall_arg    = DeclareLaunchArgument("mppi_wall_map", default_value="",
+                                             description="mppi wall SDF map yaml. 빈 문자열이면 SDF off.")
 
     map_name        = LaunchConfiguration("map")
     use_low_level   = LaunchConfiguration("use_low_level")
@@ -77,13 +85,11 @@ def generate_launch_description() -> LaunchDescription:
     livo_main       = os.path.join(livo_share, "config", "mid360_localization.yaml")
     livo_cam        = os.path.join(livo_share, "config", "camera_see3cam.yaml")
     livo_rviz_cfg   = os.path.join(livo_share, "rviz_cfg", "relocalization.rviz")
-    # Maps live alongside the fast_livo prior map (cloudGlobal.pcd, prior_map.fmap, ...)
-    # under fast_livo2/map/<name>/. global_waypoints.json sits in the same dir so a
-    # single `map:=<name>` argument resolves both localization and waypoints.
-    # (New global_planner pipeline — centerline_extractor / trajectory_optimizer —
-    # still hardcodes stack_master/maps/<name>/; create that as a symlink to this
-    # directory when you start using it.)
-    src_maps_root = "/Users/mini/ros2_ws/src/IFAC2026_SH/src/slam/fast_livo2/map"
+    # Canonical map storage — stack_master/maps/<name>/ (src side, writable).
+    # cloudGlobal.pcd / prior_map.fmap / <name>.yaml / global_waypoints.json /
+    # raceline.csv 모두 같은 디렉토리. `map:=<name>` 하나로 localization +
+    # global_repub + mppi raceline + wall sdf 다 매칭.
+    src_maps_root = "/Users/mini/ros2_ws/src/IFAC2026_SH/src/system/stack_master/maps"
 
     # ── 1. low_level_mac (vesc + livox + camera + joy + DYLD_LIBRARY_PATH) ──
     low_level = IncludeLaunchDescription(
@@ -229,31 +235,77 @@ def generate_launch_description() -> LaunchDescription:
         output="screen",
     )])
 
-    # ── 8. simple_pp (minimal pure-pursuit, vx_mps 그대로) ─────────────
-    # 기존 controller_manager (L1 + lat_err/accel_lim 후처리) 가 vx_mps 를
-    # 깎는 문제 디버깅을 위해 순수 PP 로 교체. speed_scale 만 살려서
-    # 전체 비례 조정 가능.
-    controller_node = TimerAction(period=7.0, actions=[Node(
-        package="controller",
-        executable="simple_pp",
-        name="simple_pp",
-        parameters=[{
-            "lookahead_distance": 1.2,
-            "wheelbase": 0.33,
-            "max_steering_rad": 0.4,
-            "max_speed_mps": 8.0,
-            "speed_scale": 1.0,
-            "control_rate_hz": 50.0,
-            "drive_topic": "/vesc/high_level/ackermann_cmd_mux/input/nav_1",
-        }],
-        output="screen",
-    )])
+    # ── 8. controller 분기 (simple_pp | mppi) ─────────────────────────
+    # simple_pp = 순수 pure-pursuit (vx_mps 그대로). mppi = JAX 샘플링.
+    # 둘 다 인터페이스 동일 (/car_state/odom in, /vesc/.../nav_1 out).
+    def _pick_controller(context: LaunchContext, *_args, **_kwargs):
+        which = LaunchConfiguration("controller").perform(context)
+        if which == "simple_pp":
+            return [TimerAction(period=7.0, actions=[Node(
+                package="controller",
+                executable="simple_pp",
+                name="simple_pp",
+                parameters=[{
+                    "lookahead_distance": 1.2,
+                    "wheelbase": 0.33,
+                    "max_steering_rad": 0.4,
+                    "max_speed_mps": 8.0,
+                    "speed_scale": 1.0,
+                    "control_rate_hz": 50.0,
+                    "drive_topic": "/vesc/high_level/ackermann_cmd_mux/input/nav_1",
+                }],
+                output="screen",
+            )])]
+        if which == "mppi":
+            mppi_share = get_package_share_directory("mppi_bringup")
+            sm_share_local = get_package_share_directory("stack_master")
+            map_str = LaunchConfiguration("map").perform(context)
+            params_path = LaunchConfiguration("mppi_params_file").perform(context) or \
+                os.path.join(mppi_share, "config", "params_real_mac.yaml")
+            wpt_path = LaunchConfiguration("mppi_wpt_path").perform(context)
+            if not wpt_path:
+                wpt_path = os.path.join(sm_share_local, "maps", map_str, "raceline.csv")
+                if not os.path.exists(wpt_path):
+                    raise FileNotFoundError(
+                        f"mppi raceline 자동 매칭 실패: {wpt_path} 없음. "
+                        f"mppi_wpt_path:=<csv 경로> 로 명시하거나 "
+                        f"stack_master/maps/{map_str}/raceline.csv 생성 필요."
+                    )
+            wall_map = LaunchConfiguration("mppi_wall_map").perform(context)
+            if not wall_map:
+                wall_map = os.path.join(sm_share_local, "maps", map_str, f"{map_str}.yaml")
+                if not os.path.exists(wall_map):
+                    wall_map = ""
+            overrides = {
+                "pose_topic": "/car_state/odom",
+                "drive_topic": "/vesc/high_level/ackermann_cmd_mux/input/nav_1",
+                "wpt_path_absolute": True,
+                "wpt_path": wpt_path,
+            }
+            if wall_map:
+                overrides["wall_cost_map_yaml"] = wall_map
+            else:
+                # 빈 문자열이면 SDF off (yaml 의 wall_cost_enabled=true 인 경우
+                # 안전을 위해 명시적으로 disable).
+                overrides["wall_cost_enabled"] = False
+                overrides["wall_cost_map_yaml"] = ""
+            return [TimerAction(period=7.0, actions=[Node(
+                package="mppi_example",
+                executable="mppi_node",
+                name="lmppi_node",
+                output="log",
+                parameters=[params_path, overrides],
+            )])]
+        raise ValueError(f"controller must be 'simple_pp' or 'mppi', got {which!r}")
+
+    controller_branch = OpaqueFunction(function=_pick_controller)
 
     # simple_mux 는 low_level_mac 에서 띄움 (low 만으로도 joy 직접 조작 가능하도록).
     # middle_level 은 controller 명령(/vesc/.../nav_1) 을 추가하기만 함.
 
     return LaunchDescription([
         map_arg, low_level_arg, rviz_low_arg, rviz_livo_arg, joy_arg,
+        controller_arg, mppi_params_arg, mppi_wpt_arg, mppi_wall_arg,
         low_level,
         livo_node, livo_rviz,
         global_init_node,
@@ -262,5 +314,5 @@ def generate_launch_description() -> LaunchDescription:
         frenet_odom_repub,
         fake_relay,
         sm_node,
-        controller_node,
+        controller_branch,
     ])

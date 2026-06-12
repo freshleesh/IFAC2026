@@ -68,7 +68,7 @@ def generate_launch_description():
                               description="Listen address. 0.0.0.0 = all interfaces."),
         DeclareLaunchArgument("use_compression", default_value="true",
                               description="permessage-deflate WebSocket 압축."),
-        DeclareLaunchArgument("send_buffer_limit", default_value="100000000",
+        DeclareLaunchArgument("send_buffer_limit", default_value="1000000000",
                               description="송신 버퍼 한계 [bytes]. 100MB. 너무 크면 burst 조장."),
         DeclareLaunchArgument(
             "topic_whitelist",

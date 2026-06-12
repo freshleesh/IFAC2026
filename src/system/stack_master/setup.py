@@ -19,7 +19,8 @@ setup(
         (os.path.join("share", package_name, "config", "SIM", "veh_dyn_info"),
          glob("config/SIM/veh_dyn_info/*.csv")),
         *[
-            (os.path.join("share", package_name, "maps", os.path.basename(d)), glob(os.path.join(d, "*")))
+            (os.path.join("share", package_name, "maps", os.path.basename(d)),
+             [f for f in glob(os.path.join(d, "*")) if os.path.isfile(f)])
             for d in glob("maps/*") if os.path.isdir(d)
         ],
     ],

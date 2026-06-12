@@ -28,9 +28,9 @@ from scipy.interpolate import CubicSpline
 
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-# Canonical map storage: fast_livo2/map/ (sibling of IFAC2026_SH under ws_src)
-WS_SRC = os.path.dirname(os.path.dirname(REPO_ROOT))
-MAPS_DIR = os.path.join(WS_SRC, 'fast_livo2', 'map')
+# Canonical map storage: stack_master/maps/ (same package, src side).
+# realpath() resolves symlink-install back to source so writes land in src.
+MAPS_DIR = os.path.realpath(os.path.join(os.path.dirname(__file__), '..', 'maps'))
 TRACK3D_SRC = os.path.join(
     REPO_ROOT, 'planner', '3d_gb_optimizer', 'global_line', 'src'
 )

@@ -46,22 +46,29 @@ def _build(context: LaunchContext, *_args, **_kwargs):
     map_name = LaunchConfiguration("map").perform(context)
     racecar_version = LaunchConfiguration("racecar_version").perform(context)
     mode = LaunchConfiguration("mode").perform(context)
+    controller = LaunchConfiguration("controller").perform(context)
 
     if mode not in ("timetrial", "overtake", "avoid", "mpcc"):
         raise ValueError(f"mode must be 'timetrial' / 'overtake' / 'avoid' / 'mpcc', got {mode!r}")
+    if controller not in ("simple_pp", "mppi"):
+        raise ValueError(f"controller must be 'simple_pp' or 'mppi', got {controller!r}")
 
     # 'avoid' = 'overtake' alias — 정적 장애물 회피 의도 명시. 코드 동작 동일.
     if mode == "avoid":
         mode = "overtake"
 
+    # mode=mpcc 는 controller 인자보다 우선 (기존 mpcc 분기 유지).
     is_mpcc = (mode == "mpcc")
+    use_mppi = (not is_mpcc) and (controller == "mppi")
     # MPCC mode: state_machine 은 GB_TRACK 강제 (mpc 가 자체 reference 추종).
     timetrials_only = (mode == "timetrial") or is_mpcc
     force_gbtrack = (mode == "timetrial") or is_mpcc
     ot_planner = "spliner" if mode == "overtake" else ""
 
     sm_share = get_package_share_directory("stack_master")
-    fast_livo_map_root = os.path.expanduser("~/ros2_ws/src/fast_livo2/map")
+    # canonical map storage (src side — fast_livo SaveMap 가 새 파일 쓰는 곳).
+    maps_src_root = os.path.expanduser(
+        "~/ros2_ws/src/IFAC2026_SH/src/system/stack_master/maps")
     controller_yaml = os.path.join(
         get_package_share_directory("controller"), "config", "sim_controller_params.yaml"
     )
@@ -79,7 +86,7 @@ def _build(context: LaunchContext, *_args, **_kwargs):
         name="global_republisher",
         parameters=[{
             "map": map_name,
-            "map_path": os.path.join(fast_livo_map_root, map_name, "global_waypoints.json"),
+            "map_path": os.path.join(maps_src_root, map_name, "global_waypoints.json"),
         }],
         output="screen",
     )
@@ -174,7 +181,7 @@ def _build(context: LaunchContext, *_args, **_kwargs):
     )])
     actions.append(sm_node)
 
-    if not is_mpcc:
+    if not is_mpcc and not use_mppi:
         # ── simple_pp (minimal pure-pursuit, vx_mps 그대로) ────────────
         # 기존 controller_manager (L1 + lat_err/accel_lim 후처리) 가 vx_mps 를
         # 깎는 문제 디버깅용 교체. middle_level_mac 과 동일 노드/파라미터.
@@ -195,6 +202,56 @@ def _build(context: LaunchContext, *_args, **_kwargs):
             output="screen",
         )])
         actions.append(controller_node)
+    elif use_mppi:
+        # ── MPPI (simple_pp 자리 drop-in 교체) ────────────────────────
+        # 인터페이스 계약 = simple_pp 와 동일:
+        #   sub /car_state/odom,  pub /vesc/high_level/ackermann_cmd
+        # raceline / wall sdf 자동 매칭: stack_master/maps/<map>/ 단일 소스.
+        #   raceline: stack_master/maps/<map>/raceline.csv
+        #   wall sdf: stack_master/maps/<map>/<map>.yaml
+        # 둘 다 launch 인자로 override 가능.
+        mppi_share = get_package_share_directory("mppi_bringup")
+        sm_share_mppi = get_package_share_directory("stack_master")
+        mppi_params = LaunchConfiguration("mppi_params_file").perform(context)
+        if not mppi_params:
+            mppi_params = os.path.join(mppi_share, "config", "params_sim_mac.yaml")
+        mppi_wpt = LaunchConfiguration("mppi_wpt_path").perform(context)
+        if not mppi_wpt:
+            mppi_wpt = os.path.join(sm_share_mppi, "maps", map_name, "raceline.csv")
+            if not os.path.exists(mppi_wpt):
+                raise FileNotFoundError(
+                    f"mppi raceline 자동 매칭 실패: {mppi_wpt} 없음. "
+                    f"mppi_wpt_path:=<csv 경로> 로 명시하거나 "
+                    f"stack_master/maps/{map_name}/raceline.csv 생성 필요."
+                )
+        mppi_wall_map = LaunchConfiguration("mppi_wall_map").perform(context)
+        if not mppi_wall_map:
+            mppi_wall_map = os.path.join(sm_share_mppi, "maps", map_name, f"{map_name}.yaml")
+            if not os.path.exists(mppi_wall_map):
+                # wall sdf 자동 매칭 실패면 비워서 SDF off — fatal 아님.
+                mppi_wall_map = ""
+
+        mppi_overrides = {
+            # full_sim 통합 시나리오 override — yaml 의
+            # 단독 sim_full_mac default 를 덮음.
+            "pose_topic": "/car_state/odom",
+            "drive_topic": "/vesc/high_level/ackermann_cmd",
+            "wpt_path_absolute": True,
+            "wpt_path": mppi_wpt,
+        }
+        if mppi_wall_map:
+            mppi_overrides["wall_cost_map_yaml"] = mppi_wall_map
+        else:
+            mppi_overrides["wall_cost_enabled"] = False
+            mppi_overrides["wall_cost_map_yaml"] = ""
+        mppi_node = TimerAction(period=7.0, actions=[Node(
+            package="mppi_example",
+            executable="mppi_node",
+            name="lmppi_node",
+            output="log",
+            parameters=[mppi_params, mppi_overrides],
+        )])
+        actions.append(mppi_node)
     else:
         # ── MPCC 모드: nonlinear_mpc_acados 가 controller 자리 대체 ──
         mpc_share = get_package_share_directory("nonlinear_mpc_acados")
@@ -273,7 +330,15 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("map", default_value="f"),
         DeclareLaunchArgument("racecar_version", default_value="SIM"),
         DeclareLaunchArgument("mode", default_value="timetrial",
-                              description="timetrial | overtake"),
+                              description="timetrial | overtake | mpcc"),
+        DeclareLaunchArgument("controller", default_value="simple_pp",
+                              description="simple_pp | mppi (mode=mpcc 시 무시)"),
+        DeclareLaunchArgument("mppi_params_file", default_value="",
+                              description="mppi yaml override. 빈 문자열이면 mppi_bringup/config/params_sim_mac.yaml."),
+        DeclareLaunchArgument("mppi_wpt_path", default_value="",
+                              description="mppi raceline csv 절대경로. 빈 문자열이면 houston_main5.csv."),
+        DeclareLaunchArgument("mppi_wall_map", default_value="",
+                              description="mppi wall SDF map yaml. 빈 문자열이면 houston_main.yaml."),
         # DeclareLaunchArgument("n_obstacles", default_value="auto",
         #                       description="0=강제 비활성, auto=mode 기준, 정수=강제"),
         OpaqueFunction(function=_build),

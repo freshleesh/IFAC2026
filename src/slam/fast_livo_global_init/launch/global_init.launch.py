@@ -2,7 +2,7 @@
 #
 # Usage:
 #   ros2 launch fast_livo_global_init global_init.launch.py                # yaml default
-#   ros2 launch fast_livo_global_init global_init.launch.py map:=my_seat   # cloudGlobal from fast_livo2/map/my_seat/
+#   ros2 launch fast_livo_global_init global_init.launch.py map:=my_seat   # cloudGlobal from stack_master/maps/my_seat/
 #
 # fast_livo `localization.launch.py` 와 동일한 `map:=<name>` 인자 패턴.
 
@@ -15,7 +15,7 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
-MAPS_ROOT = "/Users/mini/ros2_ws/src/IFAC2026_SH/src/slam/fast_livo2/map"
+MAPS_ROOT = "/Users/mini/ros2_ws/src/IFAC2026_SH/src/system/stack_master/maps"
 
 
 def launch_setup(context, *args, **kwargs):
@@ -46,7 +46,7 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument(
             "map", default_value="",
-            description="Prior map name under fast_livo2/map/<name>/. "
+            description="Prior map name under stack_master/maps/<name>/. "
                         "Empty = yaml default (prior_map.pcd_path).",
         ),
         DeclareLaunchArgument(
