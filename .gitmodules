@@ -27,3 +27,7 @@
 	path = src/sensor/ros2_shared
 	url = https://github.com/ptrmu/ros2_shared.git
 	branch = master
+[submodule "src/control/nonlinear_mpcc/mpcc"]
+	path = src/control/nonlinear_mpcc/mpcc
+	url = https://github.com/dnrwls04/mpcc.git
+	branch = main
