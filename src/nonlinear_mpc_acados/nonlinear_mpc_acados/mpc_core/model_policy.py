@@ -48,6 +48,33 @@ def clamp_a_lat_to_grip(a_lat_safe, mu, ellipse_frac=0.95):
     return (min(a, lim), a > lim)
 
 
+# ─── LMPC track-anchored safe-set query (2026-06-14 drift fix) ──────────────
+def lmpc_anchor_s(s_now, v_now, n_horizon, dT, track_length, lookahead_floor=1.0):
+    """Arc length (along the TRACK) at which to anchor the LMPC safe-set query.
+
+    Returns where the car will be ~one control horizon ahead, measured from the
+    CURRENT s — NOT from the previous solve's predicted horizon-end x_N.
+
+    Anchoring at x_N created an anchor-less positive-feedback loop: a lateral
+    drift in x_N moved the query point → moved the terminal attractor onto the
+    drifted point → pulled x_N further out, so ec grew monotonically
+    (0.22→0.47 m) until wedge (use_lmpc off, 3691fdb). Pinning the query to
+    track arc length breaks the loop while keeping the attractor one horizon
+    ahead (the forward-progress carrot the horizon-end query was reaching for).
+
+    The look-ahead is the predicted travel v·N·dT, floored at `lookahead_floor`
+    so it never collapses onto the car when stopped, and capped at half the loop
+    so an absurd speed can't wrap the anchor behind the car. Returns
+    q_s ∈ [0, track_length); degenerate track_length ≤ 0 → s_now unchanged.
+    """
+    L = float(track_length)
+    if not (L > 0.0):
+        return float(s_now)
+    ahead = max(float(lookahead_floor), float(v_now) * float(n_horizon) * float(dT))
+    ahead = min(ahead, 0.5 * L)
+    return (float(s_now) + ahead) % L
+
+
 # ─── Avoidance side decision (2026-06-11 window-aware) ──────────────────────
 def decide_side_window(e_c_obs, w_left, w_right,
                        w_car_safe=0.21, margin=0.1):

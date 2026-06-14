@@ -50,7 +50,7 @@ from rclpy.parameter import Parameter
 from rclpy.qos import QoSProfile, QoSDurabilityPolicy, QoSReliabilityPolicy
 
 from .track_loader import TrackData, build_track_from_wpnts, find_current_arc_length, load_track
-from .mpc_core.model_policy import A_MIN_DYN, clamp_a_lat_to_grip
+from .mpc_core.model_policy import A_MIN_DYN, clamp_a_lat_to_grip, lmpc_anchor_s
 # 2026-05-28 #18 LMPC integration
 from .mpc_core.lmpc.lap_database import LapDatabase
 from .mpc_core.lmpc.safe_set import SafeSetLookup
@@ -772,22 +772,35 @@ class MPCNode(Node):
             self.mpc._e_corr = np.zeros(3)
             return
 
-        # Query SS at the PREDICTED HORIZON-END state (from the previous solve),
-        # NOT the current state. The terminal LMPC cost attracts x_N (horizon
-        # end) toward ss_states[:,0]; if we query at the current state the
-        # attractor sits ~at the car → it pulls x_N BACKWARD → no progress (the
-        # observed +5% lap-time drift). Querying at the horizon-end places the
-        # attractor ~one-horizon ahead so the cost pulls x_N FORWARD onto the
-        # fast line. Falls back to the current state8 until the first solve.
-        q_state = getattr(self, '_lmpc_query_state', None)
-        if q_state is None or q_state.shape[0] < state8.shape[0]:
-            q_state = state8
-        q_s = float(q_state[6]) if q_state.shape[0] > 6 else s_now
+        # Query SS at a TRACK-ANCHORED point one horizon ahead of the CURRENT
+        # car position — NOT at the previous solve's predicted x_N. The terminal
+        # cost attracts x_N toward ss_states[:,0]; we still want that attractor
+        # ~one horizon ahead (forward pull), but anchoring it at x_N made the
+        # query depend on x_N, which the cost was simultaneously moving — an
+        # anchor-less positive-feedback loop: a lateral drift in x_N moved the
+        # query → moved the attractor onto the drift → pulled x_N further out, so
+        # ec grew monotonically (0.22→0.47 m) until wedge (use_lmpc off, 3691fdb).
+        # Pinning the query to track arc length (current s + v·N·dT look-ahead)
+        # breaks the loop while keeping the carrot ahead. z_t is built from track
+        # geometry at q_s (centerline px,py,ψ + ref_v) so the weighted-L2 SS
+        # match is to where the car SHOULD be, not where x_N drifted to.
         try:
             track_L = float(self._track.element_arc_lengths_orig[-1]) if (
                 self._track.element_arc_lengths_orig is not None
                 and len(self._track.element_arc_lengths_orig) > 0
             ) else 80.0
+            v_now = float(state8[3])
+            n_h = int(getattr(self.mpc, 'N', None) or self.get_parameter('N_horizon').value)
+            dT = float(self.get_parameter('dT').value)
+            q_s = lmpc_anchor_s(s_now, v_now, n_h, dT, track_L)
+            psi_a = float(np.arctan2(self._track.center_lut_dy(q_s),
+                                     self._track.center_lut_dx(q_s)))
+            v_a = float(self.mpc.ref_v(q_s)) if self.mpc.ref_v is not None else v_now
+            q_state = np.array([
+                float(self._track.center_lut_x(q_s)),
+                float(self._track.center_lut_y(q_s)),
+                psi_a, v_a, 0.0, 0.0, q_s, 0.0,
+            ], dtype=float)
             res = self._lmpc_ss.query(q_state, v_bucket, s_curr=q_s, track_length=track_L)
         except Exception as e:
             self.get_logger().warn(f"[LMPC] query failed: {e}", throttle_duration_sec=2.0)
@@ -1705,22 +1718,11 @@ class MPCNode(Node):
             return
         solve_dt = time.monotonic() - t0
 
-        # Stash the predicted horizon-end state for the NEXT cycle's LMPC safe-
-        # set query (so the terminal attractor sits ~one horizon ahead → pulls
-        # x_N forward). traj[-1] is the 8-state horizon end (dynamic).
+        # Joint-α terminal debug — confirms whether the terminal actually targets
+        # the APEX (tgt_lat≈±0.9) or centerline. (The SS query is now anchored to
+        # track arc length in _lmpc_update_per_cycle, so the previous horizon-end
+        # x_N stash is gone — it was the drift-feedback source.)
         if getattr(self, '_lmpc_use', False) and traj is not None and traj.shape[0] > 1:
-            try:
-                # traj[-1] is 18-wide (8 physical + 10 α) after the joint-α state
-                # augmentation; the SS stores 8-dim physical states, so the query
-                # state MUST be the physical part only — else the SS distance broadcast
-                # fails (8 vs 18) every cycle → query fails → LMPC never activates
-                # (lmpc_w_live stays 0 → terminal cost 0 → pure-MPCC centerline). This
-                # was the reason Steps 2-8 showed NO behavioral change.
-                self._lmpc_query_state = np.asarray(traj[-1, :8], dtype=float).copy()
-            except Exception:
-                self._lmpc_query_state = None
-            # DEBUG: in-solver α + terminal target lateral — confirms whether the
-            # joint-α terminal actually targets the APEX (tgt_lat≈±0.9) or centerline.
             try:
                 ss = getattr(self.mpc, '_lmpc_ss_states', None)
                 if traj.shape[1] >= 18 and ss is not None and self._track is not None:
