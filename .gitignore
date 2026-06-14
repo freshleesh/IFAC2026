@@ -19,6 +19,14 @@ __pycache__/
 
 # External libs (cloned, not part of project)
 random-track-generator/
+Nonlinear_MPCC_for_autonomous_racing/
+
+# Understand-anything generated knowledge graph
+.understand-anything/
+
+# Temp / probe scripts (not part of the package)
+scripts_tmp_*.py
+pred_probe_node.py
 
 # Backups
 *.bak
